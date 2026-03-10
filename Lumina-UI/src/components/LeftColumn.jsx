@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
-import 'react-pdf/dist/esm/Page/TextLayer.css';
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+import 'react-pdf/dist/Page/TextLayer.css';
 import { useStore } from '../store/useStore';
 import { Highlighter, Type, Sparkles, MessageSquare } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -10,11 +10,18 @@ import { createPortal } from 'react-dom';
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 export const LeftColumn = () => {
-  const { pdfFile, currentPage, setCurrentPage, addHighlight, activeReference } = useStore();
+  const { pdfFile, setPdfFile, currentPage, setCurrentPage, addHighlight, activeReference } = useStore();
   const [numPages, setNumPages] = useState(null);
   const [selection, setSelection] = useState(null);
   const containerRef = useRef(null);
   const pageRef = useRef(null);
+
+  const onFileChange = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      setPdfFile(file);
+    }
+  };
   
   // Effect: Scroll to active reference
   useEffect(() => {
@@ -73,6 +80,22 @@ export const LeftColumn = () => {
     >
       <div className="w-full max-w-[800px] bg-white shadow-lg min-h-[1000px]">
         {/* PDF Renderer */}
+        {!pdfFile && (
+          <div className="flex flex-col items-center justify-center h-[500px] text-gray-400 gap-4">
+            <p>未加载 PDF 文件</p>
+            <label className="px-4 py-2 bg-blue-500 text-white rounded-lg cursor-pointer hover:bg-blue-600 transition-colors">
+              <span>上传 PDF</span>
+              <input 
+                type="file" 
+                accept=".pdf" 
+                onChange={onFileChange} 
+                className="hidden" 
+              />
+            </label>
+            <p className="text-sm">或者将会尝试加载默认示例 (可能需要网络)</p>
+          </div>
+        )}
+
         <Document
             file={pdfFile || 'https://arxiv.org/pdf/1706.03762.pdf'} // Default fallback
             onLoadSuccess={onDocumentLoadSuccess}

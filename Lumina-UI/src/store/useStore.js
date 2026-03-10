@@ -17,7 +17,7 @@ export const useStore = create((set) => ({
   setActiveReference: (ref) => set({ activeReference: ref, currentPage: ref.page }),
 
   // Editor State
-  markdownContent: "# Research Notes\n\nStart typing...",
+  markdownContent: "# 研究笔记\n\n在此输入...",
   setMarkdownContent: (content) => set({ markdownContent: content }),
   citations: [
     { id: '1', key: 'vaswani2017attention', title: 'Attention Is All You Need', authors: 'Vaswani et al.' },
