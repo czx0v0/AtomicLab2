@@ -1,70 +1,114 @@
-import React from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useRef, useEffect } from 'react';
 import { useStore } from './store/useStore';
 import { LeftColumn } from './components/LeftColumn';
 import { MiddleColumn } from './components/MiddleColumn';
 import { RightColumn } from './components/RightColumn';
-import { Sparkles, Maximize2, Minimize2 } from 'lucide-react';
+import { Panel, Group, Separator } from "react-resizable-panels";
+import { GripVertical, Layers, BookOpen, PenTool, MessageSquare, Terminal } from 'lucide-react';
 import clsx from 'clsx';
 
-function App() {
-  const { isZenMode, toggleZenMode } = useStore();
+const ResizeHandle = ({ id }) => (
+  <Separator className="w-1.5 bg-gray-100 hover:bg-blue-100 transition-colors flex flex-col justify-center items-center group relative z-50">
+    <div className="h-8 w-1 rounded-full bg-gray-300 group-hover:bg-blue-400 transition-colors flex items-center justify-center">
+       <GripVertical size={12} className="text-gray-400 group-hover:text-blue-600" />
+    </div>
+  </Separator>
+);
+
+const Header = ({ viewMode, setViewMode }) => {
+  const NavButton = ({ mode, icon: Icon, label }) => (
+    <button 
+      onClick={() => setViewMode(mode)}
+      className={clsx(
+        "flex items-center gap-2 px-4 py-2 text-xs font-bold transition-all border-b-4",
+        viewMode === mode 
+          ? "border-blue-600 text-blue-700 bg-blue-50" 
+          : "border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50"
+      )}
+    >
+      <Icon size={14} />
+      {label}
+    </button>
+  );
 
   return (
-    <div className={clsx("h-screen w-full flex flex-col font-sans antialiased overflow-hidden transition-colors duration-500", isZenMode ? "bg-amber-50" : "bg-white")}>
+    <div className="h-14 border-b border-gray-200 flex items-center justify-between px-4 bg-white select-none">
+        {/* Left: Brand */}
+        <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-blue-600 flex items-center justify-center shadow-[3px_3px_0px_#000000]">
+                <Terminal className="text-white" size={18} />
+            </div>
+            <h1 className="font-pixel text-sm tracking-tighter loading-none mt-1">
+                ATOMIC<span className="text-blue-600">LAB</span>
+            </h1>
+        </div>
+
+        {/* Center: Navigation (View Modes) */}
+        <div className="flex h-full items-end gap-1 font-pixel">
+            <NavButton mode="read" icon={BookOpen} label="READ" />
+            <NavButton mode="organize" icon={Layers} label="ORGANIZE" />
+            <NavButton mode="write" icon={PenTool} label="WRITE" />
+            <NavButton mode="chat" icon={MessageSquare} label="CHAT" />
+        </div>
+
+        {/* Right: User / Settings */}
+        <div className="flex items-center gap-3">
+             <div className="w-8 h-8 rounded-full bg-gray-200 border-2 border-black"></div>
+        </div>
+    </div>
+  );
+};
+
+function App() {
+  const { isZenMode, toggleZenMode, viewMode, setViewMode } = useStore();
+  const panelGroupRef = useRef(null);
+
+  // View Mode Logic -> Panel Layout
+  useEffect(() => {
+    const layout = panelGroupRef.current;
+    if (layout) {
+        if (viewMode === 'read') {
+            layout.setLayout([50, 25, 25]);
+        } else if (viewMode === 'organize') {
+            layout.setLayout([20, 60, 20]);
+        } else if (viewMode === 'write') {
+            layout.setLayout([25, 0, 75]); // Hide middle by shrinking to 0
+        } else if (viewMode === 'chat') {
+            layout.setLayout([25, 50, 25]);
+        }
+    }
+  }, [viewMode]);
+
+  return (
+    <div className="h-screen w-full flex flex-col font-sans antialiased overflow-hidden bg-white text-gray-900">
       
-      {/* Zen Mode Toggle (Global) */}
-      <div className="absolute top-4 right-4 z-50">
-        <button 
-          onClick={toggleZenMode}
-          className={clsx(
-            "p-3 rounded-full shadow-xl transition-all duration-300 hover:scale-110 active:scale-95 group border bg-white text-gray-800 hover:bg-gray-100 border-gray-200",
-            isZenMode && "bg-amber-100 text-amber-800 hover:bg-amber-200 border-amber-300"
-          )}
-          title={isZenMode ? "Exit Zen Mode" : "Enter Zen Mode"}
-        >
-          {isZenMode ? <Minimize2 size={20} /> : <Sparkles size={20} className="group-hover:animate-spin-slow text-purple-600" />}
-        </button>
-      </div>
+      {/* Global Header */}
+      {!isZenMode && <Header viewMode={viewMode} setViewMode={setViewMode} />}
+      
+      {/* Resizable Layout */}
+      <div className="flex-1 w-full relative">
+        <Group ref={panelGroupRef} direction="horizontal" className="h-full w-full">
+            
+            {/* Left Column: Read */}
+            <Panel defaultSize={30} minSize={15} collapsible={true} order={1} className="bg-white">
+                <LeftColumn />
+            </Panel>
+            
+            <ResizeHandle />
 
-      {/* Main Layout Grid */}
-      <div className="flex-1 flex w-full h-full relative">
-        
-        {/* Left Column: Read Module */}
-        <motion.div 
-            layout
-            initial={{ width: '33.33%' }}
-            animate={{ width: isZenMode ? '50%' : '33.33%' }}
-            transition={{ type: 'spring', stiffness: 200, damping: 25 }}
-            className="flex-shrink-0 border-r border-gray-200 h-full relative z-10 bg-white"
-        >
-            <LeftColumn />
-        </motion.div>
+            {/* Middle Column: Organize/Chat */}
+            <Panel defaultSize={40} minSize={0} collapsible={true} order={2} className="bg-gray-50/50">
+                <MiddleColumn />
+            </Panel>
+            
+            <ResizeHandle />
 
-        {/* Middle Column: Nexus (Hidden in Zen Mode) */}
-        {!isZenMode && (
-                <motion.div
-                    initial={{ width: '33.33%', opacity: 1, scale: 1 }}
-                    exit={{ width: 0, opacity: 0, scale: 0.95 }}
-                    animate={{ width: '33.33%', opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.4, ease: "easeInOut" }}
-                    className="flex-shrink-0 h-full overflow-hidden border-r border-gray-200 z-0 origin-center bg-gray-50"
-                >
-                    <MiddleColumn />
-                </motion.div>
-        )}
+            {/* Right Column: Write */}
+            <Panel defaultSize={30} minSize={15} collapsible={true} order={3} className="bg-white">
+                <RightColumn />
+            </Panel>
 
-        {/* Right Column: Write Module */}
-        <motion.div 
-            layout
-            initial={{ width: '33.33%' }}
-            animate={{ width: isZenMode ? '50%' : '33.33%' }}
-            transition={{ type: 'spring', stiffness: 200, damping: 25 }}
-            className="flex-shrink-0 h-full z-10 bg-white"
-        >
-            <RightColumn />
-        </motion.div>
-
+        </Group>
       </div>
     </div>
   );
