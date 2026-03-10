@@ -193,10 +193,10 @@ def _search_pipeline(
     max_rounds: int = 2,
 ) -> Dict[str, Any]:
     """
-    多源多轮检索管线：
-    Round 1: 原始查询 → [文档原文向量 + 文档BM25] + [笔记向量 + 笔记BM25] + [截图OCR]
+    多源多轮检索管线（文档原文优先）：
+    Round 1: 原始查询 → [文档原文向量(1.8) + 文档BM25(1.5)] + [笔记向量(0.9) + 笔记BM25(0.7)] + [截图OCR(0.5)]
     Round 2+: 查询变体 → 补充检索，去重合并
-    最终 RRF 加权融合。
+    最终 RRF 加权融合。文档原文块 > 用户卡片 > 截图。
     """
     from service.bm25_engine import get_bm25_engine, tokenize_zh
 
@@ -241,7 +241,7 @@ def _search_pipeline(
             if doc_vector:
                 all_channels.append(doc_vector)
                 # 文档原文权重最高（用户要求先搜原文）
-                channel_weights.append(1.3 if is_first_round else 1.0)
+                channel_weights.append(1.8 if is_first_round else 1.2)
                 channel_stats["doc_vector"] = channel_stats.get("doc_vector", 0) + len(
                     doc_vector
                 )
@@ -254,7 +254,7 @@ def _search_pipeline(
             doc_bm25 = _dedup(doc_bm25)
             if doc_bm25:
                 all_channels.append(doc_bm25)
-                channel_weights.append(1.1 if is_first_round else 0.9)
+                channel_weights.append(1.5 if is_first_round else 1.0)
                 channel_stats["doc_bm25"] = channel_stats.get("doc_bm25", 0) + len(
                     doc_bm25
                 )
@@ -270,7 +270,7 @@ def _search_pipeline(
             note_vector = _dedup(note_vector)
             if note_vector:
                 all_channels.append(note_vector)
-                channel_weights.append(1.0)
+                channel_weights.append(0.9)
                 channel_stats["note_vector"] = channel_stats.get(
                     "note_vector", 0
                 ) + len(note_vector)
@@ -283,7 +283,7 @@ def _search_pipeline(
             note_bm25 = _dedup(note_bm25)
             if note_bm25:
                 all_channels.append(note_bm25)
-                channel_weights.append(0.9)
+                channel_weights.append(0.7)
                 channel_stats["note_bm25"] = channel_stats.get("note_bm25", 0) + len(
                     note_bm25
                 )
@@ -308,7 +308,7 @@ def _search_pipeline(
                     scored_ss = _dedup(scored_ss[:fetch_k])
                     if scored_ss:
                         all_channels.append(scored_ss)
-                        channel_weights.append(0.7)
+                        channel_weights.append(0.5)
                         channel_stats["screenshot_ocr"] = len(scored_ss)
             except Exception as e:
                 logger.warning("截图 OCR 检索失败: %s", e)
@@ -363,35 +363,13 @@ def search_notes(body: SearchRequest):
     if result["results"]:
         return result
 
-    # Mock 数据（RAG 未初始化时的演示）
-    mock_results = [
-        {
-            "note_id": "mock-1",
-            "summary": f"与查询「{body.query}」高度相关的核心概念：自注意力机制允许模型直接对序列中任意两个位置的依赖关系建模。",
-            "concept": "Self-Attention Mechanism",
-            "keywords": ["attention", "transformer", "self-attention"],
-            "doc_title": "Attention Is All You Need",
-            "page_num": 3,
-            "bbox": [100.0, 300.0, 400.0, 150.0],
-            "score": 0.92,
-        },
-        {
-            "note_id": "mock-2",
-            "summary": f"图谱扩展节点：多头注意力通过并行执行多个注意力函数，使模型能够同时关注不同位置的不同子空间信息。",
-            "concept": "Multi-Head Attention",
-            "keywords": ["multi-head", "parallel", "subspace"],
-            "doc_title": "Attention Is All You Need",
-            "page_num": 4,
-            "bbox": [150.0, 400.0, 300.0, 100.0],
-            "score": 0.85,
-        },
-    ]
-    logger.info("返回 %d 条 mock 检索结果", len(mock_results))
+    # 知识库为空时返回空结果
+    logger.info("知识库为空，返回 0 条结果")
     return {
-        "results": mock_results[: body.top_k],
-        "total": len(mock_results),
+        "results": [],
+        "total": 0,
         "query": body.query,
-        "is_mock": True,
+        "is_mock": False,
     }
 
 

@@ -450,32 +450,37 @@ export const LeftColumn = () => {
             }
             
         } else if (action === 'highlight') {
-            const hlBbox = contentMode === 'pdf'
-                ? toNormalizedBbox(selection.bbox)
-                : { ...selection.bbox };
-            addHighlight({
-                page: currentPage,
-                text: selection.text,
-                color: highlightColor,
-                bbox: hlBbox,
-                id: Date.now()
-            });
-            // 同时创建一条高亮笔记
-            const hlNote = {
-                id: `note_${Date.now()}`,
-                type: 'idea',
-                content: selection.text,
-                page: currentPage,
-                bbox: Array.isArray(hlBbox) ? hlBbox : [hlBbox.x, hlBbox.y, hlBbox.width, hlBbox.height],
-                timestamp: new Date().toISOString(),
-            };
-            addNote(hlNote);
-            api.createNote({
-                content: hlNote.content,
-                type: hlNote.type,
-                page: hlNote.page,
-                bbox: hlNote.bbox,
-            }).catch((e) => console.warn('高亮笔记后端同步失败:', e));
+            try {
+                const hlBbox = contentMode === 'pdf'
+                    ? toNormalizedBbox(selection.bbox)
+                    : [selection.bbox.x, selection.bbox.y, selection.bbox.width, selection.bbox.height];
+                const bboxArr = Array.isArray(hlBbox) ? hlBbox : [hlBbox.x, hlBbox.y, hlBbox.width, hlBbox.height];
+                addHighlight({
+                    page: currentPage,
+                    text: selection.text,
+                    color: highlightColor,
+                    bbox: bboxArr,
+                    id: Date.now()
+                });
+                // 同时创建一条高亮笔记
+                const hlNote = {
+                    id: `note_${Date.now()}`,
+                    type: 'idea',
+                    content: selection.text,
+                    page: currentPage,
+                    bbox: bboxArr,
+                    timestamp: new Date().toISOString(),
+                };
+                addNote(hlNote);
+                api.createNote({
+                    content: hlNote.content,
+                    type: hlNote.type,
+                    page: hlNote.page,
+                    bbox: hlNote.bbox,
+                }).catch((e) => console.warn('高亮笔记后端同步失败:', e));
+            } catch (e) {
+                console.error('高亮操作失败:', e);
+            }
             setSelection(null);
         } else if (action === 'translate') {
             setTranslating(true);
@@ -863,15 +868,16 @@ export const LeftColumn = () => {
                                             粉碎
                                     </button>
                                 </div>
-                                {/* 高亮颜色选择 */}
+                                {/* 高亮颜色选择：点击直接高亮 */}
                                 <div className="flex items-center gap-1 border-t border-gray-100 pt-1">
                                     <Palette size={10} className="text-gray-400 mr-1" />
                                     {['yellow', 'green', 'blue', 'pink'].map(c => (
                                         <button
                                             key={c}
-                                            onClick={() => setHighlightColor(c)}
-                                            className={`w-4 h-4 rounded-full border-2 transition-all ${highlightColor === c ? 'border-black scale-125' : 'border-gray-300'}`}
+                                            onClick={() => { setHighlightColor(c); handleAction('highlight'); }}
+                                            className={`w-4 h-4 rounded-full border-2 transition-all hover:scale-125 ${highlightColor === c ? 'border-black scale-125' : 'border-gray-300'}`}
                                             style={{ backgroundColor: { yellow: '#fde047', green: '#86efac', blue: '#93c5fd', pink: '#f9a8d4' }[c] }}
+                                            title={`${c} 高亮`}
                                         />
                                     ))}
                                 </div>

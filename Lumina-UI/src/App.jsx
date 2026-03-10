@@ -4,7 +4,7 @@ import { LeftColumn } from './components/LeftColumn';
 import { MiddleColumn } from './components/MiddleColumn';
 import { RightColumn } from './components/RightColumn';
 import { Panel, Group, Separator } from "react-resizable-panels";
-import { GripVertical, Layers, BookOpen, PenTool, MessageSquare, Telescope } from 'lucide-react';
+import { GripVertical, BookOpen, MessageSquare, Telescope } from 'lucide-react';
 import { healthCheck } from './api/client';
 import clsx from 'clsx';
 
@@ -35,22 +35,24 @@ const Header = ({ viewMode, setViewMode, backendOnline }) => {
   );
 
   return (
-    <div className="h-14 border-b border-gray-200 flex items-center justify-between px-4 bg-white select-none relative z-20">
+    <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-white select-none relative z-20"
+      style={{ borderImage: 'repeating-linear-gradient(90deg, #5b8def 0, #5b8def 4px, transparent 4px, transparent 8px) 1 / 0 0 2px 0' }}>
         {/* Left: Brand */}
         <div className="flex items-center gap-3">
-            <div className="w-8 h-8 border-2 border-black overflow-hidden shadow-[3px_3px_0px_#000000] bg-black flex items-center justify-center">
+            <div className="w-7 h-7 border-2 border-black overflow-hidden shadow-[2px_2px_0px_#000000] bg-black flex items-center justify-center">
                 <img src={ICON_B64} alt="AtomicLab" className="w-full h-full object-contain" style={{ imageRendering: 'pixelated' }} />
             </div>
-            <h1 className="font-pixel text-sm tracking-tighter mt-1">
-                ATOMIC<span className="text-blue-600">LAB</span>
-            </h1>
+            <div>
+              <h1 className="font-pixel text-[11px] tracking-[3px] leading-none">
+                <span className="text-gray-800">ATOMIC</span><span className="text-blue-600">LAB</span>
+              </h1>
+              <p className="font-pixel text-[7px] tracking-[2px] text-gray-400 uppercase leading-none mt-0.5">Read · Organize · Write</p>
+            </div>
         </div>
 
-        {/* Center: Navigation (View Modes) */}
+        {/* Center: Navigation */}
         <div className="flex h-full items-end gap-1 font-pixel">
             <NavButton mode="read" icon={BookOpen} label="READ" />
-            <NavButton mode="organize" icon={Layers} label="ORGANIZE" />
-            <NavButton mode="write" icon={PenTool} label="WRITE" />
             <NavButton mode="chat" icon={MessageSquare} label="CHAT" />
             <NavButton mode="arxiv" icon={Telescope} label="ARXIV" />
         </div>
@@ -61,7 +63,6 @@ const Header = ({ viewMode, setViewMode, backendOnline }) => {
                 <span className={clsx('w-2 h-2 rounded-full', backendOnline ? 'bg-green-500 animate-pulse' : 'bg-red-400')} />
                 <span className={backendOnline ? 'text-green-700' : 'text-gray-400'}>{backendOnline ? 'ENGINE ONLINE' : 'ENGINE OFFLINE'}</span>
             </div>
-            <div className="w-8 h-8 rounded-full bg-gray-200 border-2 border-black"></div>
         </div>
     </div>
   );
@@ -85,10 +86,6 @@ function App() {
     if (layout) {
         if (viewMode === 'read') {
             layout.setLayout([50, 25, 25]);
-        } else if (viewMode === 'organize') {
-            layout.setLayout([20, 60, 20]);
-        } else if (viewMode === 'write') {
-            layout.setLayout([20, 15, 65]); // Keep middle visible for note references
         } else if (viewMode === 'chat') {
             layout.setLayout([25, 50, 25]);
         } else if (viewMode === 'arxiv') {

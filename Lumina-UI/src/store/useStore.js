@@ -40,10 +40,7 @@ export const useStore = create((set, get) => ({
       // ── 编辑器状态（会话态） ────────────────────────────────────────────────
       markdownContent: '# 研究笔记\n\n在此开始写作...\n\n## 研究问题\n\n',
       setMarkdownContent: (content) => set({ markdownContent: content }),
-      citations: [
-        { id: '1', key: 'vaswani2017attention', title: 'Attention Is All You Need', authors: 'Vaswani et al.' },
-        { id: '2', key: 'devlin2018bert', title: 'BERT: Pre-training', authors: 'Devlin et al.' },
-      ],
+      citations: [],
 
       // ── 原子笔记（会话态 + 后端同步） ──────────────────────────────────────
       notes: [],

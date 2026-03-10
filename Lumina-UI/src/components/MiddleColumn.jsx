@@ -61,12 +61,13 @@ const SearchVisualizer = ({ status, query }) => {
 
 // ─── 原子笔记卡片 ──────────────────────────────────────────────────────────────
 const NoteCard = ({ note, onDelete }) => {
-  const { pdfFile, setActiveReference } = useStore();
+  const { pdfFile, setActiveReference, addHighlight } = useStore();
   const { imageSrc: hookSrc, loading: hookLoading } = useScreenshot(
     note.screenshot ? null : pdfFile, note.page, note.bbox
   );
   const imageSrc = note.screenshot || hookSrc;
   const loading = !note.screenshot && hookLoading;
+  const [actionLoading, setActionLoading] = useState(null);
 
   const typeColor = {
     method:     'bg-cyan-100 text-cyan-900 border-cyan-800',
@@ -74,6 +75,69 @@ const NoteCard = ({ note, onDelete }) => {
     idea:       'bg-amber-100 text-amber-900 border-amber-800',
     definition: 'bg-green-100 text-green-900 border-green-800',
     data:       'bg-rose-100 text-rose-900 border-rose-800',
+  };
+
+  const handleTranslate = async () => {
+    if (!note.content || actionLoading) return;
+    setActionLoading('translate');
+    try {
+      const resp = await api.translateText(note.content.substring(0, 2000));
+      const notes = useStore.getState().notes;
+      useStore.getState().setNotes(notes.map(n =>
+        n.id === note.id ? { ...n, translation: resp.translation } : n
+      ));
+    } catch (e) {
+      console.warn('翻译失败:', e);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleHighlight = () => {
+    if (note.page && note.bbox) {
+      addHighlight({
+        page: note.page,
+        text: note.content?.substring(0, 50) || '',
+        color: 'yellow',
+        bbox: note.bbox,
+        id: Date.now(),
+      });
+      setActiveReference({ page: note.page, bbox: note.bbox });
+    }
+  };
+
+  const handleAnnotate = () => {
+    const text = prompt('输入批注内容：');
+    if (text) {
+      const notes = useStore.getState().notes;
+      useStore.getState().setNotes(notes.map(n =>
+        n.id === note.id ? { ...n, content: `${n.content}\n\n[批注] ${text}` } : n
+      ));
+    }
+  };
+
+  const handleCrush = async () => {
+    if (!note.content || actionLoading) return;
+    setActionLoading('crush');
+    try {
+      const resp = await api.translateText(
+        `请对以下学术文本片段进行知识类型分类，只返回一个词：方法/公式/定义/观点/数据/其他\n\n"${note.content.substring(0, 200)}"`,
+        'zh'
+      );
+      const typeMap = { '方法': 'method', '公式': 'formula', '定义': 'definition', '观点': 'idea', '数据': 'data', '其他': 'other' };
+      const raw = resp.translation?.replace(/[\[\]Mock 翻译]/g, '').trim();
+      const detectedType = typeMap[raw] || null;
+      if (detectedType) {
+        const notes = useStore.getState().notes;
+        useStore.getState().setNotes(notes.map(n =>
+          n.id === note.id ? { ...n, type: detectedType } : n
+        ));
+      }
+    } catch (e) {
+      console.warn('分类失败:', e);
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   return (
@@ -142,37 +206,67 @@ const NoteCard = ({ note, onDelete }) => {
       <div className="flex items-center gap-1 pt-2 border-t border-gray-100 justify-between">
         <div className="flex items-center gap-1">
           <button
-            className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
+            onClick={handleTranslate}
+            disabled={actionLoading === 'translate'}
+            className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100 disabled:opacity-50"
             title="翻译"
           >
-            <Languages size={12} /> 译
+            {actionLoading === 'translate' ? <Loader2 size={12} className="animate-spin" /> : <Languages size={12} />} 译
           </button>
           <button
+            onClick={handleHighlight}
             className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-yellow-50 border-yellow-300 text-yellow-700 hover:bg-yellow-100"
-            title="高亮"
+            title="高亮定位"
           >
             <Highlighter size={12} /> 亮
           </button>
           <button
+            onClick={handleAnnotate}
             className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-green-50 border-green-300 text-green-700 hover:bg-green-100"
-            title="批注"
+            title="添加批注"
           >
             <Tag size={12} /> 注
           </button>
         </div>
         <button
-          className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-pink-50 border-pink-300 text-pink-600 font-bold hover:bg-pink-100 animate-pulse"
-          title="粉碎（原子化）"
+          onClick={handleCrush}
+          disabled={actionLoading === 'crush'}
+          className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-pink-50 border-pink-300 text-pink-600 font-bold hover:bg-pink-100 disabled:opacity-50"
+          title="AI 分类"
         >
-          <Sparkles size={12} /> 粉碎
+          {actionLoading === 'crush' ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} 粉碎
         </button>
       </div>
     </motion.div>
   );
 };
 
-// ─── 知识图谱视图 ──────────────────────────────────────────────────────────────
-const GraphView = ({ notes }) => {
+// ─── 辅助：将笔记分配到最匹配的章节 ─────────────────────────────────────────
+const assignNotesToSections = (notes, sections) => {
+  if (!sections?.length) return {};
+  const maxPage = Math.max(...notes.map(n => n.page || 0), 1);
+  const perSection = Math.ceil(maxPage / sections.length) || 1;
+  const map = {}; // sectionIdx -> [note, ...]
+  notes.forEach(n => {
+    const pg = n.page || 1;
+    // try text-match first
+    let bestIdx = -1;
+    for (let i = 0; i < sections.length; i++) {
+      if (sections[i].content && n.content && sections[i].content.includes(n.content.substring(0, 40))) {
+        bestIdx = i; break;
+      }
+    }
+    if (bestIdx < 0) bestIdx = Math.min(Math.floor((pg - 1) / perSection), sections.length - 1);
+    if (!map[bestIdx]) map[bestIdx] = [];
+    map[bestIdx].push(n);
+  });
+  return map;
+};
+
+// ─── 知识图谱视图（domain → document → section → note → tag）─────────────────
+const LEVEL_COLORS = { document: '#3b82f6', section: '#10b981', method: '#06b6d4', formula: '#a855f7', idea: '#f59e0b', definition: '#22c55e', data: '#ef4444', other: '#6b7280', tag: '#c084fc' };
+
+const GraphView = ({ notes, sections = [], docName = '' }) => {
   const { setActiveReference } = useStore();
   const containerRef = useRef(null);
   const [dims, setDims] = useState({ w: 500, h: 400 });
@@ -186,49 +280,65 @@ const GraphView = ({ notes }) => {
     return () => ro.disconnect();
   }, []);
 
-  // 构建图谱数据：以 type 为群组节点，notes 为叶节点
   const graphData = React.useMemo(() => {
-    const typeNodes = [...new Set(notes.map((n) => n.type))].map((t) => ({
-      id: `type_${t}`,
-      label: t,
-      isType: true,
-      color: { method: '#06b6d4', formula: '#a855f7', idea: '#f59e0b', definition: '#10b981', data: '#ef4444' }[t] ?? '#6b7280',
-    }));
-    const noteNodes = notes.map((n) => ({
-      id: n.id,
-      label: n.content?.substring(0, 20) + '…',
-      page: n.page,
-      bbox: n.bbox,
-      isType: false,
-      color: '#fff',
-    }));
-    const links = notes.map((n) => ({
-      source: `type_${n.type}`,
-      target: n.id,
-    }));
-    // 关键词相连
-    const kwMap = {};
-    notes.forEach((n) => {
-      (n.keywords || []).forEach((kw) => {
-        if (!kwMap[kw]) kwMap[kw] = [];
-        kwMap[kw].push(n.id);
+    const nodes = [];
+    const links = [];
+
+    // ── 文档根节点 ────────────────────────────────────────────────────────
+    const docId = 'doc_root';
+    nodes.push({ id: docId, label: docName || '文档', level: 'document', color: LEVEL_COLORS.document, sz: 14 });
+
+    // ── 章节节点 ──────────────────────────────────────────────────────────
+    const secMap = assignNotesToSections(notes, sections);
+    sections.forEach((sec, idx) => {
+      const secId = `sec_${idx}`;
+      nodes.push({ id: secId, label: sec.title?.substring(0, 24), level: 'section', color: LEVEL_COLORS.section, sz: 10 });
+      links.push({ source: docId, target: secId, type: 'contains' });
+
+      // 关联笔记
+      (secMap[idx] || []).forEach(n => {
+        links.push({ source: secId, target: n.id, type: 'contains' });
       });
     });
-    Object.values(kwMap).forEach((ids) => {
-      for (let i = 0; i < ids.length - 1; i++) {
-        links.push({ source: ids[i], target: ids[i + 1], isKw: true });
+
+    // ── 笔记节点 ──────────────────────────────────────────────────────────
+    const tagSet = {}; // kw -> tag node id
+    notes.forEach(n => {
+      nodes.push({ id: n.id, label: n.content?.substring(0, 18) + '…', level: n.type || 'other', page: n.page, bbox: n.bbox, color: LEVEL_COLORS[n.type] || LEVEL_COLORS.other, sz: 6 });
+
+      // 如果没有章节，直接连到文档
+      if (sections.length === 0) {
+        links.push({ source: docId, target: n.id, type: 'contains' });
       }
+
+      // 标签节点
+      (n.keywords || []).forEach(kw => {
+        const tagId = `tag_${kw}`;
+        if (!tagSet[kw]) {
+          tagSet[kw] = true;
+          nodes.push({ id: tagId, label: `#${kw}`, level: 'tag', color: LEVEL_COLORS.tag, sz: 4 });
+        }
+        links.push({ source: n.id, target: tagId, type: 'tagged_with' });
+      });
     });
-    return { nodes: [...typeNodes, ...noteNodes], links };
-  }, [notes]);
+
+    // 共享关键词 → 笔记间引用连线
+    const kwMap = {};
+    notes.forEach(n => { (n.keywords || []).forEach(kw => { (kwMap[kw] ??= []).push(n.id); }); });
+    Object.values(kwMap).forEach(ids => {
+      for (let i = 0; i < ids.length - 1; i++) links.push({ source: ids[i], target: ids[i + 1], type: 'references' });
+    });
+
+    return { nodes, links };
+  }, [notes, sections, docName]);
+
+  const totalNodes = graphData.nodes.length;
 
   const handleNodeClick = useCallback((node) => {
-    if (!node.isType && node.page) {
-      setActiveReference({ page: node.page, bbox: node.bbox ?? [0, 0, 0, 0] });
-    }
+    if (node.page) setActiveReference({ page: node.page, bbox: node.bbox ?? [0, 0, 0, 0] });
   }, [setActiveReference]);
 
-  if (notes.length === 0) {
+  if (notes.length === 0 && sections.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-400 flex-col gap-3">
         <Network size={32} className="opacity-30" />
@@ -238,6 +348,8 @@ const GraphView = ({ notes }) => {
     );
   }
 
+  const linkTypeColor = { contains: 'rgba(99,102,241,0.5)', tagged_with: 'rgba(192,132,252,0.35)', references: 'rgba(251,191,36,0.4)' };
+
   return (
     <div ref={containerRef} className="flex-1 bg-gray-900 relative overflow-hidden">
       <ForceGraph2D
@@ -246,35 +358,44 @@ const GraphView = ({ notes }) => {
         height={dims.h}
         backgroundColor="#111827"
         nodeLabel="label"
-        nodeColor={(n) => n.color}
+        nodeColor={n => n.color}
         nodeRelSize={5}
-        linkColor={(l) => l.isKw ? 'rgba(251,191,36,0.4)' : 'rgba(99,102,241,0.4)'}
-        linkWidth={(l) => l.isKw ? 1 : 1.5}
+        linkColor={l => linkTypeColor[l.type] || 'rgba(99,102,241,0.3)'}
+        linkWidth={l => l.type === 'contains' ? 1.8 : 1}
+        linkLineDash={l => l.type === 'references' ? [4, 2] : null}
         onNodeClick={handleNodeClick}
         nodeCanvasObject={(node, ctx, globalScale) => {
-          const label = node.label;
-          const sz = node.isType ? 10 : 6;
+          const sz = node.sz || 6;
           ctx.beginPath();
-          if (node.isType) {
+          if (node.level === 'document') {
+            // 菱形
+            ctx.moveTo(node.x, node.y - sz); ctx.lineTo(node.x + sz, node.y); ctx.lineTo(node.x, node.y + sz); ctx.lineTo(node.x - sz, node.y); ctx.closePath();
+          } else if (node.level === 'section') {
             ctx.rect(node.x - sz / 2, node.y - sz / 2, sz, sz);
+          } else if (node.level === 'tag') {
+            // 小三角
+            ctx.moveTo(node.x, node.y - sz); ctx.lineTo(node.x + sz * 0.87, node.y + sz / 2); ctx.lineTo(node.x - sz * 0.87, node.y + sz / 2); ctx.closePath();
           } else {
             ctx.arc(node.x, node.y, sz / 2, 0, 2 * Math.PI);
           }
           ctx.fillStyle = node.color;
           ctx.fill();
-          ctx.strokeStyle = node.isType ? '#fff' : '#6366f1';
-          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = node.level === 'document' ? '#fff' : node.level === 'section' ? '#6ee7b7' : node.level === 'tag' ? '#c4b5fd' : '#6366f1';
+          ctx.lineWidth = node.level === 'document' ? 2 : 1.2;
           ctx.stroke();
-          if (globalScale > 1.5 || node.isType) {
-            ctx.font = `${node.isType ? 10 : 8}px sans-serif`;
+          if (globalScale > 1.2 || node.level === 'document' || node.level === 'section') {
+            const fontSize = node.level === 'document' ? 11 : node.level === 'section' ? 9 : 7;
+            ctx.font = `${fontSize}px sans-serif`;
             ctx.textAlign = 'center';
             ctx.fillStyle = '#d1d5db';
-            ctx.fillText(label?.substring(0, 20), node.x, node.y + sz + 4);
+            ctx.fillText(node.label?.substring(0, 22) || '', node.x, node.y + sz + 5);
           }
         }}
       />
-      <div className="absolute top-2 left-2 font-pixel text-[9px] text-white/40 pointer-events-none">
-        KNOWLEDGE GRAPH · {notes.length} NODES
+      {/* 图例 */}
+      <div className="absolute top-2 left-2 font-pixel text-[8px] text-white/50 pointer-events-none space-y-0.5">
+        <p>KNOWLEDGE GRAPH · {totalNodes} NODES</p>
+        <p><span className="inline-block w-2 h-2 bg-blue-500 mr-1" />DOC <span className="inline-block w-2 h-2 bg-emerald-500 mx-1" />SEC <span className="inline-block w-2 h-2 rounded-full bg-cyan-500 mx-1" />NOTE <span className="inline-block w-0 h-0 border-l-[3px] border-r-[3px] border-b-[5px] border-transparent border-b-purple-400 mx-1" />TAG</p>
       </div>
     </div>
   );
@@ -379,6 +500,39 @@ const ArxivPanel = () => {
 };
 
 // ─── 聊天消息 ──────────────────────────────────────────────────────────────────
+
+// 将内容中的 [1] [2] 等引用标记替换为可点击按钮
+const renderCitedContent = (content, sources, setActiveReference) => {
+  if (!content || !sources?.length) return <span>{content}</span>;
+  const parts = content.split(/(\[\d+\])/g);
+  return parts.map((part, i) => {
+    const m = part.match(/^\[(\d+)\]$/);
+    if (m) {
+      const idx = parseInt(m[1], 10) - 1;
+      const src = sources[idx];
+      if (!src) return <sup key={i} className="text-blue-500">{part}</sup>;
+      const isExternal = src.source === 'arxiv' || src.source === 'semantic_scholar';
+      return (
+        <sup
+          key={i}
+          onClick={() => {
+            if (isExternal && src.url) {
+              window.open(src.url, '_blank', 'noopener');
+            } else if (src.page_num > 0) {
+              setActiveReference({ page: src.page_num, bbox: src.bbox?.length === 4 ? src.bbox : [0,0,0,0] });
+            }
+          }}
+          className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 mx-0.5 text-[9px] font-bold bg-blue-100 text-blue-700 rounded cursor-pointer hover:bg-blue-200 transition-colors"
+          title={src.concept || src.summary?.substring(0, 60)}
+        >
+          {part}
+        </sup>
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
+};
+
 const ChatMessage = ({ msg }) => {
   const isUser = msg.role === 'user';
   const { setActiveReference } = useStore();
@@ -405,8 +559,47 @@ const ChatMessage = ({ msg }) => {
             {meta.label}_BOT
           </div>
         )}
-        <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-        {msg.relatedNotes?.length > 0 && (
+        <p className="leading-relaxed whitespace-pre-wrap">
+          {msg.agentType === 'synthesizer'
+            ? renderCitedContent(msg.content, msg.relatedNotes, setActiveReference)
+            : msg.content}
+        </p>
+        {/* 参考文献卡片（synthesizer 消息末尾） */}
+        {msg.agentType === 'synthesizer' && msg.relatedNotes?.length > 0 && (
+          <div className="mt-3 pt-2 border-t border-gray-200">
+            <p className="text-[9px] font-pixel text-gray-500 mb-1.5 uppercase">参考来源</p>
+            <div className="space-y-1.5">
+              {msg.relatedNotes.map((n, idx) => {
+                const isExternal = n.source === 'arxiv' || n.source === 'semantic_scholar';
+                const hasPage = n.page_num && n.page_num > 0;
+                return (
+                  <div
+                    key={n.note_id ?? idx}
+                    onClick={() => {
+                      if (isExternal && n.url) window.open(n.url, '_blank', 'noopener');
+                      else if (hasPage) setActiveReference({ page: n.page_num, bbox: n.bbox?.length === 4 ? n.bbox : [0,0,0,0] });
+                    }}
+                    className={clsx(
+                      'flex items-start gap-2 p-2 rounded border cursor-pointer transition-colors',
+                      isExternal ? 'bg-blue-50/50 border-blue-200 hover:bg-blue-100' : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                    )}
+                  >
+                    <span className="text-[9px] font-bold text-blue-600 shrink-0 mt-0.5">[{idx + 1}]</span>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-semibold text-gray-800 line-clamp-1">{n.concept || n.doc_title || '未知来源'}</p>
+                      <p className="text-[9px] text-gray-500 line-clamp-1 mt-0.5">{n.summary?.substring(0, 80)}</p>
+                      <span className="text-[8px] text-gray-400">
+                        {isExternal ? `${n.source} ↗` : (hasPage ? `p.${n.page_num}` : '')}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {/* 非 synthesizer 的简单引用按钮 */}
+        {msg.agentType !== 'synthesizer' && msg.relatedNotes?.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5 pt-1.5 border-t border-dashed border-gray-300">
             {msg.relatedNotes.map((n) => {
               const isExternal = n.source === 'arxiv' || n.source === 'semantic_scholar';
@@ -591,66 +784,102 @@ const ChatPanel = () => {
   );
 };
 
-// ─── 知识树组件 ──────────────────────────────────────────────────────────────
-const KnowledgeTree = ({ notes }) => {
-  const { setActiveReference, pdfFileName } = useStore();
-
-  // 构建树：文档 → 类型 → 笔记
-  const typeGroups = {};
-  notes.forEach((n) => {
-    const t = n.type || 'other';
-    if (!typeGroups[t]) typeGroups[t] = [];
-    typeGroups[t].push(n);
-  });
+// ─── 知识树组件（文档 → 章节 → 笔记 + 类型分组）──────────────────────────────
+const KnowledgeTree = ({ notes, sections = [], docName = '' }) => {
+  const { setActiveReference } = useStore();
+  const [collapsed, setCollapsed] = useState({});
+  const toggle = (key) => setCollapsed(p => ({ ...p, [key]: !p[key] }));
 
   const typeLabels = { method: '方法', formula: '公式', idea: '观点', definition: '定义', data: '数据', other: '其他' };
   const typeColors = { method: 'text-cyan-600', formula: 'text-purple-600', idea: 'text-amber-600', definition: 'text-green-600', data: 'text-rose-600', other: 'text-gray-500' };
 
-  if (notes.length === 0) {
+  const secMap = React.useMemo(() => assignNotesToSections(notes, sections), [notes, sections]);
+
+  if (notes.length === 0 && sections.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-400 flex-col gap-2 p-4">
         <Layers size={24} className="opacity-30" />
         <p className="text-[10px] font-pixel">知识树为空</p>
-        <p className="text-[10px] text-gray-400">CRUSH IT 生成原子卡片后自动构建</p>
+        <p className="text-[10px] text-gray-400">上传 PDF 解析后自动构建章节树</p>
       </div>
     );
   }
+
+  const renderNote = (note) => (
+    <div
+      key={note.id}
+      onClick={() => note.page && setActiveReference({ page: note.page, bbox: note.bbox || [0,0,0,0] })}
+      className="flex items-start gap-2 py-1 px-2 rounded hover:bg-blue-50 cursor-pointer group transition-colors"
+    >
+      <span className={`text-[9px] font-bold shrink-0 mt-0.5 ${typeColors[note.type] || 'text-gray-500'}`}>
+        [{typeLabels[note.type] || note.type || '?'}]
+      </span>
+      <div className="min-w-0">
+        <p className="text-gray-700 line-clamp-2 group-hover:text-blue-700 transition-colors text-[11px]">{note.content?.substring(0, 60)}{note.content?.length > 60 ? '…' : ''}</p>
+        {note.page && <span className="text-[9px] text-gray-400">p.{note.page}</span>}
+      </div>
+    </div>
+  );
 
   return (
     <div className="flex-1 overflow-y-auto p-3 text-xs custom-scrollbar">
       {/* 文档根节点 */}
       <div className="flex items-center gap-2 mb-3 pb-2 border-b border-gray-200">
         <BookOpen size={14} className="text-blue-600" />
-        <span className="font-bold text-gray-800 truncate">{pdfFileName || '未命名文档'}</span>
-        <span className="text-gray-400 ml-auto">{notes.length} 卡片</span>
+        <span className="font-bold text-gray-800 truncate">{docName || '未命名文档'}</span>
+        <span className="text-gray-400 ml-auto">{notes.length} 卡片 · {sections.length} 章节</span>
       </div>
 
-      {/* 类型分组 */}
-      {Object.entries(typeGroups).map(([type, groupNotes]) => (
-        <div key={type} className="mb-3">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <div className={`w-2 h-2 rounded-full ${typeColors[type]?.replace('text-', 'bg-') || 'bg-gray-400'}`} />
-            <span className={`font-bold uppercase text-[10px] ${typeColors[type] || 'text-gray-500'}`}>
-              {typeLabels[type] || type} ({groupNotes.length})
-            </span>
-          </div>
-          <div className="ml-4 border-l border-gray-200 pl-3 space-y-1.5">
-            {groupNotes.map((note) => (
+      {sections.length > 0 ? (
+        /* ── 章节层级 ─────────────────────────────────────────── */
+        sections.map((sec, idx) => {
+          const key = `sec_${idx}`;
+          const secNotes = secMap[idx] || [];
+          const isOpen = !collapsed[key];
+          return (
+            <div key={key} className="mb-2">
               <div
-                key={note.id}
-                onClick={() => note.page && setActiveReference({ page: note.page, bbox: note.bbox || [0,0,0,0] })}
-                className="flex items-start gap-2 py-1 px-2 rounded hover:bg-blue-50 cursor-pointer group transition-colors"
+                onClick={() => toggle(key)}
+                className="flex items-center gap-1.5 cursor-pointer hover:bg-green-50 rounded px-1 py-1 transition-colors"
               >
-                <span className="text-gray-400 shrink-0 mt-0.5">•</span>
-                <div className="min-w-0">
-                  <p className="text-gray-700 line-clamp-2 group-hover:text-blue-700 transition-colors">{note.content?.substring(0, 60)}{note.content?.length > 60 ? '…' : ''}</p>
-                  {note.page && <span className="text-[9px] text-gray-400">p.{note.page}</span>}
-                </div>
+                <span className={`text-[10px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+                <div className="w-2 h-2 bg-emerald-500 rounded-sm shrink-0" />
+                <span className="font-bold text-[10px] text-emerald-700 truncate">{sec.title}</span>
+                <span className="text-[9px] text-gray-400 ml-auto shrink-0">{secNotes.length}</span>
               </div>
-            ))}
-          </div>
-        </div>
-      ))}
+              {isOpen && (
+                <div className="ml-5 border-l border-emerald-200 pl-3 mt-1 space-y-1">
+                  {sec.summary && (
+                    <p className="text-[9px] text-gray-400 italic line-clamp-2 mb-1">{sec.summary}</p>
+                  )}
+                  {secNotes.length > 0 ? secNotes.map(renderNote) : (
+                    <p className="text-[9px] text-gray-300 py-1">暂无笔记</p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })
+      ) : (
+        /* ── 无章节：按类型分组（回退） ───────────────────────── */
+        (() => {
+          const typeGroups = {};
+          notes.forEach(n => { const t = n.type || 'other'; (typeGroups[t] ??= []).push(n); });
+          return Object.entries(typeGroups).map(([type, groupNotes]) => (
+            <div key={type} className="mb-3">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <div className={`w-2 h-2 rounded-full ${typeColors[type]?.replace('text-', 'bg-') || 'bg-gray-400'}`} />
+                <span className={`font-bold uppercase text-[10px] ${typeColors[type] || 'text-gray-500'}`}>
+                  {typeLabels[type] || type} ({groupNotes.length})
+                </span>
+              </div>
+              <div className="ml-4 border-l border-gray-200 pl-3 space-y-1.5">
+                {groupNotes.map(renderNote)}
+              </div>
+            </div>
+          ));
+        })()
+      )}
     </div>
   );
 };
@@ -699,6 +928,7 @@ const NexusPanel = () => {
     searchQuery, setSearchQuery,
     searchStatus, setSearchStatus,
     searchResults, setSearchResults,
+    parsedSections, pdfFileName,
   } = useStore();
 
   const [activeTab, setActiveTab] = useState('deck'); // 'deck' | 'tree' | 'graph'
@@ -817,8 +1047,8 @@ const NexusPanel = () => {
             </AnimatePresence>
           </div>
         )}
-        {activeTab === 'tree' && <KnowledgeTree notes={notes} />}
-        {activeTab === 'graph' && <GraphView notes={notes} />}
+        {activeTab === 'tree' && <KnowledgeTree notes={notes} sections={parsedSections} docName={pdfFileName} />}
+        {activeTab === 'graph' && <GraphView notes={notes} sections={parsedSections} docName={pdfFileName} />}
         {/* 推荐卡片（仅卡片视图下） */}
         {activeTab === 'deck' && notes.length > 0 && <RecommendedCards notes={notes} />}
       </div>
