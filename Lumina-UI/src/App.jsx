@@ -4,8 +4,11 @@ import { LeftColumn } from './components/LeftColumn';
 import { MiddleColumn } from './components/MiddleColumn';
 import { RightColumn } from './components/RightColumn';
 import { Panel, Group, Separator } from "react-resizable-panels";
-import { GripVertical, Layers, BookOpen, PenTool, MessageSquare, Terminal } from 'lucide-react';
+import { GripVertical, Layers, BookOpen, PenTool, MessageSquare, Telescope } from 'lucide-react';
+import { healthCheck } from './api/client';
 import clsx from 'clsx';
+
+const ICON_B64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAAAXNSR0IArs4c6QAAAT5JREFUeJzt2sFNw0AQQFGDKIADJaQwDi6DI2XkQCkUkhLSA9wRlrIk1rfJe2cLLfpaaTSbaQIAAADgXjzUB7jU28fpa+T799fDLv63x/oA906AmAAxAWICxASICRATICZATICYALHN7UuOp993PvNhbLdzq7+zNjcgJkBMgJgAMQFiq08Ea7xkXTPhbO1lzQ2ICRATICZATIDYU32Av9jaPucabkBMgJgAMQFiAsT+zTTxkxcxLiJATICYADEBYrvZBR2P56GXrPnwsqlpZ4kbEBMgJkBMgJgAMQFiAsQEiAkQEyAmQGxzu6Dll6x97HZGuQExAWICxASICRBbfQq61UvW6O98lr6fPp9HjjPN87rTlxsQEyAmQEyAmACxHe2Cxqadxe8Hp7K1uQExAWICxASICQAAAAAAAACs6BtI9jzLTzjdsgAAAABJRU5ErkJggg==';
 
 const ResizeHandle = ({ id }) => (
   <Separator className="w-1.5 bg-gray-100 hover:bg-blue-100 transition-colors flex flex-col justify-center items-center group relative z-50">
@@ -15,7 +18,7 @@ const ResizeHandle = ({ id }) => (
   </Separator>
 );
 
-const Header = ({ viewMode, setViewMode }) => {
+const Header = ({ viewMode, setViewMode, backendOnline }) => {
   const NavButton = ({ mode, icon: Icon, label }) => (
     <button 
       onClick={() => setViewMode(mode)}
@@ -35,10 +38,10 @@ const Header = ({ viewMode, setViewMode }) => {
     <div className="h-14 border-b border-gray-200 flex items-center justify-between px-4 bg-white select-none">
         {/* Left: Brand */}
         <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-600 flex items-center justify-center shadow-[3px_3px_0px_#000000]">
-                <Terminal className="text-white" size={18} />
+            <div className="w-8 h-8 border-2 border-black overflow-hidden shadow-[3px_3px_0px_#000000] bg-black flex items-center justify-center">
+                <img src={ICON_B64} alt="AtomicLab" className="w-full h-full object-contain" style={{ imageRendering: 'pixelated' }} />
             </div>
-            <h1 className="font-pixel text-sm tracking-tighter loading-none mt-1">
+            <h1 className="font-pixel text-sm tracking-tighter mt-1">
                 ATOMIC<span className="text-blue-600">LAB</span>
             </h1>
         </div>
@@ -49,19 +52,32 @@ const Header = ({ viewMode, setViewMode }) => {
             <NavButton mode="organize" icon={Layers} label="ORGANIZE" />
             <NavButton mode="write" icon={PenTool} label="WRITE" />
             <NavButton mode="chat" icon={MessageSquare} label="CHAT" />
+            <NavButton mode="arxiv" icon={Telescope} label="ARXIV" />
         </div>
 
-        {/* Right: User / Settings */}
+        {/* Right: Backend Status */}
         <div className="flex items-center gap-3">
-             <div className="w-8 h-8 rounded-full bg-gray-200 border-2 border-black"></div>
+            <div className="flex items-center gap-1.5 text-[10px] font-mono">
+                <span className={clsx('w-2 h-2 rounded-full', backendOnline ? 'bg-green-500 animate-pulse' : 'bg-red-400')} />
+                <span className={backendOnline ? 'text-green-700' : 'text-gray-400'}>{backendOnline ? 'ENGINE ONLINE' : 'ENGINE OFFLINE'}</span>
+            </div>
+            <div className="w-8 h-8 rounded-full bg-gray-200 border-2 border-black"></div>
         </div>
     </div>
   );
 };
 
 function App() {
-  const { isZenMode, toggleZenMode, viewMode, setViewMode } = useStore();
+  const { isZenMode, viewMode, setViewMode, backendOnline, setBackendOnline } = useStore();
   const panelGroupRef = useRef(null);
+
+  // 后端健康检查（每 15 秒轮询）
+  useEffect(() => {
+    const check = () => healthCheck().then(() => setBackendOnline(true)).catch(() => setBackendOnline(false));
+    check();
+    const t = setInterval(check, 15000);
+    return () => clearInterval(t);
+  }, []);
 
   // View Mode Logic -> Panel Layout
   useEffect(() => {
@@ -75,6 +91,8 @@ function App() {
             layout.setLayout([25, 0, 75]); // Hide middle by shrinking to 0
         } else if (viewMode === 'chat') {
             layout.setLayout([25, 50, 25]);
+        } else if (viewMode === 'arxiv') {
+            layout.setLayout([0, 60, 40]);
         }
     }
   }, [viewMode]);
@@ -83,7 +101,7 @@ function App() {
     <div className="h-screen w-full flex flex-col font-sans antialiased overflow-hidden bg-white text-gray-900">
       
       {/* Global Header */}
-      {!isZenMode && <Header viewMode={viewMode} setViewMode={setViewMode} />}
+      {!isZenMode && <Header viewMode={viewMode} setViewMode={setViewMode} backendOnline={backendOnline} />}
       
       {/* Resizable Layout */}
       <div className="flex-1 w-full relative">
