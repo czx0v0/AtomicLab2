@@ -11,7 +11,7 @@ import clsx from 'clsx';
 const ICON_B64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAAAXNSR0IArs4c6QAAAT5JREFUeJzt2sFNw0AQQFGDKIADJaQwDi6DI2XkQCkUkhLSA9wRlrIk1rfJe2cLLfpaaTSbaQIAAADgXjzUB7jU28fpa+T799fDLv63x/oA906AmAAxAWICxASICRATICZATICYALHN7UuOp993PvNhbLdzq7+zNjcgJkBMgJgAMQFiq08Ea7xkXTPhbO1lzQ2ICRATICZATIDYU32Av9jaPucabkBMgJgAMQFiAsT+zTTxkxcxLiJATICYADEBYrvZBR2P56GXrPnwsqlpZ4kbEBMgJkBMgJgAMQFiAsQEiAkQEyAmQGxzu6Dll6x97HZGuQExAWICxASICRBbfQq61UvW6O98lr6fPp9HjjPN87rTlxsQEyAmQEyAmACxHe2Cxqadxe8Hp7K1uQExAWICxASICQAAAAAAAACs6BtI9jzLTzjdsgAAAABJRU5ErkJggg==';
 
 const ResizeHandle = ({ id }) => (
-  <Separator className="w-1.5 bg-gray-100 hover:bg-blue-100 transition-colors flex flex-col justify-center items-center group relative z-50">
+  <Separator className="w-1.5 bg-gray-100 hover:bg-blue-100 transition-colors flex flex-col justify-center items-center group relative">
     <div className="h-8 w-1 rounded-full bg-gray-300 group-hover:bg-blue-400 transition-colors flex items-center justify-center">
        <GripVertical size={12} className="text-gray-400 group-hover:text-blue-600" />
     </div>
@@ -35,7 +35,7 @@ const Header = ({ viewMode, setViewMode, backendOnline }) => {
   );
 
   return (
-    <div className="h-14 border-b border-gray-200 flex items-center justify-between px-4 bg-white select-none">
+    <div className="h-14 border-b border-gray-200 flex items-center justify-between px-4 bg-white select-none relative z-20">
         {/* Left: Brand */}
         <div className="flex items-center gap-3">
             <div className="w-8 h-8 border-2 border-black overflow-hidden shadow-[3px_3px_0px_#000000] bg-black flex items-center justify-center">
@@ -88,7 +88,7 @@ function App() {
         } else if (viewMode === 'organize') {
             layout.setLayout([20, 60, 20]);
         } else if (viewMode === 'write') {
-            layout.setLayout([25, 0, 75]); // Hide middle by shrinking to 0
+            layout.setLayout([20, 15, 65]); // Keep middle visible for note references
         } else if (viewMode === 'chat') {
             layout.setLayout([25, 50, 25]);
         } else if (viewMode === 'arxiv') {
@@ -104,25 +104,25 @@ function App() {
       {!isZenMode && <Header viewMode={viewMode} setViewMode={setViewMode} backendOnline={backendOnline} />}
       
       {/* Resizable Layout */}
-      <div className="flex-1 w-full relative">
-        <Group ref={panelGroupRef} direction="horizontal" className="h-full w-full">
+      <div className="flex-1 w-full relative min-h-0">
+        <Group ref={panelGroupRef} direction="horizontal" className="h-full w-full min-h-0">
             
             {/* Left Column: Read */}
-            <Panel defaultSize={30} minSize={15} collapsible={true} order={1} className="bg-white">
+            <Panel defaultSize={30} minSize={15} collapsible={true} order={1} className="bg-white min-h-0">
                 <LeftColumn />
             </Panel>
             
             <ResizeHandle />
 
             {/* Middle Column: Organize/Chat */}
-            <Panel defaultSize={40} minSize={0} collapsible={true} order={2} className="bg-gray-50/50">
+            <Panel defaultSize={40} minSize={0} collapsible={true} order={2} className="bg-gray-50/50 min-h-0">
                 <MiddleColumn />
             </Panel>
             
             <ResizeHandle />
 
             {/* Right Column: Write */}
-            <Panel defaultSize={30} minSize={15} collapsible={true} order={3} className="bg-white">
+            <Panel defaultSize={30} minSize={15} collapsible={true} order={3} className="bg-white min-h-0">
                 <RightColumn />
             </Panel>
 

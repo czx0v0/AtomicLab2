@@ -2,8 +2,10 @@
 笔记 CRUD API
 支持原子笔记的增删改查，数据持久化到本地 JSON 文件（开发模式）。
 """
+
 import json
 import logging
+import threading
 import uuid
 from pathlib import Path
 from typing import List, Optional
@@ -71,6 +73,24 @@ def create_note(body: NoteCreate):
     notes.append(new_note)
     _save_notes(notes)
     logger.info("创建笔记 id=%s  page=%s", new_note["id"], new_note.get("page"))
+
+    # 异步同步到向量库（不阻塞 HTTP 响应）
+    def _sync():
+        try:
+            from service.note_rag import get_note_rag
+
+            get_note_rag().sync_notes()
+        except Exception as e:
+            logger.warning("向量库同步失败: %s", e)
+        try:
+            from service.bm25_engine import get_bm25_engine
+
+            get_bm25_engine().invalidate()
+        except Exception:
+            pass
+
+    threading.Thread(target=_sync, daemon=True).start()
+
     return new_note
 
 
@@ -84,3 +104,20 @@ def delete_note(note_id: str):
         raise HTTPException(status_code=404, detail=f"笔记 {note_id} 不存在")
     _save_notes(notes)
     logger.info("删除笔记 id=%s", note_id)
+
+    # 异步从向量库删除（不阻塞 HTTP 响应）
+    def _del():
+        try:
+            from service.note_rag import get_note_rag
+
+            get_note_rag().delete_note(note_id)
+        except Exception:
+            pass
+        try:
+            from service.bm25_engine import get_bm25_engine
+
+            get_bm25_engine().invalidate()
+        except Exception:
+            pass
+
+    threading.Thread(target=_del, daemon=True).start()

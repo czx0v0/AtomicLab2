@@ -1,21 +1,37 @@
 """
-RAG 混合检索 API
-BM25 + 向量语义 + 1-hop GraphRAG 扩展。
+RAG 多源多轮混合检索 API
+通道：BM25 关键词 + ChromaDB 向量语义 + 截图 OCR + 1-hop GraphRAG 扩展。
+策略：先搜原文 → 再搜笔记卡片 → 多轮查询扩展 → RRF 融合。
 """
+
+import json
 import logging
-from typing import List, Optional
+import re
+from pathlib import Path
+from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger("aether")
+NOTES_FILE = Path("data/notes.json")
+
+
+# ── 请求 / 响应模型 ─────────────────────────────────────────────────────────
 
 
 class SearchRequest(BaseModel):
     query: str
-    top_k: int = 5
+    top_k: int = 8
     doc_id: Optional[str] = None
+    max_rounds: int = 2  # 最多几轮查询扩展
+
+
+class IndexDocumentRequest(BaseModel):
+    doc_id: str
+    doc_title: str = ""
+    markdown: str
 
 
 class SearchResult(BaseModel):
@@ -29,27 +45,323 @@ class SearchResult(BaseModel):
     score: float = 1.0
 
 
+# ── RRF 融合 ────────────────────────────────────────────────────────────────
+
+
+def _rrf_fuse(
+    result_groups: List[List[dict]],
+    weights: Optional[List[float]] = None,
+    top_k: int = 10,
+    rrf_k: int = 60,
+) -> List[dict]:
+    """
+    加权 RRF 融合：每个通道可以有不同权重。
+    weights[i] 对应 result_groups[i] 的权重（默认全为 1.0）。
+    """
+    if weights is None:
+        weights = [1.0] * len(result_groups)
+
+    score_map: Dict[str, float] = {}
+    item_map: Dict[str, dict] = {}
+    source_map: Dict[str, List[str]] = {}  # 记录每个结果来自哪些通道
+
+    for group_idx, group in enumerate(result_groups):
+        w = weights[group_idx] if group_idx < len(weights) else 1.0
+        for rank, item in enumerate(group):
+            nid = item.get("note_id")
+            if not nid:
+                continue
+            rrf_score = w / (rrf_k + rank + 1)
+            score_map[nid] = score_map.get(nid, 0.0) + rrf_score
+            # 保留原始分最高的项
+            if nid not in item_map or item.get("score", 0) > item_map[nid].get(
+                "score", 0
+            ):
+                item_map[nid] = item
+            # 记录来源
+            src = item.get("source", "unknown")
+            source_map.setdefault(nid, [])
+            if src not in source_map[nid]:
+                source_map[nid].append(src)
+
+    fused = []
+    for nid, rrf_score in score_map.items():
+        base = item_map[nid]
+        original_score = float(base.get("score", 0))
+        merged_score = round(0.65 * rrf_score + 0.35 * original_score, 6)
+        fused.append(
+            {
+                **base,
+                "score": merged_score,
+                "sources": source_map.get(nid, []),
+            }
+        )
+
+    fused.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return fused[:top_k]
+
+
+# ── 查询扩展 ────────────────────────────────────────────────────────────────
+
+
+def _expand_query(query: str) -> List[str]:
+    """
+    生成查询变体，用于多轮/多角度检索。
+    策略：原始查询 + 提取关键短语 + 中英文交叉。
+    """
+    from service.bm25_engine import tokenize_zh
+
+    variants = [query]  # 第一轮始终用原始查询
+    seen = {query.lower().strip()}
+
+    def _add(v):
+        v = v.strip()
+        if v and v.lower() not in seen:
+            seen.add(v.lower())
+            variants.append(v)
+
+    tokens = list(dict.fromkeys(tokenize_zh(query)))  # 去重保序
+
+    # 变体：只保留核心关键词
+    if len(tokens) > 3:
+        core = tokens[:6]
+        _add(" ".join(core))
+
+    # 变体：中英文交叉
+    cn_chars = re.findall(r"[\u4e00-\u9fff]+", query)
+    en_words = re.findall(r"[a-zA-Z]{3,}", query)
+    if cn_chars and en_words:
+        _add(" ".join(cn_chars))
+        _add(" ".join(en_words))
+    elif len(tokens) > 5:
+        mid = len(tokens) // 2
+        _add(" ".join(tokens[:mid]))
+        _add(" ".join(tokens[mid:]))
+
+    return variants[:4]  # 最多 4 个变体
+
+
+# ── OCR 文本提取（轻量版）──────────────────────────────────────────────────
+
+
+def _extract_screenshot_texts() -> List[Dict[str, Any]]:
+    """
+    从 notes.json 中提取有截图的笔记，将 base64 图片的关联文本
+    （content + translation）作为可检索内容。
+    如果笔记 type=screenshot 且 content 为空，标记为 OCR 候选。
+    """
+    if not NOTES_FILE.exists():
+        return []
+    try:
+        notes = json.loads(NOTES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    screenshots = []
+    for n in notes:
+        if not n.get("screenshot"):
+            continue
+        content = n.get("content", "").strip()
+        translation = n.get("translation", "") or ""
+        # 截图卡片：即使 content 为空也收录（未来可接真 OCR）
+        text = f"{content} {translation}".strip()
+        if not text:
+            text = f"[截图卡片] page={n.get('page', 0)}"
+        screenshots.append(
+            {
+                "note_id": n.get("id", ""),
+                "summary": text,
+                "concept": "screenshot",
+                "keywords": [],
+                "doc_title": n.get("source_name", ""),
+                "page_num": int(n.get("page", 0) or 0),
+                "bbox": n.get("bbox", []),
+                "score": 0.5,
+                "source": "screenshot_ocr",
+            }
+        )
+    return screenshots
+
+
+# ── 多源检索管线 ─────────────────────────────────────────────────────────────
+
+
+def _search_pipeline(
+    query: str,
+    top_k: int = 8,
+    doc_id: Optional[str] = None,
+    max_rounds: int = 2,
+) -> Dict[str, Any]:
+    """
+    多源多轮检索管线：
+    Round 1: 原始查询 → [文档原文向量 + 文档BM25] + [笔记向量 + 笔记BM25] + [截图OCR]
+    Round 2+: 查询变体 → 补充检索，去重合并
+    最终 RRF 加权融合。
+    """
+    from service.bm25_engine import get_bm25_engine, tokenize_zh
+
+    bm25 = get_bm25_engine()
+
+    all_channels: List[List[dict]] = []
+    channel_weights: List[float] = []
+    channel_stats: Dict[str, int] = {}
+
+    query_variants = _expand_query(query)
+    # 限制轮数
+    rounds = min(max_rounds, len(query_variants))
+
+    seen_ids: set = set()
+
+    def _dedup(results: List[dict]) -> List[dict]:
+        """追加去重：只保留尚未出现的结果。"""
+        out = []
+        for r in results:
+            nid = r.get("note_id")
+            if nid and nid not in seen_ids:
+                seen_ids.add(nid)
+                out.append(r)
+        return out
+
+    for round_idx in range(rounds):
+        q = query_variants[round_idx] if round_idx < len(query_variants) else query
+        is_first_round = round_idx == 0
+        fetch_k = max(top_k * 2, 12) if is_first_round else max(top_k, 8)
+
+        logger.info(
+            "检索 Round %d: query='%s' fetch_k=%d", round_idx + 1, q[:60], fetch_k
+        )
+
+        # ── 通道 1: 文档原文向量检索（PRIMARY - 权重最高）──────────────────
+        try:
+            from service.doc_rag import get_document_rag
+
+            doc_rag = get_document_rag()
+            doc_vector = doc_rag.search(q, top_k=fetch_k)
+            doc_vector = _dedup(doc_vector)
+            if doc_vector:
+                all_channels.append(doc_vector)
+                # 文档原文权重最高（用户要求先搜原文）
+                channel_weights.append(1.3 if is_first_round else 1.0)
+                channel_stats["doc_vector"] = channel_stats.get("doc_vector", 0) + len(
+                    doc_vector
+                )
+        except Exception as e:
+            logger.warning("DocumentRAG 检索失败 (round %d): %s", round_idx + 1, e)
+
+        # ── 通道 2: 文档原文 BM25 关键词检索 ─────────────────────────────────
+        try:
+            doc_bm25 = bm25.search_docs(q, top_k=fetch_k)
+            doc_bm25 = _dedup(doc_bm25)
+            if doc_bm25:
+                all_channels.append(doc_bm25)
+                channel_weights.append(1.1 if is_first_round else 0.9)
+                channel_stats["doc_bm25"] = channel_stats.get("doc_bm25", 0) + len(
+                    doc_bm25
+                )
+        except Exception as e:
+            logger.warning("BM25 文档检索失败 (round %d): %s", round_idx + 1, e)
+
+        # ── 通道 3: 笔记卡片向量检索 ────────────────────────────────────────
+        try:
+            from service.note_rag import get_note_rag
+
+            note_rag = get_note_rag()
+            note_vector = note_rag.search(q, top_k=fetch_k)
+            note_vector = _dedup(note_vector)
+            if note_vector:
+                all_channels.append(note_vector)
+                channel_weights.append(1.0)
+                channel_stats["note_vector"] = channel_stats.get(
+                    "note_vector", 0
+                ) + len(note_vector)
+        except Exception as e:
+            logger.warning("NoteRAG 检索失败 (round %d): %s", round_idx + 1, e)
+
+        # ── 通道 4: 笔记卡片 BM25 关键词检索 ────────────────────────────────
+        try:
+            note_bm25 = bm25.search_notes(q, top_k=fetch_k)
+            note_bm25 = _dedup(note_bm25)
+            if note_bm25:
+                all_channels.append(note_bm25)
+                channel_weights.append(0.9)
+                channel_stats["note_bm25"] = channel_stats.get("note_bm25", 0) + len(
+                    note_bm25
+                )
+        except Exception as e:
+            logger.warning("BM25 笔记检索失败 (round %d): %s", round_idx + 1, e)
+
+        # ── 通道 5: 截图 OCR 文本检索（仅首轮）──────────────────────────────
+        if is_first_round:
+            try:
+                screenshot_items = _extract_screenshot_texts()
+                if screenshot_items:
+                    # 对截图文本做 BM25 风格的 token overlap 评分
+                    tokens_q = set(tokenize_zh(q))
+                    scored_ss = []
+                    for si in screenshot_items:
+                        tokens_doc = set(tokenize_zh(si["summary"]))
+                        overlap = len(tokens_q & tokens_doc) / max(1, len(tokens_q))
+                        if overlap > 0:
+                            si["score"] = round(0.3 + overlap * 0.7, 4)
+                            scored_ss.append(si)
+                    scored_ss.sort(key=lambda x: x["score"], reverse=True)
+                    scored_ss = _dedup(scored_ss[:fetch_k])
+                    if scored_ss:
+                        all_channels.append(scored_ss)
+                        channel_weights.append(0.7)
+                        channel_stats["screenshot_ocr"] = len(scored_ss)
+            except Exception as e:
+                logger.warning("截图 OCR 检索失败: %s", e)
+
+    # ── RRF 加权融合 ─────────────────────────────────────────────────────────
+    merged = _rrf_fuse(all_channels, weights=channel_weights, top_k=top_k)
+
+    logger.info(
+        "检索完成: %d 轮, %d 通道, 融合后 %d 条结果 | 通道统计: %s",
+        rounds,
+        len(all_channels),
+        len(merged),
+        channel_stats,
+    )
+
+    return {
+        "results": merged,
+        "total": len(merged),
+        "query": query,
+        "rounds": rounds,
+        "channels": channel_stats,
+    }
+
+
+# ── API 端点 ─────────────────────────────────────────────────────────────────
+
+
 @router.post("")
 def search_notes(body: SearchRequest):
     """
-    混合检索：向量语义检索 + 1-hop GraphRAG 扩展。
-    当 RAG 存储为空时返回 mock 数据供前端演示。
+    多源多轮混合检索：
+    文档原文（向量+BM25） → 笔记卡片（向量+BM25） → 截图OCR → RRF 融合。
+    支持查询扩展和多轮检索。
     """
     if not body.query.strip():
         raise HTTPException(status_code=400, detail="查询内容不能为空")
 
-    logger.info("收到检索请求: query='%s', top_k=%d", body.query, body.top_k)
+    logger.info(
+        "收到检索请求: query='%s', top_k=%d, max_rounds=%d",
+        body.query,
+        body.top_k,
+        body.max_rounds,
+    )
 
-    # 尝试从 RAG 引擎检索（如已初始化）
-    try:
-        from service.rag_engine import AtomicRAG
-        rag = AtomicRAG()
-        if rag.collection.count() > 0:
-            results = rag.query_with_citations(body.query, top_k=body.top_k)
-            logger.info("RAG 检索返回 %d 条结果", len(results))
-            return {"results": results, "total": len(results), "query": body.query}
-    except Exception as e:
-        logger.warning("RAG 引擎暂不可用: %s，返回 mock 数据", e)
+    result = _search_pipeline(
+        query=body.query,
+        top_k=body.top_k,
+        doc_id=body.doc_id,
+        max_rounds=body.max_rounds,
+    )
+
+    if result["results"]:
+        return result
 
     # Mock 数据（RAG 未初始化时的演示）
     mock_results = [
@@ -75,4 +387,39 @@ def search_notes(body: SearchRequest):
         },
     ]
     logger.info("返回 %d 条 mock 检索结果", len(mock_results))
-    return {"results": mock_results[:body.top_k], "total": len(mock_results), "query": body.query, "is_mock": True}
+    return {
+        "results": mock_results[: body.top_k],
+        "total": len(mock_results),
+        "query": body.query,
+        "is_mock": True,
+    }
+
+
+@router.post("/index-document")
+def index_document(body: IndexDocumentRequest):
+    """将解析后的 Markdown 文档切块并写入 DocumentRAG + 重建 BM25 索引。"""
+    if not body.doc_id.strip() or not body.markdown.strip():
+        raise HTTPException(status_code=400, detail="doc_id 和 markdown 不能为空")
+
+    try:
+        from service.doc_rag import get_document_rag
+
+        rag = get_document_rag()
+        count = rag.index_document(
+            body.doc_id, body.doc_title or body.doc_id, body.markdown
+        )
+
+        # 重建 BM25 文档索引
+        try:
+            from service.bm25_engine import get_bm25_engine
+
+            bm25 = get_bm25_engine()
+            bm25.invalidate()  # 标记需重建
+            logger.info("BM25 文档索引已标记重建")
+        except Exception as e:
+            logger.warning("BM25 索引重建失败: %s", e)
+
+        return {"ok": True, "doc_id": body.doc_id, "chunks": count}
+    except Exception as e:
+        logger.error("索引文档失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"索引失败: {e}")

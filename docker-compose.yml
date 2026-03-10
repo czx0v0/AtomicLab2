@@ -18,6 +18,28 @@ services:
     environment:
       - APP_ENV=development
       - LOG_LEVEL=debug
+      - DEPLOY_PROFILE=ephemeral
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
              uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  # 带持久卷的后端（ModelScope persistent 模式）
+  aether-engine-persistent:
+    profiles: ["persistent"]
+    image: python:3.10-slim
+    working_dir: /app
+    volumes:
+      - ./Aether-Engine:/app
+      - atomiclab_data:/app/data
+    ports:
+      - "8001:8000"
+    environment:
+      - APP_ENV=development
+      - LOG_LEVEL=debug
+      - DEPLOY_PROFILE=persistent
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+volumes:
+  atomiclab_data:

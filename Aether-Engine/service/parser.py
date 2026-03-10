@@ -1,9 +1,11 @@
 import json
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
 import asyncio
+import re
 from typing import AsyncGenerator
 from pathlib import Path
 
@@ -28,13 +30,87 @@ async def parse_pdf_with_mineru(
     if method not in ("auto", "txt", "ocr"):
         method = "auto"
 
-    def make_event(status: str, msg: str = "", markdown: str = "") -> str:
+    def make_event(status: str, msg: str = "", markdown: str = "", **extra) -> str:
         payload = {"status": status}
         if msg:
             payload["message"] = msg
         if markdown:
             payload["markdown"] = markdown
+        for k, v in extra.items():
+            if v is not None and v != "":
+                payload[k] = v
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def split_sections(md: str):
+        sections = []
+        title = "Preamble"
+        buf = []
+
+        def flush():
+            if not buf:
+                return
+            text = "\n".join(buf).strip()
+            if not text:
+                return
+            # 取首个非空自然段作为摘要
+            summary = ""
+            for line in text.splitlines():
+                clean = line.strip()
+                if not clean:
+                    continue
+                if clean.startswith("!"):
+                    continue
+                summary = clean[:160]
+                break
+            image_refs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text)
+            sections.append(
+                {
+                    "title": title,
+                    "content": text,
+                    "summary": summary,
+                    "image_refs": image_refs,
+                }
+            )
+
+        for line in md.splitlines():
+            m = re.match(r"^(#{1,6})\s+(.*)$", line)
+            if m:
+                flush()
+                title = m.group(2).strip() or "Untitled"
+                buf = []
+            else:
+                buf.append(line)
+        flush()
+        return sections
+
+    def llm_enhance_summary(title: str, content: str, fallback: str) -> str:
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+        if not api_key:
+            return fallback
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=api_key, base_url=api_base)
+            resp = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "你是学术文献摘要助手，请输出一句简洁中文摘要（不超过70字）。",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"章节标题: {title}\n\n章节内容:\n{content[:1200]}",
+                    },
+                ],
+                max_tokens=120,
+                temperature=0.2,
+            )
+            ans = (resp.choices[0].message.content or "").strip()
+            return ans or fallback
+        except Exception:
+            return fallback
 
     # Create an isolated temporary directory for the process
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -119,4 +195,30 @@ async def parse_pdf_with_mineru(
         logger.info(
             f"Successfully parsed {filename} to Markdown ({len(parsed_content)} chars)."
         )
+
+        # 增加分段流式事件：章节文本 + 自动摘要，便于前端构建章节树。
+        sections = split_sections(parsed_content)
+        for idx, sec in enumerate(sections):
+            yield make_event(
+                "chunk",
+                msg=f"分段 {idx + 1}/{len(sections)}: {sec['title']}",
+                markdown_chunk=sec["content"],
+                section_title=sec["title"],
+                section_summary=sec["summary"],
+                image_refs=sec.get("image_refs", []),
+            )
+            # 使用 LLM 做增强摘要并流式更新。
+            enhanced = await asyncio.to_thread(
+                llm_enhance_summary,
+                sec["title"],
+                sec["content"],
+                sec["summary"],
+            )
+            yield make_event(
+                "summary",
+                msg=f"章节摘要增强: {sec['title']}",
+                section_title=sec["title"],
+                section_summary=enhanced,
+            )
+
         yield make_event("success", markdown=parsed_content)

@@ -12,7 +12,7 @@ async def parse_document(
     file: UploadFile = File(...),
     method: str = Query(
         "auto",
-        regex="^(auto|txt|ocr)$",
+        pattern="^(auto|txt|ocr)$",
         description="auto=全模态(慢) | txt=纯文本(快) | ocr=OCR模式",
     ),
 ):

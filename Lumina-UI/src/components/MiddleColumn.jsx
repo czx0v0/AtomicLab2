@@ -5,7 +5,7 @@ import clsx from 'clsx';
 import {
   Search, Brain, Layers, MessageSquare, User, Bot, Sparkles, BookOpen,
   ArrowRight, MousePointer2, Download, ExternalLink, Loader2, AlertCircle,
-  Network, FileSearch, Send, X, Plus, GitBranch, Tag
+  Network, FileSearch, Send, X, Plus, GitBranch, Tag, Trash2, Languages, Highlighter
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ForceGraph2D from 'react-force-graph-2d';
@@ -137,6 +137,36 @@ const NoteCard = ({ note, onDelete }) => {
           ))}
         </div>
       )}
+
+      {/* 操作工具栏 */}
+      <div className="flex items-center gap-1 pt-2 border-t border-gray-100 justify-between">
+        <div className="flex items-center gap-1">
+          <button
+            className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
+            title="翻译"
+          >
+            <Languages size={12} /> 译
+          </button>
+          <button
+            className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-yellow-50 border-yellow-300 text-yellow-700 hover:bg-yellow-100"
+            title="高亮"
+          >
+            <Highlighter size={12} /> 亮
+          </button>
+          <button
+            className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-green-50 border-green-300 text-green-700 hover:bg-green-100"
+            title="批注"
+          >
+            <Tag size={12} /> 注
+          </button>
+        </div>
+        <button
+          className="text-[9px] px-2 py-1 rounded border flex items-center gap-1 bg-pink-50 border-pink-300 text-pink-600 font-bold hover:bg-pink-100 animate-pulse"
+          title="粉碎（原子化）"
+        >
+          <Sparkles size={12} /> 粉碎
+        </button>
+      </div>
     </motion.div>
   );
 };
@@ -252,7 +282,7 @@ const GraphView = ({ notes }) => {
 
 // ─── ArXiv 检索面板 ────────────────────────────────────────────────────────────
 const ArxivPanel = () => {
-  const { arxivResults, setArxivResults, arxivQuery, setArxivQuery, setPdfFile } = useStore();
+  const { arxivResults, setArxivResults, arxivQuery, setArxivQuery, setPdfFile, setPdfUrl, addToLibrary } = useStore();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -272,11 +302,19 @@ const ArxivPanel = () => {
 
   const handleDownload = (paper) => {
     const url = api.getArxivPdfUrl(paper.arxiv_id);
-    window.open(url, '_blank');
+    addToLibrary({
+       id: `arxiv_${paper.arxiv_id}`,
+       name: paper.title,
+       addedAt: new Date().toISOString(),
+       source: 'arxiv',
+       arxivId: paper.arxiv_id,
+       noteCount: 0
+    });
+    setPdfUrl(url, paper.title);
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       {/* 搜索框 */}
       <div className="p-3 border-b border-gray-200 flex gap-2">
         <input
@@ -322,7 +360,7 @@ const ArxivPanel = () => {
                 onClick={() => handleDownload(paper)}
                 className="flex items-center gap-1 text-[10px] bg-green-50 border border-green-300 text-green-700 px-2 py-1 rounded hover:bg-green-100"
               >
-                <Download size={10} /> 下载 PDF
+                <Download size={10} /> 阅览并加入库
               </button>
               <a
                 href={`https://arxiv.org/abs/${paper.arxiv_id}`}
@@ -343,6 +381,7 @@ const ArxivPanel = () => {
 // ─── 聊天消息 ──────────────────────────────────────────────────────────────────
 const ChatMessage = ({ msg }) => {
   const isUser = msg.role === 'user';
+  const { setActiveReference } = useStore();
   const agentMeta = {
     seeker:     { label: 'SEEKER', color: 'bg-cyan-100 text-cyan-800', icon: <Search size={16} /> },
     reviewer:   { label: 'REVIEWER', color: 'bg-rose-100 text-rose-800', icon: <Bot size={16} /> },
@@ -369,13 +408,33 @@ const ChatMessage = ({ msg }) => {
         <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
         {msg.relatedNotes?.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5 pt-1.5 border-t border-dashed border-gray-300">
-            {msg.relatedNotes.map((n) => (
-              <span key={n.note_id ?? n} className="text-[9px] bg-yellow-50 border border-yellow-300 px-1.5 py-0.5 text-yellow-800 flex items-center gap-1 cursor-pointer hover:bg-yellow-100">
-                <BookOpen size={8} />
-                {n.concept ?? n}
-                {n.page_num ? ` · p.${n.page_num}` : ''}
-              </span>
-            ))}
+            {msg.relatedNotes.map((n) => {
+              const isExternal = n.source === 'arxiv' || n.source === 'semantic_scholar';
+              const hasPage = n.page_num && n.page_num > 0;
+              return (
+                <button
+                  key={n.note_id ?? n}
+                  onClick={() => {
+                    if (isExternal && n.url) {
+                      window.open(n.url, '_blank', 'noopener');
+                    } else if (hasPage) {
+                      setActiveReference({ page: n.page_num, bbox: n.bbox && n.bbox.length === 4 ? n.bbox : [0, 0, 0, 0] });
+                    }
+                  }}
+                  className={clsx(
+                    'text-[9px] border px-1.5 py-0.5 flex items-center gap-1 cursor-pointer',
+                    isExternal
+                      ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100'
+                      : 'bg-yellow-50 border-yellow-300 text-yellow-800 hover:bg-yellow-100'
+                  )}
+                  title={isExternal ? n.url : (hasPage ? `跳转到 p.${n.page_num}` : n.summary?.substring(0, 60))}
+                >
+                  <BookOpen size={8} />
+                  {n.concept ?? n}
+                  {isExternal ? ' ↗' : (hasPage ? ` · p.${n.page_num}` : '')}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
@@ -385,7 +444,7 @@ const ChatMessage = ({ msg }) => {
 
 // ─── 聊天面板 ──────────────────────────────────────────────────────────────────
 const ChatPanel = () => {
-  const { messages, addMessage, isAgentThinking, setAgentThinking } = useStore();
+  const { messages, addMessage, updateLastMessage, isAgentThinking, setAgentThinking, notes, clearMessages } = useStore();
   const [input, setInput] = useState('');
   const bottomRef = useRef(null);
 
@@ -401,63 +460,98 @@ const ChatPanel = () => {
     addMessage({ id: Date.now(), role: 'user', content: text });
     setAgentThinking(true);
 
+    // 用于 synthesizer 流式拼接
+    let synthId = null;
+    let synthContent = '';
+
     try {
-      // Seeker 步骤
-      addMessage({ id: Date.now() + 1, role: 'agent', agentType: 'seeker', content: `正在检索知识库中与「${text}」相关的原子卡片…` });
-
-      const data = await api.searchNotes(text, 3);
-      const results = data.results ?? [];
-
-      const seekerReply = results.length > 0
-        ? `发现 ${results.length} 个相关知识原子：\n${results.map((r, i) => `${i + 1}. [${r.concept}] (p.${r.page_num}) — ${r.summary?.substring(0, 60)}…`).join('\n')}`
-        : '知识库当前为空，建议先上传并解析 PDF 文献。';
-
-      addMessage({
-        id: Date.now() + 2,
-        role: 'agent',
-        agentType: 'seeker',
-        content: seekerReply,
-        relatedNotes: results.slice(0, 3),
-      });
-
-      // Synthesizer 步骤：通过后端翻译接口生成摘要
-      if (results.length > 0) {
-        const context = results.map((r, i) => `${i + 1}. [${r.concept}] ${r.summary}`).join('\n');
-        try {
-          const synthData = await api.translateText(
-            `请用学术语言综合分析以下知识原子，回答问题「${text}」：\n${context}`,
-            'zh'
-          );
-          addMessage({
-            id: Date.now() + 3,
-            role: 'agent',
-            agentType: 'synthesizer',
-            content: synthData.translation ?? `已从 ${results.length} 个知识原子完成信息聚合，建议进一步阅读原文。`,
-          });
-        } catch {
-          addMessage({
-            id: Date.now() + 3,
-            role: 'agent',
-            agentType: 'synthesizer',
-            content: `已从 ${results.length} 个知识原子完成信息聚合，建议查看上方引用的相关卡片。`,
-          });
+      await api.chatStream(text, ({ type, data }) => {
+        if (type === 'step') {
+          if (data.streaming) {
+            // synthesizer 开始流式输出，先创建空消息
+            synthId = Date.now() + Math.random() * 100000;
+            synthContent = '';
+            addMessage({
+              id: synthId,
+              role: 'agent',
+              agentType: data.agent || 'synthesizer',
+              content: '',
+              relatedNotes: [],
+            });
+          } else {
+            addMessage({
+              id: Date.now() + Math.random() * 100000,
+              role: 'agent',
+              agentType: data.agent || 'system',
+              content: data.score != null
+                ? `${data.content}\n📊 评分: ${data.score}/10`
+                : data.content,
+              relatedNotes: data.related_notes?.slice(0, 3) ?? [],
+            });
+          }
+        } else if (type === 'delta' && synthId != null) {
+          synthContent += data.token || '';
+          updateLastMessage({ content: synthContent });
+        } else if (type === 'done') {
+          // 将 sources 附加到 synthesizer 消息
+          const sources = data.sources ?? [];
+          if (synthId != null && sources.length > 0) {
+            updateLastMessage({ relatedNotes: sources.slice(0, 3) });
+          }
         }
-      }
-    } catch (e) {
-      addMessage({
-        id: Date.now() + 4,
-        role: 'agent',
-        agentType: 'system',
-        content: `⚠️ 检索遇到问题: ${e instanceof Error ? e.message : String(e)}`,
       });
+    } catch (e) {
+      // 降级：直接调用搜索接口
+      try {
+        addMessage({ id: Date.now() + 1, role: 'agent', agentType: 'seeker', content: `正在检索知识库中与「${text}」相关的原子卡片…` });
+
+        const data = await api.searchNotes(text, 5);
+        const results = data.results ?? [];
+
+        const seekerReply = results.length > 0 && !data.is_mock
+          ? `发现 ${results.length} 个相关知识原子：\n${results.map((r, i) => `${i + 1}. [${r.concept}] (p.${r.page_num}) — ${r.summary?.substring(0, 80)}`).join('\n')}`
+          : '知识库当前为空或尚未建立。请先上传 PDF → 选中文字 → CRUSH IT 生成原子卡片。';
+
+        addMessage({
+          id: Date.now() + 2,
+          role: 'agent',
+          agentType: 'seeker',
+          content: seekerReply,
+          relatedNotes: results.slice(0, 3),
+        });
+      } catch (e2) {
+        addMessage({
+          id: Date.now() + 4,
+          role: 'agent',
+          agentType: 'system',
+          content: `⚠️ 检索遇到问题: ${e2 instanceof Error ? e2.message : String(e2)}`,
+        });
+      }
     } finally {
       setAgentThinking(false);
     }
   };
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+    <div className="flex flex-col h-full min-h-0">
+      {/* 迷你知识树/图谱（chat 模式下顶部显示） */}
+      {notes.length > 0 && (
+        <div className="border-b border-gray-200 bg-gray-50 max-h-[120px] overflow-y-auto p-2">
+          <div className="flex items-center gap-1 mb-1">
+            <Network size={10} className="text-purple-500" />
+            <span className="text-[9px] font-pixel text-purple-600">知识库 · {notes.length} 卡片</span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {notes.slice(0, 12).map(n => (
+              <span key={n.id} className="text-[9px] px-1.5 py-0.5 bg-white border border-gray-200 rounded text-gray-600 truncate max-w-[120px]">
+                [{n.type}] {n.content?.substring(0, 20)}
+              </span>
+            ))}
+            {notes.length > 12 && <span className="text-[9px] text-gray-400">+{notes.length - 12} more</span>}
+          </div>
+        </div>
+      )}
+      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
         {messages.map((msg) => <ChatMessage key={msg.id} msg={msg} />)}
         {isAgentThinking && (
           <div className="flex gap-2 mb-4">
@@ -476,12 +570,12 @@ const ChatPanel = () => {
         <div ref={bottomRef} />
       </div>
 
-      <div className="p-3 border-t border-gray-200 flex gap-2">
+      <div className="p-3 border-t border-gray-200 flex gap-2 shrink-0"><button onClick={clearMessages} title="清空对话" className="px-2 py-2 bg-gray-100 text-gray-500 rounded hover:bg-red-50 hover:text-red-500 flex items-center justify-center transition-colors"><Trash2 size={16} /></button>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-          placeholder="向 Seeker 提问，或 Enter 发送..."
+          placeholder="向知识库提问（支持 AgenticRAG 检索 + 自我评估）..."
           className="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
           disabled={isAgentThinking}
         />
@@ -497,26 +591,132 @@ const ChatPanel = () => {
   );
 };
 
+// ─── 知识树组件 ──────────────────────────────────────────────────────────────
+const KnowledgeTree = ({ notes }) => {
+  const { setActiveReference, pdfFileName } = useStore();
+
+  // 构建树：文档 → 类型 → 笔记
+  const typeGroups = {};
+  notes.forEach((n) => {
+    const t = n.type || 'other';
+    if (!typeGroups[t]) typeGroups[t] = [];
+    typeGroups[t].push(n);
+  });
+
+  const typeLabels = { method: '方法', formula: '公式', idea: '观点', definition: '定义', data: '数据', other: '其他' };
+  const typeColors = { method: 'text-cyan-600', formula: 'text-purple-600', idea: 'text-amber-600', definition: 'text-green-600', data: 'text-rose-600', other: 'text-gray-500' };
+
+  if (notes.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-gray-400 flex-col gap-2 p-4">
+        <Layers size={24} className="opacity-30" />
+        <p className="text-[10px] font-pixel">知识树为空</p>
+        <p className="text-[10px] text-gray-400">CRUSH IT 生成原子卡片后自动构建</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-3 text-xs custom-scrollbar">
+      {/* 文档根节点 */}
+      <div className="flex items-center gap-2 mb-3 pb-2 border-b border-gray-200">
+        <BookOpen size={14} className="text-blue-600" />
+        <span className="font-bold text-gray-800 truncate">{pdfFileName || '未命名文档'}</span>
+        <span className="text-gray-400 ml-auto">{notes.length} 卡片</span>
+      </div>
+
+      {/* 类型分组 */}
+      {Object.entries(typeGroups).map(([type, groupNotes]) => (
+        <div key={type} className="mb-3">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <div className={`w-2 h-2 rounded-full ${typeColors[type]?.replace('text-', 'bg-') || 'bg-gray-400'}`} />
+            <span className={`font-bold uppercase text-[10px] ${typeColors[type] || 'text-gray-500'}`}>
+              {typeLabels[type] || type} ({groupNotes.length})
+            </span>
+          </div>
+          <div className="ml-4 border-l border-gray-200 pl-3 space-y-1.5">
+            {groupNotes.map((note) => (
+              <div
+                key={note.id}
+                onClick={() => note.page && setActiveReference({ page: note.page, bbox: note.bbox || [0,0,0,0] })}
+                className="flex items-start gap-2 py-1 px-2 rounded hover:bg-blue-50 cursor-pointer group transition-colors"
+              >
+                <span className="text-gray-400 shrink-0 mt-0.5">•</span>
+                <div className="min-w-0">
+                  <p className="text-gray-700 line-clamp-2 group-hover:text-blue-700 transition-colors">{note.content?.substring(0, 60)}{note.content?.length > 60 ? '…' : ''}</p>
+                  {note.page && <span className="text-[9px] text-gray-400">p.{note.page}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ─── 自动推荐卡片 ──────────────────────────────────────────────────────────────
+const RecommendedCards = ({ notes }) => {
+  const { markdownContent } = useStore();
+
+  // 基于编辑器内容简单匹配推荐
+  const recommended = React.useMemo(() => {
+    if (!markdownContent || notes.length === 0) return notes.slice(0, 3);
+    const words = markdownContent.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const scored = notes.map(n => {
+      const content = (n.content || '').toLowerCase();
+      const score = words.filter(w => content.includes(w)).length;
+      return { ...n, _score: score };
+    });
+    scored.sort((a, b) => b._score - a._score);
+    return scored.slice(0, 5);
+  }, [notes, markdownContent]);
+
+  if (recommended.length === 0) return null;
+
+  return (
+    <div className="p-3 border-t border-gray-200 bg-amber-50/50">
+      <p className="text-[10px] font-pixel text-amber-700 mb-2 flex items-center gap-1">
+        <Sparkles size={10} /> 推荐原子卡片
+      </p>
+      <div className="space-y-2">
+        {recommended.map(n => (
+          <div key={n.id} className="bg-white border border-amber-200 rounded p-2 text-[11px] text-gray-600 line-clamp-2 hover:border-amber-400 transition-colors cursor-pointer"
+            onClick={() => useStore.getState().setActiveReference({ page: n.page ?? 1, bbox: n.bbox ?? [0,0,0,0] })}>
+            <span className="text-[9px] font-bold text-amber-700 uppercase mr-1">[{n.type}]</span>
+            {n.content?.substring(0, 80)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 // ─── 原子卡片面板（带 API 查询） ────────────────────────────────────────────────
 const NexusPanel = () => {
   const {
-    notes, addNote, removeNote, setNotes,
+    notes, removeNote, setNotes,
     searchQuery, setSearchQuery,
     searchStatus, setSearchStatus,
     searchResults, setSearchResults,
-    pdfFile,
   } = useStore();
 
-  const [activeTab, setActiveTab] = useState('deck'); // 'deck' | 'graph'
-  const [loadingDelete, setLoadingDelete] = useState(null);
+  const [activeTab, setActiveTab] = useState('deck'); // 'deck' | 'tree' | 'graph'
 
-  // 从后端同步笔记
+  // 从后端同步笔记（合并而非覆盖，防止竞态丢失本地新建卡片）
   useEffect(() => {
     api.getNotes()
       .then((data) => {
-        if (data.notes?.length > 0) setNotes(data.notes);
+        if (data.notes?.length > 0) {
+          const current = useStore.getState().notes;
+          const existingIds = new Set(current.map(n => n.id));
+          const newFromBackend = data.notes.filter(n => !existingIds.has(n.id));
+          if (newFromBackend.length > 0) {
+            setNotes([...current, ...newFromBackend]);
+          }
+        }
       })
-      .catch(() => {}); // 后端未启动时静默处理
+      .catch(() => {});
   }, []);
 
   const handleSearch = async (e) => {
@@ -530,7 +730,6 @@ const NexusPanel = () => {
       setSearchResults(data.results ?? []);
       setSearchStatus('done');
     } catch {
-      // 降级：本地过滤
       const localResults = notes.filter((n) =>
         n.content?.toLowerCase().includes(searchQuery.toLowerCase())
       );
@@ -541,12 +740,8 @@ const NexusPanel = () => {
   };
 
   const handleDelete = async (id) => {
-    setLoadingDelete(id);
-    try {
-      await api.deleteNote(id);
-    } catch {}
+    try { await api.deleteNote(id); } catch {}
     removeNote(id);
-    setLoadingDelete(null);
   };
 
   const displayNotes = searchStatus === 'done' && searchResults.length > 0
@@ -554,7 +749,7 @@ const NexusPanel = () => {
     : notes;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       {/* 搜索框 */}
       <div className="p-3 border-b border-gray-200">
         <div className="relative">
@@ -569,7 +764,6 @@ const NexusPanel = () => {
         </div>
       </div>
 
-      {/* 搜索可视化 */}
       <AnimatePresence>
         {searchStatus !== 'idle' && (
           <div className="px-3 pt-3">
@@ -578,28 +772,35 @@ const NexusPanel = () => {
         )}
       </AnimatePresence>
 
-      {/* 标签页切换 */}
+      {/* 三标签切换 */}
       <div className="flex border-b border-gray-200 px-3 pt-2 gap-3">
         <button
           onClick={() => setActiveTab('deck')}
           className={clsx('pb-2 text-xs font-bold border-b-2 transition-colors flex items-center gap-1',
             activeTab === 'deck' ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-700')}
         >
-          <Layers size={12} /> 原子卡片 ({displayNotes.length})
+          <Layers size={12} /> 卡片 ({displayNotes.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('tree')}
+          className={clsx('pb-2 text-xs font-bold border-b-2 transition-colors flex items-center gap-1',
+            activeTab === 'tree' ? 'border-green-600 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700')}
+        >
+          <GitBranch size={12} /> 知识树
         </button>
         <button
           onClick={() => setActiveTab('graph')}
           className={clsx('pb-2 text-xs font-bold border-b-2 transition-colors flex items-center gap-1',
             activeTab === 'graph' ? 'border-purple-600 text-purple-700' : 'border-transparent text-gray-500 hover:text-gray-700')}
         >
-          <Network size={12} /> 知识图谱
+          <Network size={12} /> 图谱
         </button>
       </div>
 
       {/* 内容区 */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar">
+      <div className="flex-1 overflow-hidden flex flex-col">
         {activeTab === 'deck' && (
-          <div className="p-3 space-y-3">
+          <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
             {displayNotes.length === 0 && (
               <div className="text-center text-gray-400 mt-10 flex flex-col items-center gap-3">
                 <Sparkles size={28} className="opacity-30" />
@@ -616,9 +817,10 @@ const NexusPanel = () => {
             </AnimatePresence>
           </div>
         )}
-        {activeTab === 'graph' && (
-          <GraphView notes={notes} />
-        )}
+        {activeTab === 'tree' && <KnowledgeTree notes={notes} />}
+        {activeTab === 'graph' && <GraphView notes={notes} />}
+        {/* 推荐卡片（仅卡片视图下） */}
+        {activeTab === 'deck' && notes.length > 0 && <RecommendedCards notes={notes} />}
       </div>
     </div>
   );
@@ -629,8 +831,7 @@ export const MiddleColumn = () => {
   const { viewMode } = useStore();
 
   return (
-    <div className="h-full flex flex-col bg-gray-50/50 overflow-hidden">
-      {/* 根据 viewMode 显示不同面板 */}
+    <div className="h-full flex flex-col bg-gray-50/50 overflow-hidden min-h-0">
       {viewMode === 'chat' ? (
         <ChatPanel />
       ) : viewMode === 'arxiv' ? (

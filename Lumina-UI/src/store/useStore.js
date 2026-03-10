@@ -1,9 +1,6 @@
 import { create } from 'zustand';
-import { persist, createJSONStorage } from 'zustand/middleware';
 
-export const useStore = create(
-  persist(
-    (set, get) => ({
+export const useStore = create((set, get) => ({
       // ── 布局与视图 ─────────────────────────────────────────────────────────
       isZenMode: false,
       toggleZenMode: () => set((s) => ({ isZenMode: !s.isZenMode })),
@@ -13,8 +10,11 @@ export const useStore = create(
 
       // ── PDF 状态 ────────────────────────────────────────────────────────────
       pdfFile: null,          // File 对象（不持久化）
+      pdfUrl: null,           // 支持Arxiv链接
       pdfFileName: '',
-      setPdfFile: (file) => set({ pdfFile: file, pdfFileName: file?.name ?? '' }),
+      activeDocId: '',
+      setPdfFile: (file) => set({ pdfFile: file, pdfUrl: null, pdfFileName: file?.name ?? '' }),
+      setPdfUrl: (url, name, docId = '') => set({ pdfFile: null, pdfUrl: url, pdfFileName: name, activeDocId: docId }),
       currentPage: 1,
       setCurrentPage: (page) => set({ currentPage: page }),
       highlights: [],
@@ -22,12 +22,22 @@ export const useStore = create(
         set((s) => ({ highlights: [...s.highlights, highlight] })),
       clearHighlights: () => set({ highlights: [] }),
 
+      // ── 文献库 ──────────────────────────────────────────────────────────────
+      library: [], // [{ id, name, addedAt, source: 'upload'|'arxiv', arxivId?, noteCount }]
+      addToLibrary: (doc) =>
+        set((s) => {
+          if (s.library.some((d) => d.id === doc.id)) return {};
+          return { library: [...s.library, doc] };
+        }),
+      removeFromLibrary: (id) =>
+        set((s) => ({ library: s.library.filter((d) => d.id !== id) })),
+
       // ── 导航 & 交叉引用 ────────────────────────────────────────────────────
       activeReference: null, // { page: number, bbox: [x,y,w,h] }
       setActiveReference: (ref) =>
         set({ activeReference: ref, currentPage: ref?.page ?? get().currentPage }),
 
-      // ── 编辑器状态（持久化） ────────────────────────────────────────────────
+      // ── 编辑器状态（会话态） ────────────────────────────────────────────────
       markdownContent: '# 研究笔记\n\n在此开始写作...\n\n## 研究问题\n\n',
       setMarkdownContent: (content) => set({ markdownContent: content }),
       citations: [
@@ -35,7 +45,7 @@ export const useStore = create(
         { id: '2', key: 'devlin2018bert', title: 'BERT: Pre-training', authors: 'Devlin et al.' },
       ],
 
-      // ── 原子笔记（持久化本地，后端同步） ────────────────────────────────────
+      // ── 原子笔记（会话态 + 后端同步） ──────────────────────────────────────
       notes: [],
       setNotes: (notes) => set({ notes }),
       addNote: (note) => set((s) => ({ notes: [note, ...s.notes] })),
@@ -62,7 +72,17 @@ export const useStore = create(
           content: '欢迎来到 AtomicLab！上传 PDF 开始原子化解析，或直接提问让 Seeker 为你检索知识库。',
         },
       ],
-      addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+      addMessage: (msg) =>
+        set((s) => ({
+          messages: [...s.messages, msg].slice(-80),
+        })),
+      updateLastMessage: (patch) =>
+        set((s) => {
+          const msgs = [...s.messages];
+          if (msgs.length === 0) return {};
+          msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], ...patch };
+          return { messages: msgs };
+        }),
       clearMessages: () => set({ messages: [] }),
       isAgentThinking: false,
       setAgentThinking: (v) => set({ isAgentThinking: v }),
@@ -92,29 +112,24 @@ export const useStore = create(
       parseStatus: 'idle', // 'idle' | 'parsing' | 'done' | 'error'
       parseProgress: [],   // 解析日志列表
       parsedMarkdown: '',
+      parsedSections: [],  // [{ title, summary, content }]
+      parsedDocName: '',
       setParseStatus: (status) => set({ parseStatus: status }),
       addParseLog: (msg) =>
         set((s) => ({ parseProgress: [...s.parseProgress, msg] })),
-      setParsedMarkdown: (md) => set({ parsedMarkdown: md }),
+      setParsedMarkdown: (md, docName = '') => set({ parsedMarkdown: md, parsedDocName: docName }),
+      addParsedSection: (section) =>
+        set((s) => ({ parsedSections: [...s.parsedSections, section] })),
+      updateParsedSectionSummary: (title, summary) =>
+        set((s) => ({
+          parsedSections: s.parsedSections.map((it) =>
+            it.title === title ? { ...it, summary: summary || it.summary } : it
+          ),
+        })),
       clearParseState: () =>
-        set({ parseStatus: 'idle', parseProgress: [], parsedMarkdown: '' }),
+        set({ parseStatus: 'idle', parseProgress: [], parsedMarkdown: '', parsedSections: [], parsedDocName: '' }),
 
       // ── 后端连接状态 ────────────────────────────────────────────────────────
       backendOnline: false,
       setBackendOnline: (v) => set({ backendOnline: v }),
-    }),
-    {
-      name: 'atomiclab-storage',
-      storage: createJSONStorage(() => localStorage),
-      // 只持久化文本内容、笔记和设置，不持久化 File 对象和临时状态
-      partialize: (state) => ({
-        markdownContent: state.markdownContent,
-        notes: state.notes,
-        highlights: state.highlights,
-        viewMode: state.viewMode,
-        pomodoroMinutes: state.pomodoroMinutes,
-        messages: state.messages.slice(-50), // 只保留最近 50 条
-      }),
-    }
-  )
-);
+}));

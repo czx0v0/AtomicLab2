@@ -4,3 +4,9 @@ python-multipart==0.0.18
 chromadb
 networkx
 tenacity
+openai
+httpx
+python-dotenv
+jieba>=0.42.0
+rank-bm25>=0.2.2
+sentence-transformers>=2.2.0

@@ -1,0 +1,143 @@
+"""
+文档分块 RAG 引擎
+将解析后的 Markdown 按章节/段落切分后写入 ChromaDB，
+用于与原子笔记并行检索。
+"""
+
+import json
+import logging
+import re
+from typing import Dict, List, Any
+
+import chromadb
+from chromadb.config import Settings as ChromaSettings
+
+logger = logging.getLogger("aether")
+
+CHROMA_DIR = "data/chroma_store"
+
+_instance = None
+
+
+def _split_markdown(md: str, max_chunk_chars: int = 800) -> List[Dict[str, str]]:
+    sections: List[Dict[str, str]] = []
+    title = "Preamble"
+    buf: List[str] = []
+
+    def flush():
+        if not buf:
+            return
+        text = "\n".join(buf).strip()
+        if not text:
+            return
+        # 按段落继续切成小块，避免单条过长
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        current = ""
+        for p in paragraphs:
+            if len(current) + len(p) + 2 <= max_chunk_chars:
+                current = f"{current}\n\n{p}".strip()
+            else:
+                if current:
+                    sections.append({"title": title, "content": current})
+                current = p
+        if current:
+            sections.append({"title": title, "content": current})
+
+    for line in md.splitlines():
+        m = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if m:
+            flush()
+            title = m.group(2).strip() or "Untitled"
+            buf = []
+        else:
+            buf.append(line)
+    flush()
+    return sections
+
+
+class DocumentRAG:
+    def __init__(self):
+        from service.embedding import get_embedding_function
+
+        self.client = chromadb.Client(
+            ChromaSettings(persist_directory=CHROMA_DIR, is_persistent=True)
+        )
+        self.collection = self.client.get_or_create_collection(
+            name="doc_chunks",
+            metadata={"hnsw:space": "cosine"},
+            embedding_function=get_embedding_function(),
+        )
+        logger.info("DocumentRAG 初始化: count=%d", self.collection.count())
+
+    def index_document(self, doc_id: str, doc_title: str, markdown: str) -> int:
+        if not markdown.strip():
+            return 0
+
+        chunks = _split_markdown(markdown)
+        if not chunks:
+            return 0
+
+        # 删除同文档旧索引，保证更新后可见
+        try:
+            self.collection.delete(where={"doc_id": doc_id})
+        except Exception:
+            pass
+
+        ids = []
+        docs = []
+        metas = []
+        for idx, c in enumerate(chunks):
+            cid = f"{doc_id}::chunk::{idx}"
+            ids.append(cid)
+            docs.append(c["content"])
+            metas.append(
+                {
+                    "doc_id": doc_id,
+                    "doc_title": doc_title or doc_id,
+                    "section_title": c["title"],
+                    "chunk_index": idx,
+                }
+            )
+
+        self.collection.add(ids=ids, documents=docs, metadatas=metas)
+        logger.info("DocumentRAG 索引完成: doc=%s chunks=%d", doc_id, len(ids))
+        return len(ids)
+
+    def search(self, query: str, top_k: int = 6) -> List[Dict[str, Any]]:
+        if self.collection.count() == 0:
+            return []
+        resp = self.collection.query(
+            query_texts=[query],
+            n_results=min(top_k, self.collection.count()),
+        )
+        if not resp.get("ids") or not resp["ids"][0]:
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for i, cid in enumerate(resp["ids"][0]):
+            md = (resp.get("metadatas") or [[{}]])[0][i] or {}
+            doc = (resp.get("documents") or [[""]])[0][i] or ""
+            dist = (resp.get("distances") or [[0]])[0][i]
+            score = max(0, 1 - dist)
+            out.append(
+                {
+                    "note_id": cid,
+                    "summary": doc,
+                    "concept": f"doc:{md.get('section_title', 'chunk')}",
+                    "keywords": [],
+                    "doc_title": md.get("doc_title", ""),
+                    "page_num": int(md.get("chunk_index", 0)) // 3 + 1,  # 粗略估算页码
+                    "bbox": [],
+                    "score": round(score, 4),
+                    "doc_id": md.get("doc_id", ""),
+                    "source": "document",
+                }
+            )
+        return out
+
+
+def get_document_rag() -> DocumentRAG:
+    global _instance
+    if _instance is None:
+        _instance = DocumentRAG()
+    return _instance
