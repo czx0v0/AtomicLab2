@@ -15,8 +15,10 @@ logger = logging.getLogger("aether")
 _model = None
 
 # ModelScope 模型映射（将 HuggingFace 模型名映射到 ModelScope）
+# 参考 ModelScope 官方模型仓库命名规范
 MODELSCOPE_MODEL_MAP = {
-    "paraphrase-multilingual-MiniLM-L12-v2": "AI-ModelScope/paraphrase-multilingual-MiniLM-L12-v2",
+    "paraphrase-multilingual-MiniLM-L12-v2": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "BAAI/bge-reranker-v2-m3": "BAAI/bge-reranker-v2-m3",
 }
 
 
