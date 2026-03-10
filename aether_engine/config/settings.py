@@ -33,9 +33,12 @@ class Settings:
     ENABLE_AUTH: bool = os.getenv("ENABLE_AUTH", "false").lower() == "true"
     
     # 模型缓存配置（ModelScope）
-    MODELSCOPE_CACHE: str = os.getenv("MODELSCOPE_CACHE", "/home/user/.cache/modelscope")
-    HF_HOME: str = os.getenv("HF_HOME", "/home/user/.cache/modelscope/hf")
-    TRANSFORMERS_CACHE: str = os.getenv("TRANSFORMERS_CACHE", "/home/user/.cache/modelscope/hf")
+    MODELSCOPE_CACHE: str = os.getenv("MODELSCOPE_CACHE", "/mnt/workspace/.cache/modelscope")
+    HF_HOME: str = os.getenv("HF_HOME", "/mnt/workspace/.cache/huggingface")
+    TRANSFORMERS_CACHE: str = os.getenv("TRANSFORMERS_CACHE", "/mnt/workspace/.cache/huggingface")
+    
+    # MinerU 配置
+    MINERU_TOOLS_CONFIG_JSON: str = os.getenv("MINERU_TOOLS_CONFIG_JSON", "/mnt/workspace/.magic-pdf.json")
 
 
 settings = Settings()
