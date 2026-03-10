@@ -1,0 +1,23 @@
+services:
+  lumina-ui:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./Lumina-UI:/app
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+
+  aether-engine:
+    image: python:3.10-slim
+    working_dir: /app
+    volumes:
+      - ./Aether-Engine:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=development
+      - LOG_LEVEL=debug
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
