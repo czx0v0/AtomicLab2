@@ -6,17 +6,53 @@ import subprocess
 import tempfile
 import asyncio
 import re
-from typing import AsyncGenerator
+import sys
+from typing import AsyncGenerator, Optional
 from pathlib import Path
 
 logger = logging.getLogger("uvicorn.error")
 
-# Resolve MinerU CLI: mineru (v2.0+) preferred, fallback to magic-pdf (legacy).
-_MAGIC_PDF_BIN = (
-    shutil.which("mineru")
-    or shutil.which("magic-pdf")
-    or r"D:\anaconda\envs\py-agent\Scripts\magic-pdf.exe"
-)
+# ══════════════════════════════════════════════════════════════
+# MinerU CLI 查找：兼容未加入 PATH 的 conda/venv 环境
+# ══════════════════════════════════════════════════════════════
+def _find_mineru_bin() -> Optional[str]:
+    """查找 mineru/magic-pdf 可执行文件，兼容未加入 PATH 的 conda 环境"""
+    candidates = [
+        # 新版 mineru 命令
+        shutil.which("mineru"),
+        shutil.which("mineru.exe"),
+        # 旧版 magic-pdf 命令
+        shutil.which("magic-pdf"),
+        shutil.which("magic-pdf.exe"),
+    ]
+
+    py_dir = Path(sys.executable).resolve().parent
+    candidates.extend(
+        [
+            # 新版
+            str(py_dir / "Scripts" / "mineru.exe"),
+            str(py_dir / "Scripts" / "mineru"),
+            str(py_dir / "mineru"),
+            str(py_dir / "mineru.exe"),
+            # Linux bin
+            str(py_dir / "bin" / "mineru"),
+            # 旧版
+            str(py_dir / "Scripts" / "magic-pdf.exe"),
+            str(py_dir / "Scripts" / "magic-pdf"),
+            str(py_dir / "magic-pdf"),
+            str(py_dir / "magic-pdf.exe"),
+            # 本地开发回退
+            r"D:\anaconda\envs\py-agent\Scripts\magic-pdf.exe",
+        ]
+    )
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
+_MAGIC_PDF_BIN = _find_mineru_bin()
 
 # 创空间环境：强制使用 ModelScope 模型源（无法访问 HuggingFace）
 _SUBPROCESS_ENV = {
@@ -26,6 +62,8 @@ _SUBPROCESS_ENV = {
 
 # Timeout in seconds for a single PDF parse (default 5 minutes).
 _PARSE_TIMEOUT = 300
+
+logger.info(f"[MinerU] CLI 路径: {_MAGIC_PDF_BIN or 'NOT FOUND'}")
 
 
 async def parse_pdf_with_mineru(
@@ -92,6 +130,9 @@ async def parse_pdf_with_mineru(
         return sections
 
     def llm_enhance_summary(title: str, content: str, fallback: str) -> str:
+        # 创空间环境不启用 LLM 增强（避免额外耗时）
+        if os.path.exists("/mnt/workspace"):
+            return fallback
         api_key = os.getenv("DEEPSEEK_API_KEY")
         api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
         if not api_key:
@@ -141,6 +182,7 @@ async def parse_pdf_with_mineru(
             # Use subprocess.Popen in a thread to stream output line-by-line.
             # (asyncio.create_subprocess_exec raises NotImplementedError on Windows Python 3.10)
             def _run_and_collect() -> tuple[list[str], int]:
+                logger.info(f"[MinerU] 执行命令: {' '.join(cmd)}")
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -154,7 +196,11 @@ async def parse_pdf_with_mineru(
                     stripped = line.strip()
                     if stripped:
                         lines.append(stripped)
+                        # 实时打印关键日志
+                        if any(kw in stripped.lower() for kw in ["error", "fail", "model", "download", "load"]):
+                            logger.info(f"[MinerU] {stripped}")
                 proc.wait()
+                logger.info(f"[MinerU] 进程退出码: {proc.returncode}")
                 return lines, proc.returncode
 
             log_lines, returncode = await asyncio.wait_for(
@@ -167,9 +213,15 @@ async def parse_pdf_with_mineru(
                 yield make_event("progress", log_line)
 
             if returncode != 0:
-                logger.error(f"MinerU process failed with code {returncode}")
+                # 提取最后几行日志用于错误提示
+                error_context = "\n".join(log_lines[-10:]) if log_lines else "No output"
+                logger.error(f"[MinerU] 解析失败 (exit {returncode})")
+                logger.error(f"[MinerU] 最后日志:\n{error_context}")
                 yield make_event(
-                    "error", f"Extraction failed (exit code {returncode})."
+                    "error", 
+                    f"PDF 解析失败 (exit code {returncode})。\n"
+                    f"可能原因：1) MinerU 模型未下载 2) PDF 格式不支持 3) 内存不足\n"
+                    f"详情: {error_context[-200:]}"
                 )
                 return
 
@@ -178,9 +230,11 @@ async def parse_pdf_with_mineru(
             yield make_event("error", f"Parsing timed out after {_PARSE_TIMEOUT}s.")
             return
         except FileNotFoundError:
-            logger.error("MinerU executable 'magic-pdf' not found in system PATH.")
+            logger.error(f"[MinerU] 可执行文件未找到: {_MAGIC_PDF_BIN}")
             yield make_event(
-                "error", "MinerU is not installed or 'magic-pdf' is not in PATH."
+                "error", 
+                "MinerU 未安装或 'mineru/magic-pdf' 不在 PATH 中。\n"
+                "请检查服务器日志确认 MinerU 安装状态。"
             )
             return
         except Exception as e:

@@ -1,6 +1,11 @@
 """
 会话隔离存储模块
 支持多用户 Demo 场景，数据按 session_id 隔离，1小时后自动清理
+
+重要设计决策：
+- 会话数据存储在 /tmp，而非持久化存储
+- 文献、笔记等数据刷新页面后不保留（Demo 体验模式）
+- 重启服务时自动清空所有会话
 """
 import os
 import time
@@ -13,8 +18,8 @@ import logging
 
 logger = logging.getLogger("aether")
 
-# 会话数据根目录
-SESSION_ROOT = Path("/mnt/workspace/sessions")
+# 会话数据根目录：使用 /tmp 确保数据不持久化
+SESSION_ROOT = Path("/tmp/atomiclab_sessions")
 SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 
 # 会话过期时间（秒）
