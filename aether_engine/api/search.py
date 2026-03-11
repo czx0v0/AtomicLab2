@@ -6,16 +6,20 @@ RAG 多源多轮混合检索 API
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger("aether")
 NOTES_FILE = Path("data/notes.json")
+
+# 检测是否在创空间环境
+IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
 
 
 # ── 请求 / 响应模型 ─────────────────────────────────────────────────────────
@@ -144,16 +148,20 @@ def _expand_query(query: str) -> List[str]:
 # ── OCR 文本提取（轻量版）──────────────────────────────────────────────────
 
 
-def _extract_screenshot_texts() -> List[Dict[str, Any]]:
+def _extract_screenshot_texts(session_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    从 notes.json 中提取有截图的笔记，将 base64 图片的关联文本
-    （content + translation）作为可检索内容。
-    如果笔记 type=screenshot 且 content 为空，标记为 OCR 候选。
+    从 notes.json 中提取有截图的笔记，支持会话隔离。
     """
-    if not NOTES_FILE.exists():
+    if IN_MODELSCOPE_SPACE and session_id:
+        from core.session_store import get_session_path
+        notes_file = get_session_path(session_id, "notes.json")
+    else:
+        notes_file = NOTES_FILE
+
+    if not notes_file.exists():
         return []
     try:
-        notes = json.loads(NOTES_FILE.read_text(encoding="utf-8"))
+        notes = json.loads(notes_file.read_text(encoding="utf-8"))
     except Exception:
         return []
 
@@ -191,16 +199,17 @@ def _search_pipeline(
     top_k: int = 8,
     doc_id: Optional[str] = None,
     max_rounds: int = 2,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    多源多轮检索管线（文档原文优先）：
+    多源多轮检索管线（文档原文优先，支持会话隔离）：
     Round 1: 原始查询 → [文档原文向量(1.8) + 文档BM25(1.5)] + [笔记向量(0.9) + 笔记BM25(0.7)] + [截图OCR(0.5)]
     Round 2+: 查询变体 → 补充检索，去重合并
     最终 RRF 加权融合。文档原文块 > 用户卡片 > 截图。
     """
     from service.bm25_engine import get_bm25_engine, tokenize_zh
 
-    bm25 = get_bm25_engine()
+    bm25 = get_bm25_engine(session_id)
 
     all_channels: List[List[dict]] = []
     channel_weights: List[float] = []
@@ -235,7 +244,7 @@ def _search_pipeline(
         try:
             from service.doc_rag import get_document_rag
 
-            doc_rag = get_document_rag()
+            doc_rag = get_document_rag(session_id)
             doc_vector = doc_rag.search(q, top_k=fetch_k)
             doc_vector = _dedup(doc_vector)
             if doc_vector:
@@ -265,7 +274,7 @@ def _search_pipeline(
         try:
             from service.note_rag import get_note_rag
 
-            note_rag = get_note_rag()
+            note_rag = get_note_rag(session_id)
             note_vector = note_rag.search(q, top_k=fetch_k)
             note_vector = _dedup(note_vector)
             if note_vector:
@@ -293,7 +302,7 @@ def _search_pipeline(
         # ── 通道 5: 截图 OCR 文本检索（仅首轮）──────────────────────────────
         if is_first_round:
             try:
-                screenshot_items = _extract_screenshot_texts()
+                screenshot_items = _extract_screenshot_texts(session_id)
                 if screenshot_items:
                     # 对截图文本做 BM25 风格的 token overlap 评分
                     tokens_q = set(tokenize_zh(q))
@@ -337,17 +346,20 @@ def _search_pipeline(
 
 
 @router.post("")
-def search_notes(body: SearchRequest):
+def search_notes(body: SearchRequest, x_session_id: str = Header(default="")):
     """
-    多源多轮混合检索：
+    多源多轮混合检索（支持会话隔离）：
     文档原文（向量+BM25） → 笔记卡片（向量+BM25） → 截图OCR → RRF 融合。
     支持查询扩展和多轮检索。
     """
     if not body.query.strip():
         raise HTTPException(status_code=400, detail="查询内容不能为空")
 
+    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+
     logger.info(
-        "收到检索请求: query='%s', top_k=%d, max_rounds=%d",
+        "[Session:%s] 收到检索请求: query='%s', top_k=%d, max_rounds=%d",
+        session_id or "default",
         body.query,
         body.top_k,
         body.max_rounds,
@@ -358,6 +370,7 @@ def search_notes(body: SearchRequest):
         top_k=body.top_k,
         doc_id=body.doc_id,
         max_rounds=body.max_rounds,
+        session_id=session_id,
     )
 
     if result["results"]:
@@ -374,15 +387,17 @@ def search_notes(body: SearchRequest):
 
 
 @router.post("/index-document")
-def index_document(body: IndexDocumentRequest):
+def index_document(body: IndexDocumentRequest, x_session_id: str = Header(default="")):
     """将解析后的 Markdown 文档切块并写入 DocumentRAG + 重建 BM25 索引。"""
     if not body.doc_id.strip() or not body.markdown.strip():
         raise HTTPException(status_code=400, detail="doc_id 和 markdown 不能为空")
 
+    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+
     try:
         from service.doc_rag import get_document_rag
 
-        rag = get_document_rag()
+        rag = get_document_rag(session_id)
         count = rag.index_document(
             body.doc_id, body.doc_title or body.doc_id, body.markdown
         )
@@ -391,9 +406,9 @@ def index_document(body: IndexDocumentRequest):
         try:
             from service.bm25_engine import get_bm25_engine
 
-            bm25 = get_bm25_engine()
+            bm25 = get_bm25_engine(session_id)
             bm25.invalidate()  # 标记需重建
-            logger.info("BM25 文档索引已标记重建")
+            logger.info("[Session:%s] BM25 文档索引已标记重建", session_id or "default")
         except Exception as e:
             logger.warning("BM25 索引重建失败: %s", e)
 

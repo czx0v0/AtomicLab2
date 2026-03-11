@@ -28,6 +28,7 @@ def _get_notes_file(session_id: str = None) -> Path:
     """获取笔记文件路径"""
     if IN_MODELSCOPE_SPACE and session_id:
         from core.session_store import get_session_path, init_session
+
         init_session(session_id)
         return get_session_path(session_id, "notes.json")
     return Path("data/notes.json")
@@ -37,7 +38,7 @@ def _load_notes(session_id: str = None) -> List[dict]:
     """加载笔记"""
     if IN_MODELSCOPE_SPACE and session_id:
         return SessionDataStore.get(session_id, "notes", [])
-    
+
     notes_file = _get_notes_file(session_id)
     if notes_file.exists():
         try:
@@ -50,9 +51,15 @@ def _load_notes(session_id: str = None) -> List[dict]:
 def _save_notes(notes: List[dict], session_id: str = None):
     """保存笔记"""
     if IN_MODELSCOPE_SPACE and session_id:
+        # 同时写内存（快速读取）和文件（供 NoteRAG/BM25 同步）
         SessionDataStore.set(session_id, "notes", notes)
+        notes_file = _get_notes_file(session_id)
+        notes_file.parent.mkdir(parents=True, exist_ok=True)
+        notes_file.write_text(
+            json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         return
-    
+
     notes_file = _get_notes_file(session_id)
     notes_file.parent.mkdir(parents=True, exist_ok=True)
     notes_file.write_text(
@@ -98,8 +105,12 @@ def create_note(body: NoteCreate, x_session_id: str = Header(default="")):
     }
     notes.append(new_note)
     _save_notes(notes, session_id)
-    logger.info("[Session:%s] 创建笔记 id=%s page=%s", 
-               session_id or "default", new_note["id"], new_note.get("page"))
+    logger.info(
+        "[Session:%s] 创建笔记 id=%s page=%s",
+        session_id or "default",
+        new_note["id"],
+        new_note.get("page"),
+    )
 
     # 异步同步到向量库（不阻塞 HTTP 响应）
     def _sync():

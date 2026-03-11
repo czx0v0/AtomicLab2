@@ -8,7 +8,7 @@ import os
 import json
 import logging
 import re
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
@@ -22,6 +22,7 @@ if IN_MODELSCOPE_SPACE:
     from core.session_store import get_session_path, init_session
 
 _instance = None
+_instances: Dict[str, "DocumentRAG"] = {}
 
 
 def _split_markdown(md: str, max_chunk_chars: int = 800) -> List[Dict[str, str]]:
@@ -63,16 +64,16 @@ def _split_markdown(md: str, max_chunk_chars: int = 800) -> List[Dict[str, str]]
 class DocumentRAG:
     def __init__(self, session_id: str = None):
         from service.embedding import get_embedding_function
-        
+
         self.session_id = session_id
-        
+
         # 获取 ChromaDB 存储路径
         if IN_MODELSCOPE_SPACE and session_id:
             init_session(session_id)
             chroma_dir = str(get_session_path(session_id, "chroma"))
         else:
             chroma_dir = "data/chroma_store"
-        
+
         self.client = chromadb.Client(
             ChromaSettings(persist_directory=chroma_dir, is_persistent=True)
         )
@@ -81,8 +82,11 @@ class DocumentRAG:
             metadata={"hnsw:space": "cosine"},
             embedding_function=get_embedding_function(),
         )
-        logger.info("[Session:%s] DocumentRAG 初始化: count=%d", 
-                   session_id or "default", self.collection.count())
+        logger.info(
+            "[Session:%s] DocumentRAG 初始化: count=%d",
+            session_id or "default",
+            self.collection.count(),
+        )
 
     def index_document(self, doc_id: str, doc_title: str, markdown: str) -> int:
         if not markdown.strip():
@@ -151,8 +155,9 @@ class DocumentRAG:
         return out
 
 
-def get_document_rag() -> DocumentRAG:
-    global _instance
-    if _instance is None:
-        _instance = DocumentRAG()
-    return _instance
+def get_document_rag(session_id: Optional[str] = None) -> "DocumentRAG":
+    """\u83b7\u53d6\u4f1a\u8bdd\u7ea7 DocumentRAG \u5b9e\u4f8b\uff08per-session \u5355\u4f8b\uff09\u3002"""
+    key = session_id or "__default__"
+    if key not in _instances:
+        _instances[key] = DocumentRAG(session_id)
+    return _instances[key]

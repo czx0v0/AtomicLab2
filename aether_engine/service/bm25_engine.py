@@ -6,6 +6,7 @@ BM25 关键词检索引擎
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
@@ -16,6 +17,9 @@ from rank_bm25 import BM25Okapi
 logger = logging.getLogger("aether")
 
 NOTES_FILE = Path("data/notes.json")
+
+# 检测是否在创空间环境
+IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
 
 # 停用词（高频无意义词）
 _STOP_WORDS = {
@@ -136,7 +140,17 @@ class BM25Engine:
     - doc_chunks: 文档原文切块
     """
 
-    def __init__(self):
+    def __init__(self, session_id: Optional[str] = None):
+        self.session_id = session_id
+
+        # 会话层笔记文件路径
+        if IN_MODELSCOPE_SPACE and session_id:
+            from core.session_store import get_session_path, init_session
+            init_session(session_id)
+            self.notes_file = get_session_path(session_id, "notes.json")
+        else:
+            self.notes_file = NOTES_FILE
+
         # 索引 ID 列表（与 BM25 corpus 对齐）
         self._note_ids: List[str] = []
         self._note_corpus: List[List[str]] = []
@@ -155,11 +169,11 @@ class BM25Engine:
 
     def build_notes_index(self):
         """从 notes.json 构建/重建 BM25 索引。"""
-        if not NOTES_FILE.exists():
+        if not self.notes_file.exists():
             return 0
 
         try:
-            notes = json.loads(NOTES_FILE.read_text(encoding="utf-8"))
+            notes = json.loads(self.notes_file.read_text(encoding="utf-8"))
         except Exception:
             return 0
 
@@ -260,7 +274,7 @@ class BM25Engine:
         try:
             from service.doc_rag import get_document_rag
 
-            doc_rag = get_document_rag()
+            doc_rag = get_document_rag(self.session_id)
             if doc_rag.collection.count() == 0:
                 return 0
 
@@ -362,12 +376,13 @@ class BM25Engine:
         self._doc_ids = []
 
 
-# 单例
-_instance: Optional[BM25Engine] = None
+# per-session 实例字典
+_instances: Dict[str, BM25Engine] = {}
 
 
-def get_bm25_engine() -> BM25Engine:
-    global _instance
-    if _instance is None:
-        _instance = BM25Engine()
-    return _instance
+def get_bm25_engine(session_id: Optional[str] = None) -> BM25Engine:
+    """\u83b7\u53d6\u4f1a\u8bdd\u7ea7 BM25Engine \u5b9e\u4f8b\uff08per-session \u5355\u4f8b\uff09\u3002"""
+    key = session_id or "__default__"
+    if key not in _instances:
+        _instances[key] = BM25Engine(session_id)
+    return _instances[key]

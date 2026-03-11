@@ -48,7 +48,7 @@ def _load_meta(session_id: str = None) -> List[dict]:
     """加载文档元数据"""
     if IN_MODELSCOPE_SPACE and session_id:
         return SessionDataStore.get(session_id, "documents", [])
-    
+
     meta_file = _get_meta_file(session_id)
     if not meta_file.exists():
         return []
@@ -63,7 +63,7 @@ def _save_meta(items: List[dict], session_id: str = None):
     if IN_MODELSCOPE_SPACE and session_id:
         SessionDataStore.set(session_id, "documents", items)
         return
-    
+
     meta_file = _get_meta_file(session_id)
     meta_file.parent.mkdir(parents=True, exist_ok=True)
     meta_file.write_text(
@@ -87,16 +87,18 @@ def list_documents(x_session_id: str = Header(default="")):
 
 
 @router.post("", response_model=DocumentItem)
-async def upload_document(file: UploadFile = File(...), x_session_id: str = Header(default="")):
+async def upload_document(
+    file: UploadFile = File(...), x_session_id: str = Header(default="")
+):
     """上传文档（会话隔离）"""
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
-    
+
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
 
     content = await file.read()
     doc_id = str(uuid.uuid4())
-    
+
     doc_root = _get_doc_root(session_id)
     doc_root.mkdir(parents=True, exist_ok=True)
     target = doc_root / f"{doc_id}.pdf"
@@ -114,8 +116,13 @@ async def upload_document(file: UploadFile = File(...), x_session_id: str = Head
     items.append(item)
     _save_meta(items, session_id)
 
-    logger.info("[Session:%s] 上传文献: id=%s name=%s size=%d", 
-                session_id or "default", doc_id, file.filename, len(content))
+    logger.info(
+        "[Session:%s] 上传文献: id=%s name=%s size=%d",
+        session_id or "default",
+        doc_id,
+        file.filename,
+        len(content),
+    )
     return item
 
 
