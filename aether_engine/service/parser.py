@@ -11,10 +11,18 @@ from pathlib import Path
 
 logger = logging.getLogger("uvicorn.error")
 
-# Resolve magic-pdf: prefer PATH, fallback to known conda env location.
+# Resolve MinerU CLI: mineru (v2.0+) preferred, fallback to magic-pdf (legacy).
 _MAGIC_PDF_BIN = (
-    shutil.which("magic-pdf") or r"D:\anaconda\envs\py-agent\Scripts\magic-pdf.exe"
+    shutil.which("mineru")
+    or shutil.which("magic-pdf")
+    or r"D:\anaconda\envs\py-agent\Scripts\magic-pdf.exe"
 )
+
+# 创空间环境：强制使用 ModelScope 模型源（无法访问 HuggingFace）
+_SUBPROCESS_ENV = {
+    **os.environ,
+    "MINERU_MODEL_SOURCE": os.environ.get("MINERU_MODEL_SOURCE", "modelscope"),
+}
 
 # Timeout in seconds for a single PDF parse (default 5 minutes).
 _PARSE_TIMEOUT = 300
@@ -139,6 +147,7 @@ async def parse_pdf_with_mineru(
                     stderr=subprocess.STDOUT,
                     text=True,
                     errors="replace",
+                    env=_SUBPROCESS_ENV,
                 )
                 lines: list[str] = []
                 for line in proc.stdout:

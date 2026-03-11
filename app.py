@@ -58,6 +58,8 @@ if IN_MODELSCOPE_SPACE:
 
     # 设置 MinerU 环境变量
     os.environ.setdefault("MINERU_TOOLS_CONFIG_JSON", MINERU_CONFIG_FILE)
+    # 关键：创空间内无法访问 HuggingFace，必须使用 ModelScope 模型源
+    os.environ["MINERU_MODEL_SOURCE"] = "modelscope"
 
     # 自动下载 MinerU 模型（首次使用时）
     def setup_mineru_models():
@@ -87,20 +89,21 @@ if IN_MODELSCOPE_SPACE:
             )
 
             if not has_model_files:
-                print("[Config] MinerU 模型目录为空，尝试自动下载模型...")
+                print("[Config] MinerU 模型目录为空，从 ModelScope 下载模型...")
                 print("[Config] 这可能需要几分钟时间（约3GB）...")
                 import subprocess
 
                 result = subprocess.run(
-                    ["python", "-m", "magic_pdf.cli.model_download"],
+                    ["mineru-models-download", "--source", "modelscope"],
                     capture_output=True,
                     text=True,
                     timeout=600,  # 10分钟超时
+                    env={**os.environ, "MINERU_MODEL_SOURCE": "modelscope"},
                 )
                 if result.returncode == 0:
                     print("[Config] ✓ MinerU 模型下载完成")
                 else:
-                    print(f"[Config] ⚠️ MinerU 模型下载失败: {result.stderr}")
+                    print(f"[Config] ⚠️ MinerU 模型下载失败: {result.stderr[:200]}")
             else:
                 print(f"[Config] ✓ MinerU 模型已存在 ({len(model_files)} 个文件)")
         except Exception as e:
