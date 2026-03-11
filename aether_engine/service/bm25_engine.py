@@ -146,6 +146,7 @@ class BM25Engine:
         # 会话层笔记文件路径
         if IN_MODELSCOPE_SPACE and session_id:
             from core.session_store import get_session_path, init_session
+
             init_session(session_id)
             self.notes_file = get_session_path(session_id, "notes.json")
         else:

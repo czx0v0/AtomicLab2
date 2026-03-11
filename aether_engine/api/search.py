@@ -154,6 +154,7 @@ def _extract_screenshot_texts(session_id: Optional[str] = None) -> List[Dict[str
     """
     if IN_MODELSCOPE_SPACE and session_id:
         from core.session_store import get_session_path
+
         notes_file = get_session_path(session_id, "notes.json")
     else:
         notes_file = NOTES_FILE
