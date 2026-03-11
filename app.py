@@ -116,11 +116,19 @@ else:
 # 导入 FastAPI 应用
 from aether_engine.main import app
 
+# 启动会话清理调度器（仅在创空间环境）
+if IN_MODELSCOPE_SPACE:
+    from aether_engine.core.session_store import start_cleanup_scheduler, cleanup_all_sessions
+    # 启动时清理所有旧会话
+    cleanup_all_sessions()
+    # 启动定时清理（每5分钟检查一次）
+    start_cleanup_scheduler(interval_seconds=300)
+
 if __name__ == "__main__":
     import uvicorn
-
+    
     # 从环境变量获取配置
     host = os.getenv("UVICORN_HOST", "0.0.0.0")
     port = int(os.getenv("UVICORN_PORT", "7860"))  # ModelScope 默认端口
-
+    
     uvicorn.run(app, host=host, port=port)

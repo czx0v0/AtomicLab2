@@ -1,9 +1,10 @@
 """
-文档分块 RAG 引擎
+文档分块 RAG 引擎（会话隔离版）
 将解析后的 Markdown 按章节/段落切分后写入 ChromaDB，
 用于与原子笔记并行检索。
 """
 
+import os
 import json
 import logging
 import re
@@ -14,7 +15,11 @@ from chromadb.config import Settings as ChromaSettings
 
 logger = logging.getLogger("aether")
 
-CHROMA_DIR = "data/chroma_store"
+# 检测是否在创空间环境
+IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+
+if IN_MODELSCOPE_SPACE:
+    from core.session_store import get_session_path, init_session
 
 _instance = None
 
@@ -56,18 +61,28 @@ def _split_markdown(md: str, max_chunk_chars: int = 800) -> List[Dict[str, str]]
 
 
 class DocumentRAG:
-    def __init__(self):
+    def __init__(self, session_id: str = None):
         from service.embedding import get_embedding_function
-
+        
+        self.session_id = session_id
+        
+        # 获取 ChromaDB 存储路径
+        if IN_MODELSCOPE_SPACE and session_id:
+            init_session(session_id)
+            chroma_dir = str(get_session_path(session_id, "chroma"))
+        else:
+            chroma_dir = "data/chroma_store"
+        
         self.client = chromadb.Client(
-            ChromaSettings(persist_directory=CHROMA_DIR, is_persistent=True)
+            ChromaSettings(persist_directory=chroma_dir, is_persistent=True)
         )
         self.collection = self.client.get_or_create_collection(
             name="doc_chunks",
             metadata={"hnsw:space": "cosine"},
             embedding_function=get_embedding_function(),
         )
-        logger.info("DocumentRAG 初始化: count=%d", self.collection.count())
+        logger.info("[Session:%s] DocumentRAG 初始化: count=%d", 
+                   session_id or "default", self.collection.count())
 
     def index_document(self, doc_id: str, doc_title: str, markdown: str) -> int:
         if not markdown.strip():
