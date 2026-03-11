@@ -12,6 +12,7 @@ from pathlib import Path
 
 logger = logging.getLogger("uvicorn.error")
 
+
 # ══════════════════════════════════════════════════════════════
 # MinerU CLI 查找：兼容未加入 PATH 的 conda/venv 环境
 # ══════════════════════════════════════════════════════════════
@@ -197,7 +198,10 @@ async def parse_pdf_with_mineru(
                     if stripped:
                         lines.append(stripped)
                         # 实时打印关键日志
-                        if any(kw in stripped.lower() for kw in ["error", "fail", "model", "download", "load"]):
+                        if any(
+                            kw in stripped.lower()
+                            for kw in ["error", "fail", "model", "download", "load"]
+                        ):
                             logger.info(f"[MinerU] {stripped}")
                 proc.wait()
                 logger.info(f"[MinerU] 进程退出码: {proc.returncode}")
@@ -218,10 +222,10 @@ async def parse_pdf_with_mineru(
                 logger.error(f"[MinerU] 解析失败 (exit {returncode})")
                 logger.error(f"[MinerU] 最后日志:\n{error_context}")
                 yield make_event(
-                    "error", 
+                    "error",
                     f"PDF 解析失败 (exit code {returncode})。\n"
                     f"可能原因：1) MinerU 模型未下载 2) PDF 格式不支持 3) 内存不足\n"
-                    f"详情: {error_context[-200:]}"
+                    f"详情: {error_context[-200:]}",
                 )
                 return
 
@@ -232,9 +236,9 @@ async def parse_pdf_with_mineru(
         except FileNotFoundError:
             logger.error(f"[MinerU] 可执行文件未找到: {_MAGIC_PDF_BIN}")
             yield make_event(
-                "error", 
+                "error",
                 "MinerU 未安装或 'mineru/magic-pdf' 不在 PATH 中。\n"
-                "请检查服务器日志确认 MinerU 安装状态。"
+                "请检查服务器日志确认 MinerU 安装状态。",
             )
             return
         except Exception as e:

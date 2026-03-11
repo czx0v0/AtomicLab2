@@ -11,6 +11,12 @@ jieba>=0.42.0
 rank-bm25>=0.2.2
 sentence-transformers>=2.2.0
 modelscope>=1.10.0
-# MinerU PDF解析（sniffio 必须在 mineru 前面，防止拉取损坏的 sniffio-0.0.0）
+
+# 防止 pip 依赖回溯超时：预固定易冲突的包
+soupsieve>=2.5
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
 sniffio>=1.3.0
+
+# MinerU PDF解析
 mineru[all]>=2.0.0

@@ -7,6 +7,7 @@
 - 文献、笔记等数据刷新页面后不保留（Demo 体验模式）
 - 重启服务时自动清空所有会话
 """
+
 import os
 import time
 import shutil
@@ -40,15 +41,15 @@ def init_session(session_id: str) -> Path:
     with _lock:
         session_dir = get_session_dir(session_id)
         session_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # 创建子目录
         (session_dir / "documents").mkdir(exist_ok=True)
         (session_dir / "chroma").mkdir(exist_ok=True)
-        
+
         _session_metadata[session_id] = {
             "created_at": datetime.utcnow(),
             "last_active": datetime.utcnow(),
-            "dir": str(session_dir)
+            "dir": str(session_dir),
         }
         logger.info(f"[Session] 初始化会话: {session_id}")
         return session_dir
@@ -78,11 +79,11 @@ def is_session_valid(session_id: str) -> bool:
                 _session_metadata[session_id] = {
                     "created_at": datetime.utcnow(),
                     "last_active": datetime.utcnow(),
-                    "dir": str(session_dir)
+                    "dir": str(session_dir),
                 }
                 return True
             return False
-        
+
         last_active = _session_metadata[session_id]["last_active"]
         if datetime.utcnow() - last_active > timedelta(seconds=SESSION_EXPIRE_SECONDS):
             return False
@@ -94,12 +95,12 @@ def cleanup_expired_sessions():
     with _lock:
         now = datetime.utcnow()
         expired_sessions = []
-        
+
         for session_id, meta in list(_session_metadata.items()):
             last_active = meta["last_active"]
             if now - last_active > timedelta(seconds=SESSION_EXPIRE_SECONDS):
                 expired_sessions.append(session_id)
-        
+
         for session_id in expired_sessions:
             try:
                 session_dir = get_session_dir(session_id)
@@ -113,6 +114,7 @@ def cleanup_expired_sessions():
 
 def start_cleanup_scheduler(interval_seconds: int = 300):
     """启动定时清理任务（每5分钟检查一次）"""
+
     def cleanup_loop():
         while True:
             time.sleep(interval_seconds)
@@ -120,7 +122,7 @@ def start_cleanup_scheduler(interval_seconds: int = 300):
                 cleanup_expired_sessions()
             except Exception as e:
                 logger.error(f"[Session] 清理任务出错: {e}")
-    
+
     thread = threading.Thread(target=cleanup_loop, daemon=True)
     thread.start()
     logger.info(f"[Session] 启动清理调度器，间隔 {interval_seconds} 秒")
@@ -129,16 +131,16 @@ def start_cleanup_scheduler(interval_seconds: int = 300):
 # 会话级数据存储（内存 + 文件混合）
 class SessionDataStore:
     """会话数据存储，支持笔记、文档元数据等"""
-    
+
     _memory_store: Dict[str, Dict[str, Any]] = {}
-    
+
     @classmethod
     def get(cls, session_id: str, key: str, default=None):
         """获取会话数据"""
         touch_session(session_id)
         session_data = cls._memory_store.get(session_id, {})
         return session_data.get(key, default)
-    
+
     @classmethod
     def set(cls, session_id: str, key: str, value: Any):
         """设置会话数据"""
@@ -146,14 +148,14 @@ class SessionDataStore:
         if session_id not in cls._memory_store:
             cls._memory_store[session_id] = {}
         cls._memory_store[session_id][key] = value
-    
+
     @classmethod
     def delete(cls, session_id: str, key: str):
         """删除会话数据"""
         touch_session(session_id)
         if session_id in cls._memory_store and key in cls._memory_store[session_id]:
             del cls._memory_store[session_id][key]
-    
+
     @classmethod
     def cleanup_session(cls, session_id: str):
         """清理会话内存数据"""

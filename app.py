@@ -59,12 +59,16 @@ if IN_MODELSCOPE_SPACE:
                 _old_models_dir = _existing.get("models-dir", "")
                 if _old_models_dir and os.path.isdir(_old_models_dir):
                     _need_write = False  # 路径存在，保留旧配置
-                    print(f"[Config] MinerU 配置文件有效，models-dir: {_old_models_dir}")
+                    print(
+                        f"[Config] MinerU 配置文件有效，models-dir: {_old_models_dir}"
+                    )
                 elif not _old_models_dir:
                     _need_write = False  # 没有 models-dir，使用默认路径
                     print(f"[Config] MinerU 配置文件有效，使用默认模型路径")
                 else:
-                    print(f"[Config] MinerU 配置文件中 models-dir 不存在: {_old_models_dir}，将更新")
+                    print(
+                        f"[Config] MinerU 配置文件中 models-dir 不存在: {_old_models_dir}，将更新"
+                    )
             except Exception:
                 pass
 
@@ -73,7 +77,9 @@ if IN_MODELSCOPE_SPACE:
             config_content = {"device-mode": "cpu"}
             with open(MINERU_CONFIG_FILE, "w") as f:
                 json.dump(config_content, f, indent=2)
-            print(f"[Config] 已更新 MinerU 配置文件: {MINERU_CONFIG_FILE} (不指定models-dir，使用默认路径)")
+            print(
+                f"[Config] 已更新 MinerU 配置文件: {MINERU_CONFIG_FILE} (不指定models-dir，使用默认路径)"
+            )
     except Exception as e:
         print(f"[Config] 创建 MinerU 配置文件失败: {e}")
 
@@ -119,7 +125,9 @@ if IN_MODELSCOPE_SPACE:
                         for f in model_files
                     )
                     if has_model_files:
-                        print(f"[Config] ✓ MinerU 模型已存在: {model_dir} ({len(model_files)} 个文件)")
+                        print(
+                            f"[Config] ✓ MinerU 模型已存在: {model_dir} ({len(model_files)} 个文件)"
+                        )
                         model_found = True
                         break
 
