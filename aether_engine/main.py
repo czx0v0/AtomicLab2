@@ -98,3 +98,9 @@ async def log_requests(request: Request, call_next):
 
 
 app.include_router(root_router)
+
+
+# ── 根路由（创空间健康检查）────────────────────────────────────────────
+@app.get("/", include_in_schema=False)
+async def root():
+    return {"status": "ok", "service": "Aether-Engine", "version": settings.APP_VERSION}
