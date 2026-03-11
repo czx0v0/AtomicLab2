@@ -13,9 +13,10 @@ ENV UVICORN_PORT=7860
 COPY aether_engine/requirements.txt /home/user/app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 单独安装 mineru（依赖复杂，需要更多时间和空间）
-# 注意：首次构建可能需要 10-20 分钟，模型约 3GB
-RUN pip install --no-cache-dir mineru || echo "MinerU 安装失败，PDF 功能将不可用"
+# 单独安装 mineru（依赖复杂，先固定 sniffio 防止拉取损坏版本）
+# sniffio-0.0.0 是 PyPI 上的残损占位包，会导致 pip 安装失败
+RUN pip install --no-cache-dir "sniffio>=1.3.0" && \
+    pip install --no-cache-dir mineru || echo "MinerU 安装失败，PDF 功能将不可用"
 
 # 复制应用代码
 COPY aether_engine /home/user/app/aether_engine
