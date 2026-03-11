@@ -128,8 +128,13 @@ if _static_dir.exists():
     async def serve_spa(full_path: str):
         """SPA 路由回退：所有非 /api 的请求均返回 index.html"""
         return FileResponse(str(_static_dir / "index.html"))
+
 else:
     # 静态文件不存在（纯 API 模式）
     @app.get("/", include_in_schema=False)
     async def root():
-        return {"status": "ok", "service": "Aether-Engine", "version": settings.APP_VERSION}
+        return {
+            "status": "ok",
+            "service": "Aether-Engine",
+            "version": settings.APP_VERSION,
+        }
