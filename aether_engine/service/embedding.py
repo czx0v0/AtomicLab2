@@ -1,7 +1,7 @@
 """
 共享 Embedding 函数
 使用 ModelScope 上的 SentenceTransformer 模型（384 维），避免 ChromaDB 默认 ONNX 下载阻塞。
-模型缓存在 MODELSCOPE_CACHE（/home/user/.cache/modelscope）。
+模型缓存在 MODELSCOPE_CACHE（/mnt/workspace/.cache/modelscope）。
 """
 
 import os
@@ -30,10 +30,10 @@ def _get_model():
             "加载 SentenceTransformer 模型 (paraphrase-multilingual-MiniLM-L12-v2)..."
         )
 
-        # 设置 ModelScope 环境变量
-        os.environ.setdefault("MODELSCOPE_CACHE", "/home/user/.cache/modelscope")
-        os.environ.setdefault("HF_HOME", "/home/user/.cache/modelscope/hf")
-        os.environ.setdefault("TRANSFORMERS_CACHE", "/home/user/.cache/modelscope/hf")
+        # 设置 ModelScope 环境变量（创空间使用 /mnt/workspace）
+        os.environ.setdefault("MODELSCOPE_CACHE", "/mnt/workspace/.cache/modelscope")
+        os.environ.setdefault("HF_HOME", "/mnt/workspace/.cache/huggingface")
+        os.environ.setdefault("TRANSFORMERS_CACHE", "/mnt/workspace/.cache/huggingface")
 
         from sentence_transformers import SentenceTransformer
 
