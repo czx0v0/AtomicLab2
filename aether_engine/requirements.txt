@@ -11,5 +11,6 @@ jieba>=0.42.0
 rank-bm25>=0.2.2
 sentence-transformers>=2.2.0
 modelscope>=1.10.0
-# 注意：mineru 包依赖复杂，建议在 Dockerfile 中单独安装
-# 或创空间构建时通过预装环境提供
+# MinerU PDF解析（sniffio 必须在 mineru 前面，防止拉取损坏的 sniffio-0.0.0）
+sniffio>=1.3.0
+mineru[all]>=2.0.0
