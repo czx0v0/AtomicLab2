@@ -18,12 +18,30 @@ ENV UVICORN_HOST=0.0.0.0
 ENV UVICORN_PORT=7860
 # 注意：模型缓存路径在 app.py 中根据环境自动设置
 
-# 安装核心依赖（必须成功，失败则中止构建）
-COPY aether_engine/requirements.txt /home/user/app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# 安装依赖
+# Step 1: 必装的核心 Web 框架（最轻量，经过验证不会冲突）
+RUN pip install --no-cache-dir \
+    "fastapi==0.115.6" \
+    "uvicorn[standard]==0.32.1" \
+    "python-multipart==0.0.18" \
+    "openai>=1.30.0" \
+    "httpx" \
+    "python-dotenv" \
+    "tenacity" \
+    "networkx"
 
-# 单独安装 mineru（依赖复杂，安装失败不阻断构建）
-# sniffio 已在 requirements.txt 预固定，mineru 安装时不会回溯
+# Step 2: 预固定易冲突包
+RUN pip install --no-cache-dir \
+    "sniffio>=1.3.0" \
+    "soupsieve>=2.5" \
+    "beautifulsoup4>=4.12.0" \
+    "lxml>=4.9.0"
+
+# Step 3: 安装其余依赖（失败不阻断）
+COPY aether_engine/requirements.txt /home/user/app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt || echo "[Dockerfile] 部分依赖安装失败，继续构建"
+
+# Step 4: 单独安装 mineru（依赖复杂，安装失败不阻断构建）
 RUN pip install --no-cache-dir "mineru[all]>=2.0.0" || echo "[Dockerfile] MinerU 安装失败，PDF 功能将不可用"
 
 # 复制应用代码
