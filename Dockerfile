@@ -18,9 +18,13 @@ ENV UVICORN_HOST=0.0.0.0
 ENV UVICORN_PORT=7860
 # 注意：模型缓存路径在 app.py 中根据环境自动设置
 
-# 安装依赖（sniffio 在 requirements.txt 中已排在 mineru 前面）
+# 安装核心依赖（必须成功，失败则中止构建）
 COPY aether_engine/requirements.txt /home/user/app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt || echo "部分依赖安装失败，继续构建"
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 单独安装 mineru（依赖复杂，安装失败不阻断构建）
+# sniffio 已在 requirements.txt 预固定，mineru 安装时不会回溯
+RUN pip install --no-cache-dir "mineru[all]>=2.0.0" || echo "[Dockerfile] MinerU 安装失败，PDF 功能将不可用"
 
 # 复制应用代码
 COPY aether_engine /home/user/app/aether_engine
