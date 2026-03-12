@@ -9,6 +9,7 @@ from api.arxiv import router as arxiv_router
 from api.chat import router as chat_router
 from api.documents import router as documents_router
 from api.writing import router as writing_router
+from api.atomic import router as atomic_router
 
 root_router = APIRouter()
 root_router.include_router(health_router)  # health已有自己的/api前缀
@@ -20,3 +21,4 @@ root_router.include_router(arxiv_router, prefix="/api")
 root_router.include_router(chat_router, prefix="/api")
 root_router.include_router(documents_router, prefix="/api")
 root_router.include_router(writing_router, prefix="/api")
+root_router.include_router(atomic_router, prefix="/api")

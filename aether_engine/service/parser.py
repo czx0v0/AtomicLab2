@@ -38,6 +38,7 @@ logger = logging.getLogger("uvicorn.error")
 MINERU_API_BASE = "https://mineru.net/api/v4"
 MINERU_API_TOKEN = os.environ.get("MINERU_API_TOKEN", "")
 
+
 # ══════════════════════════════════════════════════════════════
 # 本地 CLI 回退（未设置 token 时使用）
 # ══════════════════════════════════════════════════════════════
@@ -50,14 +51,16 @@ def _find_mineru_bin() -> Optional[str]:
         shutil.which("magic-pdf.exe"),
     ]
     py_dir = Path(sys.executable).resolve().parent
-    candidates.extend([
-        str(py_dir / "bin" / "mineru"),
-        str(py_dir / "Scripts" / "mineru.exe"),
-        str(py_dir / "Scripts" / "mineru"),
-        str(py_dir / "Scripts" / "magic-pdf.exe"),
-        str(py_dir / "Scripts" / "magic-pdf"),
-        r"D:\anaconda\envs\py-agent\Scripts\magic-pdf.exe",
-    ])
+    candidates.extend(
+        [
+            str(py_dir / "bin" / "mineru"),
+            str(py_dir / "Scripts" / "mineru.exe"),
+            str(py_dir / "Scripts" / "mineru"),
+            str(py_dir / "Scripts" / "magic-pdf.exe"),
+            str(py_dir / "Scripts" / "magic-pdf"),
+            r"D:\anaconda\envs\py-agent\Scripts\magic-pdf.exe",
+        ]
+    )
     for p in candidates:
         if p and os.path.exists(p):
             return p
@@ -100,12 +103,14 @@ def _split_sections(md: str) -> list:
             summary = clean[:160]
             break
         image_refs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text)
-        sections.append({
-            "title": title,
-            "content": text,
-            "summary": summary,
-            "image_refs": image_refs,
-        })
+        sections.append(
+            {
+                "title": title,
+                "content": text,
+                "summary": summary,
+                "image_refs": image_refs,
+            }
+        )
 
     for line in md.splitlines():
         m = re.match(r"^(#{1,6})\s+(.*)$", line)
@@ -186,7 +191,9 @@ async def _parse_via_cloud_api(
         yield _make_event("error", "API 未返回 presigned 上传 URL")
         return
 
-    yield _make_event("progress", f"已获取上传链接，正在上传 {len(file_content)/1024:.1f} KB...")
+    yield _make_event(
+        "progress", f"已获取上传链接，正在上传 {len(file_content)/1024:.1f} KB..."
+    )
 
     # ── Step 2: PUT 上传文件 ──────────────────────────────────
     try:
@@ -244,7 +251,9 @@ async def _parse_via_cloud_api(
         if state == "running":
             pages_done = progress.get("extracted_pages", 0)
             total_pages = progress.get("total_pages", "?")
-            yield _make_event("progress", f"解析中: {pages_done}/{total_pages} 页 ({elapsed}s)")
+            yield _make_event(
+                "progress", f"解析中: {pages_done}/{total_pages} 页 ({elapsed}s)"
+            )
         elif state in ("pending", "converting"):
             yield _make_event("progress", f"排队中... ({elapsed}s)")
         elif state == "done":
@@ -328,6 +337,7 @@ async def _parse_via_local_cli(
         yield _make_event("starting", f"本地 MinerU CLI 解析: {filename}...")
 
         try:
+
             def _run() -> tuple[list[str], int]:
                 proc = subprocess.Popen(
                     cmd,
@@ -342,7 +352,9 @@ async def _parse_via_local_cli(
                     s = line.strip()
                     if s:
                         lines.append(s)
-                        if any(k in s.lower() for k in ["error", "fail", "model", "load"]):
+                        if any(
+                            k in s.lower() for k in ["error", "fail", "model", "load"]
+                        ):
                             logger.info(f"[MinerU CLI] {s}")
                 proc.wait()
                 logger.info(f"[MinerU CLI] 退出码: {proc.returncode}")
