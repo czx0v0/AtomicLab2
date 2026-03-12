@@ -1,189 +1,334 @@
+"""
+PDF 解析服务
+============
+优先使用 MinerU 云 API（设置 MINERU_API_TOKEN 环境变量即可），
+回退到本地 CLI（mineru / magic-pdf）。
+
+MinerU 云 API 工作流（本地文件上传）：
+  1. POST /api/v4/extract/task/batch  → 获取 presigned upload URL + task_id
+  2. PUT  上传 PDF 字节到 presigned URL
+  3. 轮询 GET /api/v4/extract/task/{task_id} 直到 state=done
+  4. 下载 full_zip_url 中的 zip，解压提取 full.md
+
+文档：https://mineru.net/doc/docs/
+"""
+
+import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
-import tempfile
-import asyncio
-import re
 import sys
-from typing import AsyncGenerator, Optional
+import tempfile
+import time
+import zipfile
+import asyncio
 from pathlib import Path
+from typing import AsyncGenerator, Optional
+
+import httpx
 
 logger = logging.getLogger("uvicorn.error")
 
+# ══════════════════════════════════════════════════════════════
+# MinerU 云 API 配置
+# ══════════════════════════════════════════════════════════════
+MINERU_API_BASE = "https://mineru.net/api/v4"
+MINERU_API_TOKEN = os.environ.get("MINERU_API_TOKEN", "")
 
 # ══════════════════════════════════════════════════════════════
-# MinerU CLI 查找：兼容未加入 PATH 的 conda/venv 环境
+# 本地 CLI 回退（未设置 token 时使用）
 # ══════════════════════════════════════════════════════════════
 def _find_mineru_bin() -> Optional[str]:
-    """查找 mineru/magic-pdf 可执行文件，兼容未加入 PATH 的 conda 环境"""
+    """查找 mineru/magic-pdf 可执行文件"""
     candidates = [
-        # 新版 mineru 命令
         shutil.which("mineru"),
         shutil.which("mineru.exe"),
-        # 旧版 magic-pdf 命令
         shutil.which("magic-pdf"),
         shutil.which("magic-pdf.exe"),
     ]
-
     py_dir = Path(sys.executable).resolve().parent
-    candidates.extend(
-        [
-            # 新版
-            str(py_dir / "Scripts" / "mineru.exe"),
-            str(py_dir / "Scripts" / "mineru"),
-            str(py_dir / "mineru"),
-            str(py_dir / "mineru.exe"),
-            # Linux bin
-            str(py_dir / "bin" / "mineru"),
-            # 旧版
-            str(py_dir / "Scripts" / "magic-pdf.exe"),
-            str(py_dir / "Scripts" / "magic-pdf"),
-            str(py_dir / "magic-pdf"),
-            str(py_dir / "magic-pdf.exe"),
-            # 本地开发回退
-            r"D:\anaconda\envs\py-agent\Scripts\magic-pdf.exe",
-        ]
-    )
-
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path
+    candidates.extend([
+        str(py_dir / "bin" / "mineru"),
+        str(py_dir / "Scripts" / "mineru.exe"),
+        str(py_dir / "Scripts" / "mineru"),
+        str(py_dir / "Scripts" / "magic-pdf.exe"),
+        str(py_dir / "Scripts" / "magic-pdf"),
+        r"D:\anaconda\envs\py-agent\Scripts\magic-pdf.exe",
+    ])
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
     return None
 
 
 _MAGIC_PDF_BIN = _find_mineru_bin()
-
-# 创空间环境：强制使用 ModelScope 模型源（无法访问 HuggingFace）
 _SUBPROCESS_ENV = {
     **os.environ,
     "MINERU_MODEL_SOURCE": os.environ.get("MINERU_MODEL_SOURCE", "modelscope"),
 }
-
-# Timeout in seconds for a single PDF parse (default 5 minutes).
 _PARSE_TIMEOUT = 300
 
-logger.info(f"[MinerU] CLI 路径: {_MAGIC_PDF_BIN or 'NOT FOUND'}")
+if MINERU_API_TOKEN:
+    logger.info("[MinerU] 使用云 API 模式")
+else:
+    logger.info(f"[MinerU] 使用本地 CLI 模式，路径: {_MAGIC_PDF_BIN or 'NOT FOUND'}")
 
 
-async def parse_pdf_with_mineru(
-    file_content: bytes, filename: str, method: str = "auto"
+# ══════════════════════════════════════════════════════════════
+# 公共工具
+# ══════════════════════════════════════════════════════════════
+def _split_sections(md: str) -> list:
+    """将 Markdown 拆分为章节列表"""
+    sections = []
+    title = "Preamble"
+    buf = []
+
+    def flush():
+        if not buf:
+            return
+        text = "\n".join(buf).strip()
+        if not text:
+            return
+        summary = ""
+        for line in text.splitlines():
+            clean = line.strip()
+            if not clean or clean.startswith("!"):
+                continue
+            summary = clean[:160]
+            break
+        image_refs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text)
+        sections.append({
+            "title": title,
+            "content": text,
+            "summary": summary,
+            "image_refs": image_refs,
+        })
+
+    for line in md.splitlines():
+        m = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if m:
+            flush()
+            title = m.group(2).strip() or "Untitled"
+            buf = []
+        else:
+            buf.append(line)
+    flush()
+    return sections
+
+
+def _make_event(status: str, msg: str = "", markdown: str = "", **extra) -> str:
+    payload = {"status": status}
+    if msg:
+        payload["message"] = msg
+    if markdown:
+        payload["markdown"] = markdown
+    for k, v in extra.items():
+        if v is not None and v != "":
+            payload[k] = v
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+# ══════════════════════════════════════════════════════════════
+# MinerU 云 API 解析
+# ══════════════════════════════════════════════════════════════
+async def _parse_via_cloud_api(
+    file_content: bytes,
+    filename: str,
+    method: str = "auto",
 ) -> AsyncGenerator[str, None]:
-    """
-    Invokes the local MinerU CLI (magic-pdf) via subprocess to parse a PDF.
-    Yields Server-Sent Events (SSE) strings with progressive logs, and finally the Markdown result.
-    """
-    if method not in ("auto", "txt", "ocr"):
-        method = "auto"
+    """通过 MinerU 云 API 解析 PDF，流式 yield SSE 事件"""
+    token = MINERU_API_TOKEN
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
 
-    def make_event(status: str, msg: str = "", markdown: str = "", **extra) -> str:
-        payload = {"status": status}
-        if msg:
-            payload["message"] = msg
-        if markdown:
-            payload["markdown"] = markdown
-        for k, v in extra.items():
-            if v is not None and v != "":
-                payload[k] = v
-        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    yield _make_event("starting", f"正在提交到 MinerU 云 API: {filename}...")
 
-    def split_sections(md: str):
-        sections = []
-        title = "Preamble"
-        buf = []
+    # ── Step 1: 申请批量上传链接 ──────────────────────────────
+    batch_url = f"{MINERU_API_BASE}/file-urls/batch"
+    is_ocr = method == "ocr"
+    batch_payload = {
+        "files": [
+            {
+                "name": filename,
+                "is_ocr": is_ocr,
+                "data_id": filename,
+                "enable_formula": True,
+                "enable_table": True,
+            }
+        ]
+    }
 
-        def flush():
-            if not buf:
-                return
-            text = "\n".join(buf).strip()
-            if not text:
-                return
-            # 取首个非空自然段作为摘要
-            summary = ""
-            for line in text.splitlines():
-                clean = line.strip()
-                if not clean:
-                    continue
-                if clean.startswith("!"):
-                    continue
-                summary = clean[:160]
-                break
-            image_refs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text)
-            sections.append(
-                {
-                    "title": title,
-                    "content": text,
-                    "summary": summary,
-                    "image_refs": image_refs,
-                }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(batch_url, headers=headers, json=batch_payload)
+            result = resp.json()
+    except Exception as e:
+        yield _make_event("error", f"申请上传链接失败: {e}")
+        return
+
+    if result.get("code") != 0:
+        yield _make_event("error", f"申请上传链接失败: {result.get('msg', '未知错误')}")
+        return
+
+    file_items = result.get("data", {}).get("files", [])
+    if not file_items:
+        yield _make_event("error", "API 未返回上传链接")
+        return
+
+    upload_url = file_items[0].get("url")
+    batch_id = result.get("data", {}).get("batch_id") or file_items[0].get("batch_id")
+    if not upload_url:
+        yield _make_event("error", "API 未返回 presigned 上传 URL")
+        return
+
+    yield _make_event("progress", f"已获取上传链接，正在上传 {len(file_content)/1024:.1f} KB...")
+
+    # ── Step 2: PUT 上传文件 ──────────────────────────────────
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            put_resp = await client.put(
+                upload_url,
+                content=file_content,
+                headers={"Content-Type": "application/octet-stream"},
             )
+        if put_resp.status_code not in (200, 204):
+            yield _make_event("error", f"上传文件失败 (HTTP {put_resp.status_code})")
+            return
+    except Exception as e:
+        yield _make_event("error", f"上传文件失败: {e}")
+        return
 
-        for line in md.splitlines():
-            m = re.match(r"^(#{1,6})\s+(.*)$", line)
-            if m:
-                flush()
-                title = m.group(2).strip() or "Untitled"
-                buf = []
-            else:
-                buf.append(line)
-        flush()
-        return sections
+    yield _make_event("progress", "文件上传成功，等待解析...")
 
-    def llm_enhance_summary(title: str, content: str, fallback: str) -> str:
-        # 创空间环境不启用 LLM 增强（避免额外耗时）
-        if os.path.exists("/mnt/workspace"):
-            return fallback
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
-        if not api_key:
-            return fallback
+    # ── Step 3: 轮询任务状态 ──────────────────────────────────
+    # 批量上传后系统自动创建任务，通过 batch_id 查询
+    poll_url = f"{MINERU_API_BASE}/extract-results/batch/{batch_id}"
+    poll_headers = {"Authorization": f"Bearer {token}"}
+
+    max_wait = 600  # 最多等待 10 分钟
+    poll_interval = 5
+    elapsed = 0
+    task_id = None
+
+    while elapsed < max_wait:
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
         try:
-            from openai import OpenAI
+            async with httpx.AsyncClient(timeout=30) as client:
+                poll_resp = await client.get(poll_url, headers=poll_headers)
+                poll_data = poll_resp.json()
+        except Exception as e:
+            yield _make_event("progress", f"查询状态失败 ({elapsed}s): {e}")
+            continue
 
-            client = OpenAI(api_key=api_key, base_url=api_base)
-            resp = client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是学术文献摘要助手，请输出一句简洁中文摘要（不超过70字）。",
-                    },
-                    {
-                        "role": "user",
-                        "content": f"章节标题: {title}\n\n章节内容:\n{content[:1200]}",
-                    },
-                ],
-                max_tokens=120,
-                temperature=0.2,
-            )
-            ans = (resp.choices[0].message.content or "").strip()
-            return ans or fallback
-        except Exception:
-            return fallback
+        if poll_data.get("code") != 0:
+            yield _make_event("error", f"查询失败: {poll_data.get('msg')}")
+            return
 
-    # Create an isolated temporary directory for the process
+        extract_list = poll_data.get("data", {}).get("extract_result", [])
+        if not extract_list:
+            yield _make_event("progress", f"等待解析... ({elapsed}s)")
+            continue
+
+        item = extract_list[0]
+        state = item.get("state", "pending")
+        progress = item.get("extract_progress", {})
+        task_id = item.get("task_id")
+
+        if state == "running":
+            pages_done = progress.get("extracted_pages", 0)
+            total_pages = progress.get("total_pages", "?")
+            yield _make_event("progress", f"解析中: {pages_done}/{total_pages} 页 ({elapsed}s)")
+        elif state in ("pending", "converting"):
+            yield _make_event("progress", f"排队中... ({elapsed}s)")
+        elif state == "done":
+            full_zip_url = item.get("full_zip_url")
+            if not full_zip_url:
+                yield _make_event("error", "解析完成但未返回结果 URL")
+                return
+            yield _make_event("progress", "解析完成，正在下载结果...")
+
+            # ── Step 4: 下载 zip，提取 full.md ────────────────
+            try:
+                async with httpx.AsyncClient(timeout=120) as client:
+                    zip_resp = await client.get(full_zip_url)
+                zip_bytes = zip_resp.content
+            except Exception as e:
+                yield _make_event("error", f"下载结果失败: {e}")
+                return
+
+            try:
+                with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                    md_files = [n for n in zf.namelist() if n.endswith(".md")]
+                    if not md_files:
+                        yield _make_event("error", "结果 zip 中未找到 .md 文件")
+                        return
+                    # 优先选 full.md
+                    target = next((n for n in md_files if "full" in n), md_files[0])
+                    parsed_content = zf.read(target).decode("utf-8", errors="replace")
+            except Exception as e:
+                yield _make_event("error", f"解压结果失败: {e}")
+                return
+
+            # 流式输出章节
+            sections = _split_sections(parsed_content)
+            for idx, sec in enumerate(sections):
+                yield _make_event(
+                    "chunk",
+                    msg=f"分段 {idx + 1}/{len(sections)}: {sec['title']}",
+                    markdown_chunk=sec["content"],
+                    section_title=sec["title"],
+                    section_summary=sec["summary"],
+                    image_refs=sec.get("image_refs", []),
+                )
+
+            yield _make_event("success", markdown=parsed_content)
+            return
+
+        elif state == "failed":
+            err = item.get("err_msg", "未知错误")
+            yield _make_event("error", f"MinerU 解析失败: {err}")
+            return
+
+    yield _make_event("error", f"解析超时（已等待 {max_wait}s）")
+
+
+# ══════════════════════════════════════════════════════════════
+# 本地 CLI 解析（回退）
+# ══════════════════════════════════════════════════════════════
+async def _parse_via_local_cli(
+    file_content: bytes,
+    filename: str,
+    method: str = "auto",
+) -> AsyncGenerator[str, None]:
+    """调用本地 mineru/magic-pdf CLI 解析"""
+    if not _MAGIC_PDF_BIN:
+        yield _make_event(
+            "error",
+            "MinerU 未安装且未配置 MINERU_API_TOKEN。\n"
+            "请在创空间环境变量中设置 MINERU_API_TOKEN。",
+        )
+        return
+
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir_path = Path(temp_dir)
-
-        # Determine paths
         pdf_path = temp_dir_path / filename
         output_dir = temp_dir_path / "output"
         output_dir.mkdir()
-
-        # Save uploaded PDF to disk
         pdf_path.write_bytes(file_content)
 
         cmd = [_MAGIC_PDF_BIN, "-p", str(pdf_path), "-o", str(output_dir), "-m", method]
-
-        logger.info(f"Starting MinerU parsing for {filename} (method={method}) ...")
-        yield make_event("starting", f"MinerU process initialized for {filename}...")
+        logger.info(f"[MinerU CLI] 执行: {' '.join(cmd)}")
+        yield _make_event("starting", f"本地 MinerU CLI 解析: {filename}...")
 
         try:
-            # Use subprocess.Popen in a thread to stream output line-by-line.
-            # (asyncio.create_subprocess_exec raises NotImplementedError on Windows Python 3.10)
-            def _run_and_collect() -> tuple[list[str], int]:
-                logger.info(f"[MinerU] 执行命令: {' '.join(cmd)}")
+            def _run() -> tuple[list[str], int]:
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -194,79 +339,55 @@ async def parse_pdf_with_mineru(
                 )
                 lines: list[str] = []
                 for line in proc.stdout:
-                    stripped = line.strip()
-                    if stripped:
-                        lines.append(stripped)
-                        # 实时打印关键日志
-                        if any(
-                            kw in stripped.lower()
-                            for kw in ["error", "fail", "model", "download", "load"]
-                        ):
-                            logger.info(f"[MinerU] {stripped}")
+                    s = line.strip()
+                    if s:
+                        lines.append(s)
+                        if any(k in s.lower() for k in ["error", "fail", "model", "load"]):
+                            logger.info(f"[MinerU CLI] {s}")
                 proc.wait()
-                logger.info(f"[MinerU] 进程退出码: {proc.returncode}")
+                logger.info(f"[MinerU CLI] 退出码: {proc.returncode}")
                 return lines, proc.returncode
 
             log_lines, returncode = await asyncio.wait_for(
-                asyncio.to_thread(_run_and_collect),
-                timeout=_PARSE_TIMEOUT,
+                asyncio.to_thread(_run), timeout=_PARSE_TIMEOUT
             )
 
-            # Yield all captured progress lines
-            for log_line in log_lines:
-                yield make_event("progress", log_line)
+            for line in log_lines:
+                yield _make_event("progress", line)
 
             if returncode != 0:
-                # 提取最后几行日志用于错误提示
-                error_context = "\n".join(log_lines[-10:]) if log_lines else "No output"
-                logger.error(f"[MinerU] 解析失败 (exit {returncode})")
-                logger.error(f"[MinerU] 最后日志:\n{error_context}")
-                yield make_event(
+                ctx = "\n".join(log_lines[-10:]) if log_lines else "无输出"
+                logger.error(f"[MinerU CLI] 失败 (exit {returncode})")
+                yield _make_event(
                     "error",
-                    f"PDF 解析失败 (exit code {returncode})。\n"
-                    f"可能原因：1) MinerU 模型未下载 2) PDF 格式不支持 3) 内存不足\n"
-                    f"详情: {error_context[-200:]}",
+                    f"CLI 解析失败 (exit {returncode})。\n"
+                    f"可能原因：模型未下载 / PDF 格式不支持 / 内存不足\n"
+                    f"详情: {ctx[-200:]}",
                 )
                 return
 
         except asyncio.TimeoutError:
-            logger.error(f"MinerU timed out after {_PARSE_TIMEOUT}s for {filename}.")
-            yield make_event("error", f"Parsing timed out after {_PARSE_TIMEOUT}s.")
+            yield _make_event("error", f"解析超时（{_PARSE_TIMEOUT}s）")
             return
         except FileNotFoundError:
-            logger.error(f"[MinerU] 可执行文件未找到: {_MAGIC_PDF_BIN}")
-            yield make_event(
-                "error",
-                "MinerU 未安装或 'mineru/magic-pdf' 不在 PATH 中。\n"
-                "请检查服务器日志确认 MinerU 安装状态。",
-            )
+            yield _make_event("error", f"找不到可执行文件: {_MAGIC_PDF_BIN}")
             return
         except Exception as e:
-            logger.exception("Unexpected error during parsing.")
-            yield make_event("error", f"Unexpected error: {str(e)}")
+            yield _make_event("error", f"意外错误: {e}")
             return
 
-        # MinerU usually outputs nested directories inside the output_dir. Find the primary generated .md file
         md_files = list(output_dir.rglob("*.md"))
         if not md_files:
-            logger.error(f"No valid Markdown generated for {filename}.")
-            yield make_event(
-                "error", "Execution completed, but no Markdown output was found."
-            )
+            yield _make_event("error", "CLI 未生成 Markdown 文件")
             return
 
-        # Read the first generated Markdown file as the main document
-        target_md_file = md_files[0]
-        parsed_content = target_md_file.read_text(encoding="utf-8", errors="replace")
-
-        logger.info(
-            f"Successfully parsed {filename} to Markdown ({len(parsed_content)} chars)."
+        parsed_content = max(md_files, key=lambda p: p.stat().st_size).read_text(
+            encoding="utf-8", errors="replace"
         )
 
-        # 增加分段流式事件：章节文本 + 自动摘要，便于前端构建章节树。
-        sections = split_sections(parsed_content)
+        sections = _split_sections(parsed_content)
         for idx, sec in enumerate(sections):
-            yield make_event(
+            yield _make_event(
                 "chunk",
                 msg=f"分段 {idx + 1}/{len(sections)}: {sec['title']}",
                 markdown_chunk=sec["content"],
@@ -274,18 +395,25 @@ async def parse_pdf_with_mineru(
                 section_summary=sec["summary"],
                 image_refs=sec.get("image_refs", []),
             )
-            # 使用 LLM 做增强摘要并流式更新。
-            enhanced = await asyncio.to_thread(
-                llm_enhance_summary,
-                sec["title"],
-                sec["content"],
-                sec["summary"],
-            )
-            yield make_event(
-                "summary",
-                msg=f"章节摘要增强: {sec['title']}",
-                section_title=sec["title"],
-                section_summary=enhanced,
-            )
 
-        yield make_event("success", markdown=parsed_content)
+        yield _make_event("success", markdown=parsed_content)
+
+
+# ══════════════════════════════════════════════════════════════
+# 统一入口
+# ══════════════════════════════════════════════════════════════
+async def parse_pdf_with_mineru(
+    file_content: bytes, filename: str, method: str = "auto"
+) -> AsyncGenerator[str, None]:
+    """
+    解析 PDF，优先云 API，回退本地 CLI。
+    """
+    if method not in ("auto", "txt", "ocr"):
+        method = "auto"
+
+    if MINERU_API_TOKEN:
+        async for event in _parse_via_cloud_api(file_content, filename, method):
+            yield event
+    else:
+        async for event in _parse_via_local_cli(file_content, filename, method):
+            yield event
