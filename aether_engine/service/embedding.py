@@ -1,10 +1,8 @@
 """
 共享 Embedding 函数
-使用 ModelScope 上的 SentenceTransformer 模型（384 维），避免 ChromaDB 默认 ONNX 下载阻塞。
-模型缓存在 MODELSCOPE_CACHE（/mnt/workspace/.cache/modelscope）。
+使用本地 SentenceTransformer 模型（384 维），避免 ChromaDB 默认 ONNX 下载阻塞。
+模型缓存在 HF_HOME（D:\models\.cache\huggingface）。
 """
-
-import os
 import logging
 from typing import Optional
 
@@ -14,45 +12,16 @@ logger = logging.getLogger("aether")
 
 _model = None
 
-# ModelScope 模型映射（将 HuggingFace 模型名映射到 ModelScope）
-# 参考 ModelScope 官方模型仓库命名规范
-MODELSCOPE_MODEL_MAP = {
-    "paraphrase-multilingual-MiniLM-L12-v2": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-    "BAAI/bge-reranker-v2-m3": "BAAI/bge-reranker-v2-m3",
-}
-
 
 def _get_model():
-    """懒加载 SentenceTransformer（单例），使用 ModelScope 模型源。"""
+    """懒加载 SentenceTransformer（单例）。"""
     global _model
     if _model is None:
-        logger.info(
-            "加载 SentenceTransformer 模型 (paraphrase-multilingual-MiniLM-L12-v2)..."
-        )
-
-        # 设置 ModelScope 环境变量（创空间使用 /mnt/workspace）
-        os.environ.setdefault("MODELSCOPE_CACHE", "/mnt/workspace/.cache/modelscope")
-        os.environ.setdefault("HF_HOME", "/mnt/workspace/.cache/huggingface")
-        os.environ.setdefault("TRANSFORMERS_CACHE", "/mnt/workspace/.cache/huggingface")
-
+        logger.info("加载 SentenceTransformer 模型 (paraphrase-multilingual-MiniLM-L12-v2)...")
         from sentence_transformers import SentenceTransformer
-
-        # 使用 ModelScope 模型 ID
-        model_name = "paraphrase-multilingual-MiniLM-L12-v2"
-        modelscope_id = MODELSCOPE_MODEL_MAP.get(model_name, model_name)
-
-        try:
-            # 尝试从 ModelScope 加载
-            _model = SentenceTransformer(modelscope_id, trust_remote_code=True)
-            logger.info("从 ModelScope 加载模型成功: %s", modelscope_id)
-        except Exception as e:
-            logger.warning("从 ModelScope 加载失败，尝试 HuggingFace: %s", e)
-            _model = SentenceTransformer(model_name)
-
-        logger.info(
-            "SentenceTransformer 加载完成 (dim=%d)",
-            _model.get_sentence_embedding_dimension(),
-        )
+        # 显式指定 device='cpu'，避免 meta tensor 导致的 "Cannot copy out of meta tensor"（索引/向量同步时报错）
+        _model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2", device="cpu")
+        logger.info("SentenceTransformer 加载完成 (dim=%d)", _model.get_sentence_embedding_dimension())
     return _model
 
 
@@ -61,9 +30,7 @@ class LocalEmbeddingFunction(EmbeddingFunction):
 
     def __call__(self, input: Documents) -> Embeddings:
         model = _get_model()
-        embeddings = model.encode(
-            list(input), show_progress_bar=False, normalize_embeddings=True
-        )
+        embeddings = model.encode(list(input), show_progress_bar=False, normalize_embeddings=True)
         return embeddings.tolist()
 
 
