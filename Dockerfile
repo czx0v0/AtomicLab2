@@ -41,9 +41,6 @@ RUN pip install --no-cache-dir \
 COPY aether_engine/requirements.txt /home/user/app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt || echo "[Dockerfile] 部分依赖安装失败，继续构建"
 
-# Step 4: 单独安装 mineru（依赖复杂，安装失败不阻断构建）
-RUN pip install --no-cache-dir "mineru[all]>=2.0.0" || echo "[Dockerfile] MinerU 安装失败，PDF 功能将不可用"
-
 # 复制应用代码
 COPY aether_engine /home/user/app/aether_engine
 COPY app.py /home/user/app/app.py
