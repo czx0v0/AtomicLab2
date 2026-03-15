@@ -39,7 +39,7 @@ RUN pip install --no-cache-dir \
 
 # Step 3: 安装其余依赖（失败不阻断）
 COPY aether_engine/requirements.txt /home/user/app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt || echo "[Dockerfile] 部分依赖安装失败，继续构建"
+RUN pip install --no-cache-dir -r requirements.txt || (echo "[Dockerfile] 部分依赖安装失败，继续构建" && exit 0)
 
 # 复制应用代码
 COPY aether_engine /home/user/app/aether_engine
