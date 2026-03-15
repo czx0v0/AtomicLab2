@@ -75,7 +75,8 @@ def _persist_and_rewrite_images(parsed_content: str, stem: str, img_sources) -> 
 # MinerU 云 API 配置
 # ══════════════════════════════════════════════════════════════
 MINERU_API_BASE = "https://mineru.net/api/v4"
-MINERU_API_TOKEN = os.environ.get("MINERU_API_TOKEN", "")
+# 支持两种环境变量名：MINERU_API_TOKEN 或 MINERU_API_KEY
+MINERU_API_TOKEN = os.environ.get("MINERU_API_TOKEN") or os.environ.get("MINERU_API_KEY", "")
 
 
 # ══════════════════════════════════════════════════════════════
