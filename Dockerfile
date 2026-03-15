@@ -18,25 +18,9 @@ ENV UVICORN_HOST=0.0.0.0
 ENV UVICORN_PORT=7860
 # 注意：模型缓存路径在 app.py 中根据环境自动设置
 
-# 安装依赖（允许失败，创空间资源有限）
-# Step 1: 核心框架（必须成功）
-RUN pip install --no-cache-dir \
-    "fastapi==0.115.6" \
-    "uvicorn[standard]==0.32.1" \
-    "python-multipart==0.0.18" \
-    "httpx" \
-    "python-dotenv" \
-    || (echo "[Dockerfile] 核心依赖安装失败" && exit 1)
-
-# Step 2: 可选依赖（失败不影响启动）
-RUN pip install --no-cache-dir "openai>=1.30.0" tenacity networkx jieba || true
-RUN pip install --no-cache-dir "sniffio>=1.3.0" "soupsieve>=2.5" "beautifulsoup4>=4.12.0" "lxml>=4.9.0" || true
-RUN pip install --no-cache-dir rank-bm25 || true
-
-# Step 3: 大包（RAG功能，允许失败）
-RUN pip install --no-cache-dir chromadb || echo "[Dockerfile] chromadb 安装跳过"
-RUN pip install --no-cache-dir sentence-transformers || echo "[Dockerfile] sentence-transformers 安装跳过"
-RUN pip install --no-cache-dir modelscope || echo "[Dockerfile] modelscope 安装跳过"
+# 安装依赖（极简模式，创空间资源极其有限）
+# 仅安装 Web 服务核心，其他功能降级
+RUN pip install --no-cache-dir fastapi uvicorn python-multipart httpx python-dotenv || exit 1
 
 # 复制应用代码
 COPY aether_engine /home/user/app/aether_engine
