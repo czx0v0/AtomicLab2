@@ -8,6 +8,7 @@ from chromadb.config import Settings
 import networkx as nx
 
 from core.models import Document, Section, AtomicNote
+from service.embedding import get_embedding_function
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,8 @@ class AtomicRAG:
 
         # Use get_or_create_collection to avoid errors on restart
         self.collection = self.chroma_client.get_or_create_collection(
-            name="atomic_notes"
+            name="atomic_notes",
+            embedding_function=get_embedding_function(),
         )
 
         # Initialize NetworkX Graph (In-memory for now)
