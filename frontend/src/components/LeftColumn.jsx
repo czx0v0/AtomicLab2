@@ -104,7 +104,6 @@ export const LeftColumn = () => {
                 text: '[截图高亮]',
                 color: highlightColor,
                 bbox: normBbox,
-                id: Date.now(),
             });
 
             // 截取选区图像并自动创建原子笔记

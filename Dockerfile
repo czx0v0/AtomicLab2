@@ -37,9 +37,12 @@ RUN pip install --no-cache-dir \
     "beautifulsoup4>=4.12.0" \
     "lxml>=4.9.0"
 
-# Step 3: 安装其余依赖（失败不阻断）
+# Step 3: 安装其余依赖（分步安装大包，避免内存不足）
 COPY aether_engine/requirements.txt /home/user/app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt || (echo "[Dockerfile] 部分依赖安装失败，继续构建" && exit 0)
+# 先安装轻量依赖
+RUN pip install --no-cache-dir networkx tenacity httpx python-dotenv jieba rank-bm25 || true
+# 再安装大包（允许失败）
+RUN pip install --no-cache-dir chromadb sentence-transformers modelscope || echo "[Dockerfile] 部分大包安装失败，继续构建"
 
 # 复制应用代码
 COPY aether_engine /home/user/app/aether_engine
