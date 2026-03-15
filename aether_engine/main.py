@@ -14,18 +14,6 @@ from config.settings import settings
 
 
 # ── 日志配置 ──────────────────────────────────────────────────────────
-# uvicorn 的主 logger 名叫 "uvicorn.error"（表示 stderr），INFO 的 "Application startup complete" 是正常启动成功。
-# 用 Filter 把该名字显示为 "uvicorn"，避免被误读成报错。
-class _UvicornDisplayNameFilter(logging.Filter):
-    def filter(self, record):
-        if (
-            getattr(record, "name", None) == "uvicorn.error"
-            and record.levelno <= logging.INFO
-        ):
-            record.name = "uvicorn"
-        return True
-
-
 LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -35,27 +23,14 @@ LOGGING_CONFIG = {
             "datefmt": "%Y-%m-%d %H:%M:%S",
         }
     },
-    "filters": {
-        "uvicorn_display": {"()": __name__ + "._UvicornDisplayNameFilter"},
-    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "detailed",
             "stream": "ext://sys.stdout",
-            "filters": ["uvicorn_display"],
         }
     },
     "root": {"handlers": ["console"], "level": settings.LOG_LEVEL.upper()},
-    "loggers": {
-        "uvicorn": {"handlers": ["console"], "level": "INFO", "propagate": False},
-        "uvicorn.error": {"handlers": ["console"], "level": "INFO", "propagate": False},
-        "uvicorn.access": {
-            "handlers": ["console"],
-            "level": "INFO",
-            "propagate": False,
-        },
-    },
 }
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger("aether")
