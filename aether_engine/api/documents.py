@@ -127,10 +127,15 @@ async def upload_document(
 
 
 @router.get("/{doc_id}/file")
-def get_document_file(doc_id: str, x_session_id: str = Header(default="")):
+def get_document_file(
+    doc_id: str,
+    x_session_id: str = Header(default=""),
+    session_id: str = "",  # 支持 URL 参数传递
+):
     """获取文档文件（会话隔离）"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
-    doc_root = _get_doc_root(session_id)
+    # 优先使用 header，其次使用 URL 参数
+    sid = x_session_id or session_id if IN_MODELSCOPE_SPACE else None
+    doc_root = _get_doc_root(sid)
     path = doc_root / f"{doc_id}.pdf"
     if not path.exists():
         raise HTTPException(status_code=404, detail="文献不存在")

@@ -177,7 +177,7 @@ export async function uploadDocument(file) {
 
 export const listDocuments = () => json('/documents');
 export const deleteDocument = (docId) => request(`/documents/${docId}`, { method: 'DELETE' });
-export const getDocumentFileUrl = (docId) => `${BASE_URL}/documents/${docId}/file`;
+export const getDocumentFileUrl = (docId) => `${BASE_URL}/documents/${docId}/file?session_id=${SESSION_ID}`;
 
 // ─── 翻译 ────────────────────────────────────────────────────────────────────
 export const translateText = (text, targetLang = 'zh') =>
