@@ -115,7 +115,25 @@ app.mount(
     name="parse-images",
 )
 
-# 生产/容器：挂载前端静态资源（多阶段构建时 dist 复制到 static/）
+# ── 前端静态资源（SPA 模式）──────────────────────────────────────────────
 _static_dir = Path(__file__).resolve().parent / "static"
 if _static_dir.exists():
-    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")
+    # 挂载 assets 目录
+    _assets_dir = _static_dir / "assets"
+    if _assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+
+    # 根路由返回 index.html
+    from fastapi.responses import FileResponse
+
+    @app.get("/", include_in_schema=False)
+    async def root():
+        return FileResponse(str(_static_dir / "index.html"))
+
+    # SPA 回退：所有非 API 路由返回 index.html
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        # 排除 API 路由和静态文件
+        if full_path.startswith("api/") or full_path.startswith("assets/"):
+            return {"detail": "Not Found"}
+        return FileResponse(str(_static_dir / "index.html"))
