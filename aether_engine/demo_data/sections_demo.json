@@ -1,0 +1,9 @@
+{
+  "doc_name": "Deep Residual Learning for Image Recognition (Demo)",
+  "sections": [
+    { "title": "Introduction", "summary": "深度网络退化与残差学习动机", "content": "" },
+    { "title": "Related Work", "summary": "深度网络与残差结构相关工作", "content": "" },
+    { "title": "Method", "summary": "残差块、Bottleneck 与网络架构", "content": "" },
+    { "title": "Experiments", "summary": "ImageNet 与 CIFAR 实验", "content": "" }
+  ]
+}
