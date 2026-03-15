@@ -1,6 +1,7 @@
 """
 会话隔离：从请求头读取 X-Session-ID，用于 RAG/笔记/BM25 等资源按会话隔离。
 """
+
 import re
 from fastapi import Request
 

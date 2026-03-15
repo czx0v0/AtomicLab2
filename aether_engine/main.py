@@ -1,18 +1,31 @@
 import logging
 import logging.config
-import pathlib
 import time
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.router import root_router
 from config.settings import settings
 
+
 # ── 日志配置 ──────────────────────────────────────────────────────────
+# uvicorn 的主 logger 名叫 "uvicorn.error"（表示 stderr），INFO 的 "Application startup complete" 是正常启动成功。
+# 用 Filter 把该名字显示为 "uvicorn"，避免被误读成报错。
+class _UvicornDisplayNameFilter(logging.Filter):
+    def filter(self, record):
+        if (
+            getattr(record, "name", None) == "uvicorn.error"
+            and record.levelno <= logging.INFO
+        ):
+            record.name = "uvicorn"
+        return True
+
+
 LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -22,11 +35,15 @@ LOGGING_CONFIG = {
             "datefmt": "%Y-%m-%d %H:%M:%S",
         }
     },
+    "filters": {
+        "uvicorn_display": {"()": __name__ + "._UvicornDisplayNameFilter"},
+    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "detailed",
             "stream": "ext://sys.stdout",
+            "filters": ["uvicorn_display"],
         }
     },
     "root": {"handlers": ["console"], "level": settings.LOG_LEVEL.upper()},
@@ -71,19 +88,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── CORS（允许本地前端跨域访问）──────────────────────────────────────
+# ── CORS（允许前端跨域并携带凭证，与 Vite proxy 端口一致）──────────────
+# 使用 * 时浏览器不允许携带 credentials，故显式列出 origin
+_app_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://0.0.0.0:5173",
+    "http://0.0.0.0:5174",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "*",
-    ],
+    allow_origins=_app_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -110,31 +131,16 @@ async def log_requests(request: Request, call_next):
 
 app.include_router(root_router)
 
+# ── parse-images 静态目录（PDF 解析图片持久化）─────────────────────────
+_parse_images_dir = Path(__file__).resolve().parent / "data" / "parse_images"
+_parse_images_dir.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/api/parse-images",
+    StaticFiles(directory=str(_parse_images_dir)),
+    name="parse-images",
+)
 
-# ── 静态文件（前端）───────────────────────────────────────────────────
-_static_dir = pathlib.Path(__file__).parent.parent / "static"
-
+# 生产/容器：挂载前端静态资源（多阶段构建时 dist 复制到 static/）
+_static_dir = Path(__file__).resolve().parent / "static"
 if _static_dir.exists():
-    # 挂载 Vite 构建资源（JS/CSS/图片）
-    _assets_dir = _static_dir / "assets"
-    if _assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
-
-    @app.get("/", include_in_schema=False)
-    async def root():
-        return FileResponse(str(_static_dir / "index.html"))
-
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
-        """SPA 路由回退：所有非 /api 的请求均返回 index.html"""
-        return FileResponse(str(_static_dir / "index.html"))
-
-else:
-    # 静态文件不存在（纯 API 模式）
-    @app.get("/", include_in_schema=False)
-    async def root():
-        return {
-            "status": "ok",
-            "service": "Aether-Engine",
-            "version": settings.APP_VERSION,
-        }
+    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")

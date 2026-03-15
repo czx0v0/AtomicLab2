@@ -3,10 +3,18 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import { useStore } from '../store/useStore';
-import { Highlighter, Type, Sparkles, AlertCircle, Languages, Palette, BookOpen, Tag, FolderOpen, ChevronDown, ChevronUp, Trash2, FileText, ListTree, Camera, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import { createPortal } from 'react-dom';
+import { Highlighter, Type, Sparkles, AlertCircle, Languages, Palette, BookOpen, Tag, FolderOpen, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Trash2, FileText, ListTree, Camera, ZoomIn, ZoomOut, RotateCcw, MessageSquare, X, Upload } from 'lucide-react';
+import clsx from 'clsx';
+
 import { motion, AnimatePresence } from 'framer-motion';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import rehypeHighlight from 'rehype-highlight';
 import * as api from '../api/client';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 // Load PDF worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -18,10 +26,15 @@ export const LeftColumn = () => {
         removeFromLibrary, pdfFileName, parseStatus, parseProgress, parsedMarkdown,
         parsedSections, parsedDocName, setParseStatus, addParseLog, setParsedMarkdown,
         addParsedSection, updateParsedSectionSummary, clearParseState,
-        notes, setActiveReference
+        notes, setNotes, setParsedSections, setActiveReference, setViewMode, setCopilotOpen, setContextAttachment,
+        pendingScreenshotQueue, addPendingScreenshot, removePendingScreenshot, updateNoteContent,
+        startOver, setNotification,
+        startDemoLoad, setStartDemoLoad,
     } = useStore();
+    const accumulatedMarkdownRef = useRef('');
     const [numPages, setNumPages] = useState(null);
     const [pdfDocument, setPdfDocument] = useState(null);
+    const [pdfLoadError, setPdfLoadError] = useState(null);
     const [selection, setSelection] = useState(null);
     const [pageWidth, setPageWidth] = useState(600);
     const [highlightColor, setHighlightColor] = useState('yellow');
@@ -32,8 +45,12 @@ export const LeftColumn = () => {
     const [toolMode, setToolMode] = useState('text'); // text | screenshot
     const [pageScale, setPageScale] = useState(1.0);
     const [shotDraft, setShotDraft] = useState(null);
+    const [confirmRemoveId, setConfirmRemoveId] = useState(null); // 防误删：移除文献前二次确认
+    const [popoverHighlight, setPopoverHighlight] = useState(null); // 点击高亮时弹窗显示原文
+    const [demoLoading, setDemoLoading] = useState(false);
     const containerRef = useRef(null);
     const pageRef = useRef(null);
+    const actionInFlightRef = useRef(false);
 
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -71,6 +88,8 @@ export const LeftColumn = () => {
         if (contentMode !== 'pdf' || toolMode !== 'screenshot' || !shotDraft) return;
         const minSize = 8;
         if (shotDraft.width >= minSize && shotDraft.height >= minSize) {
+            if (actionInFlightRef.current) { setShotDraft(null); return; }
+            actionInFlightRef.current = true;
             const bbox = {
                 x: shotDraft.x,
                 y: shotDraft.y,
@@ -78,7 +97,9 @@ export const LeftColumn = () => {
                 height: shotDraft.height,
             };
             const normBbox = toNormalizedBbox(bbox);
+            const shotId = crypto.randomUUID();
             addHighlight({
+                id: shotId,
                 page: currentPage,
                 text: '[截图高亮]',
                 color: highlightColor,
@@ -92,7 +113,7 @@ export const LeftColumn = () => {
                 try {
                     const page = await pdfDocument.getPage(currentPage);
                     const unscaledVp = page.getViewport({ scale: 1.0 });
-                    const renderScale = pageWidth / unscaledVp.width;
+                    const renderScale = (pageWidth * pageScale) / unscaledVp.width;
                     const capScale = 2.0;
                     const vp = page.getViewport({ scale: renderScale * capScale });
                     const cvs = document.createElement('canvas');
@@ -113,23 +134,56 @@ export const LeftColumn = () => {
                 }
             }
 
+            // 从 PDF 文字层提取选区内文本作为笔记内容
+            let extractedText = '[截图高亮]';
+            if (pdfDocument && pageRef.current) {
+                try {
+                    const page = await pdfDocument.getPage(currentPage);
+                    const unscaledVp = page.getViewport({ scale: 1.0 });
+                    const scale = (pageWidth * pageScale) / unscaledVp.width;
+                    const textContent = await page.getTextContent();
+                    const texts = [];
+                    for (const item of textContent.items) {
+                        if (!item.transform) continue;
+                        // pdf 坐标系：原点左下角，Y 轴向上
+                        const itemX = item.transform[4] * scale;
+                        const itemY = (unscaledVp.height - item.transform[5]) * scale;
+                        if (
+                            itemX >= bbox.x - 4 &&
+                            itemX <= bbox.x + bbox.width + 4 &&
+                            itemY >= bbox.y - 4 &&
+                            itemY <= bbox.y + bbox.height + 4
+                        ) {
+                            if (item.str?.trim()) texts.push(item.str.trim());
+                        }
+                    }
+                    if (texts.length > 0) extractedText = texts.join(' ');
+                } catch (e) {
+                    console.warn('文字层提取失败:', e);
+                }
+            }
+
             const shotNote = {
-                id: `note_${Date.now()}`,
+                id: crypto.randomUUID(),
                 type: 'data',
-                content: '[截图高亮]',
+                content: extractedText,
                 page: currentPage,
                 bbox: normBbox,
                 screenshot: screenshotUrl,
                 timestamp: new Date().toISOString(),
             };
             addNote(shotNote);
+            if (!extractedText || extractedText === '[截图高亮]') {
+                addPendingScreenshot({ noteId: shotNote.id, page: currentPage, bbox: bbox });
+            }
             api.createNote({
                 content: shotNote.content,
                 type: shotNote.type,
                 page: shotNote.page,
                 bbox: shotNote.bbox,
                 screenshot: shotNote.screenshot,
-            }).catch((e) => console.warn('截图笔记后端同步失败:', e));
+            }).catch((e) => console.warn('截图笔记后端同步失败:', e))
+            .finally(() => { actionInFlightRef.current = false; });
         }
         setShotDraft(null);
     };
@@ -152,6 +206,43 @@ export const LeftColumn = () => {
         }
         return 10;
     }, [parseStatus, parseProgress, parsedSections.length]);
+
+    // 待识别队列：当前页与 PDF 就绪时，从文字层补全截图/高亮笔记内容
+    useEffect(() => {
+        if (!pdfDocument || !pendingScreenshotQueue?.length) return;
+        const forPage = pendingScreenshotQueue.filter((p) => p.page === currentPage);
+        if (forPage.length === 0) return;
+
+        let cancelled = false;
+        (async () => {
+            try {
+                const page = await pdfDocument.getPage(currentPage);
+                const unscaledVp = page.getViewport({ scale: 1.0 });
+                const scale = (pageWidth * pageScale) / unscaledVp.width;
+                const textContent = await page.getTextContent();
+                for (const item of forPage) {
+                    if (cancelled) break;
+                    const bbox = item.bbox && (item.bbox.x !== undefined ? item.bbox : { x: item.bbox[0], y: item.bbox[1], width: item.bbox[2] || 0, height: item.bbox[3] || 0 });
+                    const texts = [];
+                    for (const it of textContent.items) {
+                        if (!it.transform) continue;
+                        const itemX = it.transform[4] * scale;
+                        const itemY = (unscaledVp.height - it.transform[5]) * scale;
+                        if (itemX >= bbox.x - 4 && itemX <= bbox.x + bbox.width + 4 && itemY >= bbox.y - 4 && itemY <= bbox.y + bbox.height + 4 && it.str?.trim()) {
+                            texts.push(it.str.trim());
+                        }
+                    }
+                    if (texts.length > 0) {
+                        updateNoteContent(item.noteId, texts.join(' '));
+                        removePendingScreenshot(item.noteId);
+                    }
+                }
+            } catch (e) {
+                console.warn('待识别队列补全失败:', e);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [pdfDocument, currentPage, pageWidth, pageScale, pendingScreenshotQueue, updateNoteContent, removePendingScreenshot]);
 
     const isNormalizedBbox = (bbox) => {
         if (!bbox) return false;
@@ -194,8 +285,8 @@ export const LeftColumn = () => {
         
         const observer = new ResizeObserver(entries => {
             for (let entry of entries) {
-                // Adjust width to fit container with some padding
-                setPageWidth(Math.floor(entry.contentRect.width - 48)); 
+                const w = entry.contentRect.width;
+                setPageWidth(Math.max(400, Math.floor((w || 600) - 48)));
             }
         });
         
@@ -203,78 +294,118 @@ export const LeftColumn = () => {
         return () => observer.disconnect();
     }, []);
 
+    const [pdfObjectUrl, setPdfObjectUrl] = useState(null);
+    const [pdfLoadTimeout, setPdfLoadTimeout] = useState(false);
+    const pdfLoadTimeoutRef = useRef(null);
     useEffect(() => {
-        api.listDocuments()
-            .then((resp) => {
-                const docs = resp.documents || [];
-                docs.forEach((doc) => {
-                    addToLibrary({
-                        id: `local_${doc.id}`,
-                        docId: doc.id,
-                        fileUrl: api.getDocumentFileUrl(doc.id),
-                        name: doc.name,
-                        addedAt: doc.created_at,
-                        source: 'local',
-                        noteCount: 0,
-                    });
+        setPdfLoadError(null);
+        setPdfLoadTimeout(false);
+    }, [pdfObjectUrl, pdfUrl]);
+    useEffect(() => {
+        if (pdfFile && typeof pdfFile === 'object' && pdfFile instanceof File) {
+            const url = URL.createObjectURL(pdfFile);
+            setPdfObjectUrl(url);
+            return () => URL.revokeObjectURL(url);
+        }
+        setPdfObjectUrl(null);
+    }, [pdfFile]);
+    // PDF 加载超时（12s）：提示可切换至 Markdown 视图
+    useEffect(() => {
+        if (!(pdfObjectUrl || pdfUrl)) return;
+        setPdfLoadTimeout(false);
+        pdfLoadTimeoutRef.current = setTimeout(() => setPdfLoadTimeout(true), 12000);
+        return () => {
+            if (pdfLoadTimeoutRef.current) clearTimeout(pdfLoadTimeoutRef.current);
+        };
+    }, [pdfObjectUrl, pdfUrl]);
+
+    const applyFileAsUpload = useCallback((file) => {
+        setNotes([]);
+        setParsedSections([]);
+        setPdfFile(file);
+        clearParseState();
+        api.uploadDocument(file).then((doc) => {
+            const fileUrl = api.getDocumentFileUrl(doc.id);
+            setPdfUrl(fileUrl, doc.name, doc.id);
+            addToLibrary({
+                id: `local_${doc.id}`,
+                docId: doc.id,
+                fileUrl,
+                name: doc.name,
+                addedAt: new Date().toISOString(),
+                source: 'local',
+                noteCount: 0,
+            });
+        }).catch(() => {});
+
+        accumulatedMarkdownRef.current = '';
+        setParseStatus('parsing');
+        addParseLog(`开始解析: ${file.name}`);
+        api.parsePDF(file, 'auto', (evt) => {
+            if (evt.message) addParseLog(evt.message);
+            if (evt.status === 'chunk') {
+                const part = (evt.section_title ? '## ' + evt.section_title + '\n\n' : '') + (evt.markdown_chunk || '');
+                if (part) accumulatedMarkdownRef.current += (accumulatedMarkdownRef.current ? '\n\n' : '') + part;
+                addParsedSection({
+                    title: evt.section_title || 'Untitled',
+                    summary: evt.section_summary || '',
+                    content: evt.markdown_chunk || '',
+                    imageRefs: evt.image_refs || [],
                 });
-            })
-            .catch(() => {});
-    }, [addToLibrary]);
+            }
+            if (evt.status === 'summary') {
+                updateParsedSectionSummary(evt.section_title || '', evt.section_summary || '');
+            }
+            if (evt.markdown) {
+                setParsedMarkdown(evt.markdown, file.name);
+            }
+            if (evt.status === 'success') {
+                const fullMd = evt.markdown || accumulatedMarkdownRef.current || '';
+                if (fullMd) {
+                    setParsedMarkdown(fullMd, file.name);
+                    api.indexDocument(`doc_${file.name}`, file.name, fullMd)
+                        .then(() => addParseLog('知识库已索引，可检索。'))
+                        .catch((e) => {
+                            setNotification('知识库索引失败: ' + (e?.message || String(e)), 'error');
+                            addParseLog('知识库索引失败');
+                        });
+                }
+                setParseStatus('done');
+                addParseLog('解析完成。');
+            }
+            if (evt.status === 'error') {
+                setParseStatus('error');
+            }
+        }).catch((e) => {
+            setParseStatus('error');
+            addParseLog(`解析失败: ${e instanceof Error ? e.message : String(e)}`);
+        });
+    }, [setNotes, setParsedSections, setPdfFile, clearParseState, setPdfUrl, addToLibrary, setParseStatus, addParseLog, addParsedSection, updateParsedSectionSummary, setParsedMarkdown, setNotification]);
 
     const onFileChange = (event) => {
         const file = event.target.files[0];
-        if (file) {
-            setPdfFile(file);
-            clearParseState();
-            // 上传到后端文件库，确保切换/刷新后可恢复
-            api.uploadDocument(file).then((doc) => {
-                const fileUrl = api.getDocumentFileUrl(doc.id);
-                setPdfUrl(fileUrl, doc.name, doc.id);
-                addToLibrary({
-                    id: `local_${doc.id}`,
-                    docId: doc.id,
-                    fileUrl,
-                    name: doc.name,
-                    addedAt: new Date().toISOString(),
-                    source: 'local',
-                    noteCount: 0,
-                });
-            }).catch(() => {});
-
-            // 上传后立即触发 MinerU 解析，展示流式进度与 Markdown。
-            setParseStatus('parsing');
-            addParseLog(`开始解析: ${file.name}`);
-            api.parsePDF(file, 'auto', (evt) => {
-                if (evt.message) addParseLog(evt.message);
-                if (evt.status === 'chunk') {
-                    addParsedSection({
-                        title: evt.section_title || 'Untitled',
-                        summary: evt.section_summary || '',
-                        content: evt.markdown_chunk || '',
-                        imageRefs: evt.image_refs || [],
-                    });
-                }
-                if (evt.status === 'summary') {
-                    updateParsedSectionSummary(evt.section_title || '', evt.section_summary || '');
-                }
-                if (evt.markdown) {
-                    setParsedMarkdown(evt.markdown, file.name);
-                    api.indexDocument(`doc_${file.name}`, file.name, evt.markdown).catch(() => {});
-                }
-                if (evt.status === 'success') {
-                    setParseStatus('done');
-                    addParseLog('解析完成。');
-                }
-                if (evt.status === 'error') {
-                    setParseStatus('error');
-                }
-            }).catch((e) => {
-                setParseStatus('error');
-                addParseLog(`解析失败: ${e instanceof Error ? e.message : String(e)}`);
-            });
-        }
+        if (file) applyFileAsUpload(file);
     };
+
+    // Header/其他处触发「加载白皮书」时，拉取 demo PDF 并当作用户上传解析
+    useEffect(() => {
+        if (!startDemoLoad) return;
+        setStartDemoLoad(false);
+        setDemoLoading(true);
+        setNotification('正在加载白皮书…');
+        startOver();
+        api.resetSession()
+            .then(() => api.loadDemo())
+            .then(() => api.getDemoPdfBlob())
+            .then((blob) => {
+                const file = new File([blob], 'demo_paper.pdf', { type: 'application/pdf' });
+                applyFileAsUpload(file);
+                setViewMode('read');
+                setNotification('白皮书已加载，正在解析…');
+            })
+            .catch((e) => setNotification(e?.message || '加载白皮书失败', 'error'))
+            .finally(() => setDemoLoading(false));
+    }, [startDemoLoad, setStartDemoLoad, setNotification, startOver, applyFileAsUpload, setViewMode]);
 
     const outline = parsedSections.length > 0
         ? parsedSections.map((s, idx) => ({
@@ -323,8 +454,17 @@ export const LeftColumn = () => {
     }, [activeReference, currentPage, setCurrentPage]);
 
     const onDocumentLoadSuccess = (pdf) => {
+        if (pdfLoadTimeoutRef.current) clearTimeout(pdfLoadTimeoutRef.current);
+        setPdfLoadTimeout(false);
         setNumPages(pdf.numPages);
         setPdfDocument(pdf);
+        setPdfLoadError(null);
+    };
+    const onDocumentLoadError = (e) => {
+        if (pdfLoadTimeoutRef.current) clearTimeout(pdfLoadTimeoutRef.current);
+        setPdfLoadTimeout(false);
+        setPdfLoadError(e?.message || 'PDF 加载失败');
+        setPdfDocument(null);
     };
 
     // 点击空白区域时清除工具栏（mousedown 阶段，在 mouseup 之前）
@@ -349,20 +489,27 @@ export const LeftColumn = () => {
             const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
             if (rects.length === 0) return;
 
-            const targetRect = rects[0];
+            const pageRect = pageRef.current?.getBoundingClientRect();
 
-            let relativeX = targetRect.left;
-            let relativeY = targetRect.top;
-            if (pageRef.current) {
-                const pageRect = pageRef.current.getBoundingClientRect();
-                relativeX = targetRect.left - pageRect.left;
-                relativeY = targetRect.top - pageRect.top;
-            }
+            // 收集每行的相对坐标
+            const relLines = rects.map(r => ({
+                x: r.left - (pageRect?.left ?? 0),
+                y: r.top - (pageRect?.top ?? 0),
+                width: r.width,
+                height: r.height,
+            }));
+
+            // 计算所有行的外包矩形（用于工具栏定位与 fallback）
+            const fullX = Math.min(...relLines.map(b => b.x));
+            const fullY = Math.min(...relLines.map(b => b.y));
+            const fullRight = Math.max(...relLines.map(b => b.x + b.width));
+            const fullBottom = Math.max(...relLines.map(b => b.y + b.height));
 
             setSelection({
                 text,
-                bbox: { x: relativeX, y: relativeY, width: targetRect.width, height: targetRect.height },
-                screenPos: { x: targetRect.left, y: targetRect.top },
+                bbox: { x: fullX, y: fullY, width: fullRight - fullX, height: fullBottom - fullY },
+                lines: relLines,   // 逐行 bbox，用于精准高亮
+                screenPos: { x: rects[0].left, y: rects[0].top },
             });
         }, 16);
     }, [toolMode]);
@@ -370,6 +517,8 @@ export const LeftColumn = () => {
 
     const handleAction = async (action) => {
         if (!selection) return;
+        if (actionInFlightRef.current) return;
+        actionInFlightRef.current = true;
 
         if (action === 'crush') {
             let screenshotUrl = null;
@@ -379,7 +528,7 @@ export const LeftColumn = () => {
                 try {
                     const page = await pdfDocument.getPage(currentPage);
                     const unscaledViewport = page.getViewport({ scale: 1.0 });
-                    const renderScale = pageWidth / unscaledViewport.width;
+                    const renderScale = (pageWidth * pageScale) / unscaledViewport.width;
                     const screenshotScale = 2.0;
                     const viewport = page.getViewport({ scale: renderScale * screenshotScale });
                     
@@ -406,7 +555,7 @@ export const LeftColumn = () => {
             }
 
             const payload = {
-                id: `note_${Date.now()}`,
+                id: crypto.randomUUID(),
                 type: 'idea',
                 content: selection.text,
                 page: currentPage,
@@ -420,6 +569,7 @@ export const LeftColumn = () => {
             // 本地先加：快速反馈
             addNote(payload);
             setSelection(null);
+            actionInFlightRef.current = false;
 
             // 后端同步 + Crusher 自动分类
             try {
@@ -455,16 +605,19 @@ export const LeftColumn = () => {
                     ? toNormalizedBbox(selection.bbox)
                     : [selection.bbox.x, selection.bbox.y, selection.bbox.width, selection.bbox.height];
                 const bboxArr = Array.isArray(hlBbox) ? hlBbox : [hlBbox.x, hlBbox.y, hlBbox.width, hlBbox.height];
+                const normLines = contentMode === 'pdf' && selection.lines?.length > 0
+                    ? selection.lines.map(b => toNormalizedBbox(b))
+                    : null;
                 addHighlight({
+                    id: crypto.randomUUID(),
                     page: currentPage,
                     text: selection.text,
                     color: highlightColor,
                     bbox: bboxArr,
-                    id: Date.now()
+                    lines: normLines,
                 });
-                // 同时创建一条高亮笔记
                 const hlNote = {
-                    id: `note_${Date.now()}`,
+                    id: crypto.randomUUID(),
                     type: 'idea',
                     content: selection.text,
                     page: currentPage,
@@ -482,15 +635,16 @@ export const LeftColumn = () => {
                 console.error('高亮操作失败:', e);
             }
             setSelection(null);
+            actionInFlightRef.current = false;
         } else if (action === 'translate') {
             setTranslating(true);
             setTranslationResult(null);
+            actionInFlightRef.current = false;
             try {
                 const resp = await api.translateText(selection.text.substring(0, 2000));
                 setTranslationResult(resp.translation);
-                // 同时生成一条翻译笔记
                 addNote({
-                    id: `note_${Date.now()}`,
+                    id: crypto.randomUUID(),
                     type: 'idea',
                     content: selection.text,
                     translation: resp.translation,
@@ -504,11 +658,10 @@ export const LeftColumn = () => {
                 setTranslating(false);
             }
         } else if (action === 'annotate') {
-            // 创建批注卡片
             const annotation = prompt('输入批注内容：');
             if (annotation) {
                 addNote({
-                    id: `note_${Date.now()}`,
+                    id: crypto.randomUUID(),
                     type: 'idea',
                     content: `[批注] ${annotation}\n\n原文: ${selection.text.substring(0, 100)}...`,
                     page: currentPage,
@@ -517,23 +670,46 @@ export const LeftColumn = () => {
                 });
             }
             setSelection(null);
+            actionInFlightRef.current = false;
         }
     };
 
-    // Render saved highlight overlays for current page
+    // Render saved highlight overlays for current page（可点击弹窗显示原文）
     const renderHighlightOverlays = () => {
         const pageHighlights = highlights.filter(h => h.page === currentPage && h.bbox);
-        return pageHighlights.map(h => {
-            const colorMap = { yellow: 'bg-yellow-300', green: 'bg-green-300', blue: 'bg-blue-300', pink: 'bg-pink-300' };
+        const colorMap = { yellow: 'bg-yellow-300', green: 'bg-green-300', blue: 'bg-blue-300', pink: 'bg-pink-300' };
+        return pageHighlights.flatMap(h => {
+            const colorClass = colorMap[h.color] || 'bg-yellow-300';
+            const onClick = (e) => { e.stopPropagation(); setPopoverHighlight(h); };
+            // 优先使用逐行 bbox（精准高亮），否则退回整体 bbox
+            if (h.lines && h.lines.length > 0) {
+                return h.lines.map((line, i) => {
+                    const p = fromStoredBbox(line);
+                    return (
+                        <div
+                            key={`${h.id}_${i}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={i === 0 ? onClick : undefined}
+                            className={`absolute ${colorClass} mix-blend-multiply z-10 opacity-50 ${i === 0 ? 'cursor-pointer hover:opacity-70' : 'pointer-events-none'}`}
+                            style={{ left: p.x, top: p.y, width: p.width, height: p.height }}
+                            title={i === 0 ? (h.text ? '点击查看原文' : '') : undefined}
+                        />
+                    );
+                });
+            }
             const p = fromStoredBbox(h.bbox);
-            return (
+            return [(
                 <div
                     key={h.id}
-                    className={`absolute ${colorMap[h.color] || 'bg-yellow-300'} mix-blend-multiply pointer-events-none z-10 opacity-40`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={onClick}
+                    className={`absolute ${colorClass} mix-blend-multiply z-10 opacity-50 cursor-pointer hover:opacity-70`}
                     style={{ left: p.x, top: p.y, width: p.width, height: p.height }}
-                    title={h.text?.substring(0, 50)}
+                    title={h.text ? '点击查看原文' : ''}
                 />
-            );
+            )];
         });
     };
 
@@ -555,10 +731,45 @@ export const LeftColumn = () => {
         );
     };
 
+    const handleLoadDemo = useCallback(() => {
+        setDemoLoading(true);
+        setNotification('正在加载白皮书…');
+        startOver();
+        api.resetSession()
+            .then(() => api.loadDemo())
+            .then(() => api.getDemoPdfBlob())
+            .then((blob) => {
+                const file = new File([blob], 'demo_paper.pdf', { type: 'application/pdf' });
+                applyFileAsUpload(file);
+                setViewMode('read');
+                setNotification('白皮书已加载，正在解析…');
+            })
+            .catch((e) => setNotification(e?.message || '加载白皮书失败', 'error'))
+            .finally(() => setDemoLoading(false));
+    }, [startOver, applyFileAsUpload, setViewMode, setNotification]);
+
     return (
         <div 
             className="h-full flex flex-col bg-gray-50 relative"
         >
+             {/* 阅读栏顶部：体验 Demo */}
+             <div className="border-b border-amber-200 bg-amber-50/80 shrink-0 px-3 py-2">
+                <button
+                    type="button"
+                    onClick={handleLoadDemo}
+                    disabled={demoLoading}
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg border-2 border-amber-300 bg-white text-amber-800 font-sans text-xs font-bold hover:bg-amber-50 hover:border-amber-400 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                >
+                    {demoLoading ? (
+                        <>
+                            <span className="inline-block w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                            正在加载官方白皮书 Demo…
+                        </>
+                    ) : (
+                        <>🎁 体验官方架构白皮书 Demo</>
+                    )}
+                </button>
+             </div>
              {/* 文献库折叠面板 */}
              <div className="border-b border-gray-200 bg-white shrink-0">
                 <button
@@ -584,34 +795,49 @@ export const LeftColumn = () => {
                                     <p className="text-[10px] text-gray-400 text-center py-2">上传 PDF 或从 ArXiv 下载后自动加入</p>
                                 )}
                                 {library.map(doc => (
-                                    <div
-                                        key={doc.id}
-                                        onClick={() => {
-                                            if (doc.source === 'arxiv') {
-                                                clearParseState();
-                                                setPdfUrl(`https://arxiv.org/pdf/${doc.arxivId}.pdf`, doc.name);
-                                            } else if (doc.source === 'local' && doc.docId) {
-                                                clearParseState();
-                                                setPdfUrl(doc.fileUrl || api.getDocumentFileUrl(doc.docId), doc.name, doc.docId);
-                                            } else {
-                                                alert("Local files cannot be restored automatically due to browser security. Please re-upload.");
-                                            }
-                                        }}
-                                        className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs cursor-pointer group transition-colors ${
-                                            pdfFileName === doc.name ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-gray-100 text-gray-600'
-                                        }`}
-                                    >
-                                        <BookOpen size={11} className="shrink-0" />
-                                        <span className="truncate flex-1">{doc.name}</span>
-                                        <span className={`text-[9px] px-1 py-0.5 rounded ${doc.source === 'arxiv' ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
-                                            {doc.source === 'arxiv' ? 'ArXiv' : 'Local'}
-                                        </span>
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); removeFromLibrary(doc.id); }}
-                                            className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-500"
+                                    <div key={doc.id} className="rounded border border-transparent hover:border-gray-200">
+                                        <div
+                                            onClick={() => {
+                                                if (confirmRemoveId === doc.id) return;
+                                                if (doc.source === 'arxiv') {
+                                                    clearParseState();
+                                                    setPdfUrl(`https://arxiv.org/pdf/${doc.arxivId}.pdf`, doc.name);
+                                                } else if (doc.source === 'local' && doc.docId) {
+                                                    clearParseState();
+                                                    setPdfUrl(doc.fileUrl || api.getDocumentFileUrl(doc.docId), doc.name, doc.docId);
+                                                } else {
+                                                    useStore.getState().setNotification("本地文件因浏览器安全限制无法自动恢复，请重新上传。", "warn");
+                                                }
+                                            }}
+                                            className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs cursor-pointer group transition-colors ${
+                                                pdfFileName === doc.name ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-gray-100 text-gray-600'
+                                            }`}
                                         >
-                                            <Trash2 size={10} />
-                                        </button>
+                                            <BookOpen size={11} className="shrink-0" />
+                                            <span className="truncate flex-1">{doc.name}</span>
+                                            <span className={`text-[9px] px-1 py-0.5 rounded shrink-0 ${doc.source === 'arxiv' ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
+                                                {doc.source === 'arxiv' ? 'ArXiv' : 'Local'}
+                                            </span>
+                                            {confirmRemoveId === doc.id ? (
+                                                <span className="text-[9px] text-amber-600 shrink-0">确认中</span>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => { e.stopPropagation(); setConfirmRemoveId(doc.id); }}
+                                                    className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-500"
+                                                    title="从列表移除（需二次确认）"
+                                                >
+                                                    <Trash2 size={10} />
+                                                </button>
+                                            )}
+                                        </div>
+                                        {confirmRemoveId === doc.id && (
+                                            <div className="px-2 pb-2 flex items-center gap-2 bg-amber-50/80 rounded-b border-b border-l border-r border-amber-200">
+                                                <span className="text-[9px] text-amber-800 flex-1">从文献库移除？笔记会保留。</span>
+                                                <button type="button" onClick={(e) => { e.stopPropagation(); setConfirmRemoveId(null); }} className="text-[9px] px-1.5 py-0.5 bg-gray-200 rounded hover:bg-gray-300">取消</button>
+                                                <button type="button" onClick={(e) => { e.stopPropagation(); removeFromLibrary(doc.id); setConfirmRemoveId(null); }} className="text-[9px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded hover:bg-red-200">确认移除</button>
+                                            </div>
+                                        )}
                                     </div>
                                 ))}
                                 {/* 上传按钮 */}
@@ -626,7 +852,7 @@ export const LeftColumn = () => {
              </div>
 
              {/* ✦ 像素风顶部工具栏 - 纯图标 */}
-             <div className="border-b border-gray-200 bg-white px-2 py-1.5 shrink-0 flex items-center gap-1 font-pixel">
+             <div className="border-b border-gray-200 bg-white px-2 py-1.5 shrink-0 flex items-center gap-1 font-sans">
                 <button
                     onClick={() => setContentMode('pdf')}
                     className={`p-1.5 rounded border transition-colors ${contentMode === 'pdf' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100'}`}
@@ -693,16 +919,73 @@ export const LeftColumn = () => {
              </div>
 
             {(parseStatus === 'parsing' || parseStatus === 'done' || parseStatus === 'error') && (
-                <div className="px-3 py-2 bg-white border-b border-gray-100 shrink-0">
-                    <div className="h-1.5 w-full rounded bg-gray-100 overflow-hidden">
+                <div className="px-4 py-3 bg-white border-b border-slate-100 shrink-0">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                        <span className="text-[11px] font-medium text-slate-600">
+                            {parseStatus === 'done' ? '解析完成' : parseStatus === 'error' ? '解析失败' : '正在解析文档…'}
+                        </span>
+                        {(parseStatus === 'parsing' || parseStatus === 'done') && parseStatus !== 'error' && (
+                            <span className="text-[10px] tabular-nums text-slate-400">{parsePercent}%</span>
+                        )}
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden">
                         <div
-                            className={`h-full transition-all duration-300 ${parseStatus === 'error' ? 'bg-red-400' : 'bg-emerald-500'}`}
+                            className={clsx(
+                                'h-full rounded-full transition-all duration-500 ease-out',
+                                parseStatus === 'error' ? 'bg-rose-400' : parseStatus === 'done' ? 'bg-emerald-500' : 'bg-gradient-to-r from-slate-400 to-slate-600'
+                            )}
                             style={{ width: `${parsePercent}%` }}
                         />
                     </div>
-                    <p className="text-[10px] text-gray-400 mt-1">
-                        {parseStatus === 'done' ? '解析完成' : parseStatus === 'error' ? '解析失败' : `解析中 ${parsePercent}%`}
-                    </p>
+                </div>
+            )}
+
+            {/* ✦ 划词悬浮工具条（Medium/Notion 风格：出现在选区上方） */}
+            {selection && selection.screenPos && createPortal(
+                <AnimatePresence>
+                    <motion.div
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 4 }}
+                        transition={{ duration: 0.15 }}
+                        className="fixed z-[90] flex items-center gap-0.5 px-1.5 py-1 rounded-lg border border-slate-200 shadow-lg bg-white"
+                        style={{
+                            left: Math.max(8, Math.min(selection.screenPos.x, typeof window !== 'undefined' ? window.innerWidth - 280 : selection.screenPos.x)),
+                            top: Math.max(60, selection.screenPos.y - 44),
+                        }}
+                    >
+                        <button onClick={() => { setHighlightColor('yellow'); handleAction('highlight'); }} className="p-1.5 rounded hover:bg-yellow-100 text-yellow-700" title="高亮"><Highlighter size={14} /></button>
+                        <button onClick={() => handleAction('annotate')} className="p-1.5 rounded hover:bg-green-100 text-green-700" title="批注"><Tag size={14} /></button>
+                        <button onClick={() => handleAction('crush')} className="p-1.5 rounded hover:bg-pink-100 text-pink-600" title="存为卡片"><Sparkles size={14} /></button>
+                        <button
+                            onClick={() => {
+                              setContextAttachment({
+                                text: selection.text,
+                                page: currentPage,
+                                docName: pdfFileName || undefined,
+                              });
+                              setCopilotOpen(true);
+                              setSelection(null);
+                              setTranslationResult(null);
+                            }}
+                            className="p-1.5 rounded hover:bg-blue-100 text-blue-600"
+                            title="原子助手"
+                        >
+                            <MessageSquare size={14} />
+                        </button>
+                        <div className="w-px h-5 bg-gray-200 mx-0.5" />
+                        <button onClick={() => handleAction('translate')} disabled={translating} className="p-1.5 rounded hover:bg-sky-100 text-sky-600 disabled:opacity-50" title="翻译"><Languages size={14} /></button>
+                        <button onClick={() => { setSelection(null); setTranslationResult(null); }} className="p-1 rounded hover:bg-gray-100 text-gray-400" title="关闭">×</button>
+                    </motion.div>
+                </AnimatePresence>,
+                document.body
+            )}
+            {/* 内联翻译结果仍放在顶部条下，避免遮挡 PDF */}
+            {selection && translationResult && (
+                <div className="shrink-0 px-3 pb-2 bg-blue-50/80 border-b border-blue-100">
+                    <div className="bg-white rounded border border-blue-200 px-2 py-1.5 text-[11px] text-gray-700 leading-relaxed">
+                        {translationResult}
+                    </div>
                 </div>
             )}
 
@@ -716,7 +999,11 @@ export const LeftColumn = () => {
                 {contentMode === 'markdown' && (
                     <div className="w-full max-w-3xl bg-white border border-gray-200 p-4">
                         {parsedMarkdown && parsedDocName === pdfFileName ? (
-                            <div className="text-xs whitespace-pre-wrap text-gray-700 leading-6">{renderTextWithHighlights(parsedMarkdown)}</div>
+                            <div className="prose prose-sm max-w-none prose-code:bg-gray-100 prose-code:px-1 prose-code:rounded text-gray-800 prose-h1:text-2xl prose-h1:font-extrabold prose-h1:mt-6 prose-h1:mb-3 prose-h1:text-gray-900 prose-h1:border-b prose-h1:border-gray-200 prose-h1:pb-2 prose-h2:text-xl prose-h2:font-bold prose-h2:mt-4 prose-h2:mb-2 prose-h2:text-gray-800 prose-h2:border-b prose-h2:border-gray-100 prose-h2:pb-1 prose-h3:text-lg prose-h3:font-semibold prose-h3:mt-3 prose-h3:mb-1 prose-h3:text-gray-800 prose-table:border prose-table:border-gray-200 prose-img:rounded prose-img:border">
+                                <MarkdownRenderer className="markdown-body">
+                                    {parsedMarkdown}
+                                </MarkdownRenderer>
+                            </div>
                         ) : (
                             <p className="text-xs text-gray-400">当前文献暂无 Markdown 结果，请先上传并等待解析完成。</p>
                         )}
@@ -776,34 +1063,95 @@ export const LeftColumn = () => {
                 >
                     {/* PDF Renderer */}
                     {!(pdfFile || pdfUrl) && (
-                        <div className="flex flex-col items-center justify-center h-[500px] w-[600px] text-gray-400 gap-4 font-pixel text-xs">
-                            <p className="flex items-center gap-2 text-red-400">
-                                    <AlertCircle size={14} /> NO SIGNAL - PDF NOT FOUND
-                            </p>
-                            <label className="px-4 py-3 bg-blue-600 text-white cursor-pointer hover:bg-blue-700 transition-colors border-2 border-black shadow-[4px_4px_0px_#000] active:translate-y-1 active:shadow-none uppercase tracking-widest">
-                                <span>Upload Schema</span>
-                                <input
-                                    type="file"
-                                    accept=".pdf"
-                                    onChange={onFileChange}
-                                    className="hidden"
-                                />
-                            </label>
-                            <p className="text-[10px] opacity-70 font-mono">SYSTEM DEFAULT: TARGET_NULL</p>
+                        <div className="flex flex-col items-center justify-center h-[500px] w-[600px] gap-6 font-sans text-xs px-6 bg-gradient-to-b from-slate-50/80 to-white rounded-xl border border-slate-200/80">
+                            <div className="flex flex-col items-center gap-2 text-slate-500">
+                                <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center">
+                                    <BookOpen size={26} className="text-slate-400" />
+                                </div>
+                                <p className="flex items-center gap-2 text-slate-600 font-medium">
+                                    <AlertCircle size={13} className="text-amber-500 shrink-0" /> 当前未打开文献
+                                </p>
+                            </div>
+                            {notes.length > 0 && (
+                                <p className="text-[11px] text-center max-w-[320px] text-slate-500 leading-relaxed">
+                                    您有 <strong className="text-slate-700">{notes.length}</strong> 条笔记仍保留。请从上方「文献库」中点击文献重新打开，或上传新 PDF。
+                                </p>
+                            )}
+                            <div className="flex flex-col items-center gap-4">
+                                <label className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-slate-800 text-white cursor-pointer hover:bg-slate-700 active:bg-slate-900 transition-colors text-sm font-medium shadow-sm hover:shadow focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">
+                                    <Upload size={18} className="shrink-0" />
+                                    上传 PDF
+                                    <input type="file" accept=".pdf" onChange={onFileChange} className="hidden" />
+                                </label>
+                                {library.length > 0 && (
+                                    <p className="text-[10px] text-slate-400">或从顶部文献库 ({library.length}) 选择已保存的文献</p>
+                                )}
+                            </div>
+                            {library.length === 0 && notes.length === 0 && (
+                                <p className="text-[10px] text-slate-400">上传 PDF 开始阅读与做笔记</p>
+                            )}
                         </div>
                     )}
 
-                    {(pdfFile || pdfUrl) && (
+                    {(pdfObjectUrl || pdfUrl) && (
                         <div
                             className={`relative group ${toolMode === 'screenshot' ? 'cursor-crosshair' : ''}`}
                             ref={pageRef}
+                            style={{ minWidth: Math.max(400, pageWidth) }}
                             onPointerDown={onScreenshotPointerDown}
                             onPointerMove={onScreenshotPointerMove}
                             onPointerUp={onScreenshotPointerUp}
                             onPointerLeave={onScreenshotPointerUp}
                         >
+                                {(pdfLoadError || pdfLoadTimeout) && (
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-amber-50/90 border border-amber-200 rounded-lg p-4 z-10">
+                                        <p className="text-sm text-amber-800">
+                                            {pdfLoadTimeout && !pdfLoadError ? '加载超时，可切换至 Markdown 视图查看' : pdfLoadError}
+                                        </p>
+                                        {pdfLoadTimeout && !pdfLoadError && (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    if (pdfLoadTimeoutRef.current) clearTimeout(pdfLoadTimeoutRef.current);
+                                                    setContentMode('markdown');
+                                                    setPdfLoadTimeout(false);
+                                                }}
+                                                className="px-3 py-1.5 text-sm bg-amber-500 text-white rounded-lg hover:bg-amber-600"
+                                            >
+                                                切换至 Markdown
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
                                 {renderHighlightOverlays()}
                                 {renderActiveHighlight()}
+                            <AnimatePresence>
+                                {popoverHighlight && (
+                                    <>
+                                        <motion.div
+                                            initial={{ opacity: 0 }}
+                                            animate={{ opacity: 1 }}
+                                            exit={{ opacity: 0 }}
+                                            className="fixed inset-0 z-50"
+                                            onClick={() => setPopoverHighlight(null)}
+                                            aria-hidden
+                                        />
+                                        <motion.div
+                                            initial={{ opacity: 0, scale: 0.95 }}
+                                            animate={{ opacity: 1, scale: 1 }}
+                                            exit={{ opacity: 0, scale: 0.95 }}
+                                            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[51] bg-white border border-slate-200 rounded-lg shadow-xl max-w-md w-[90vw] p-4"
+                                            onClick={(e) => e.stopPropagation()}
+                                        >
+                                            <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-2">
+                                                <span className="text-[10px] font-sans text-slate-500 uppercase tracking-wide">高亮原文</span>
+                                                <button type="button" onClick={() => setPopoverHighlight(null)} className="p-1 hover:bg-slate-100 rounded" aria-label="关闭"><X size={14} className="text-slate-500" /></button>
+                                            </div>
+                                            <p className="text-sm text-slate-800 leading-relaxed font-sans">{popoverHighlight.text || '（无文本）'}</p>
+                                        </motion.div>
+                                    </>
+                                )}
+                            </AnimatePresence>
                             {toolMode === 'screenshot' && shotDraft && (
                                 <div
                                 className="absolute z-30 border-2 border-pink-400 bg-pink-200/20 pointer-events-none"
@@ -816,10 +1164,12 @@ export const LeftColumn = () => {
                                 />
                             )}
                                 <Document
-                                        file={pdfFile || pdfUrl}
+                                        key={pdfObjectUrl || pdfUrl}
+                                        file={pdfObjectUrl || pdfUrl}
                                         onLoadSuccess={onDocumentLoadSuccess}
+                                        onLoadError={onDocumentLoadError}
                                         className="flex flex-col items-center"
-                                        loading={<div className="p-10 font-pixel text-xs animate-pulse">Initializing Core...</div>}
+                                        loading={<div className="p-10 text-sm text-slate-500 animate-pulse">正在加载 PDF…</div>}
                                 >
                                         <Page 
                                                 pageNumber={currentPage} 
@@ -835,70 +1185,17 @@ export const LeftColumn = () => {
                 )}
             </div>
 
-            {/* Pixel Toolbar (Floating Portal) */}
-            <AnimatePresence>
-            {selection && (
-                createPortal(
-                        <motion.div 
-                                initial={{ opacity: 0, scale: 0.9 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                exit={{ opacity: 0, scale: 0.9 }}
-                                className="fixed bg-white border-2 border-black shadow-[4px_4px_0px_#000] p-1.5 flex flex-col gap-1.5 z-50 font-pixel text-[10px]"
-                                style={{ 
-                                        top: Math.max(10, selection.screenPos.y - 80), 
-                                        left: selection.screenPos.x 
-                                }}
-                        >
-                                {/* 主工具行 */}
-                                <div className="flex items-center gap-1">
-                                    <button onClick={() => handleAction('translate')} disabled={translating} className="px-2 py-1 hover:bg-blue-100 flex items-center gap-1 active:bg-blue-200 transition-colors text-blue-800 disabled:opacity-50 text-xs">
-                                            <Languages size={14} />
-                                            译
-                                    </button>
-                                    <button onClick={() => handleAction('highlight')} className="px-2 py-1 hover:bg-yellow-100 flex items-center gap-1 active:bg-yellow-200 transition-colors text-yellow-800 text-xs">
-                                            <Highlighter size={14} />
-                                            亮
-                                    </button>
-                                    <button onClick={() => handleAction('annotate')} className="px-2 py-1 hover:bg-green-100 flex items-center gap-1 active:bg-green-200 transition-colors text-green-800 text-xs">
-                                            <Tag size={14} />
-                                            注
-                                    </button>
-                                    <button onClick={() => handleAction('crush')} className="px-2 py-1 bg-pink-50 hover:bg-pink-100 flex items-center gap-1 active:bg-pink-200 transition-colors text-pink-600 font-bold border border-pink-200 animate-pulse text-xs">
-                                            <Sparkles size={14} />
-                                            粉碎
-                                    </button>
-                                </div>
-                                {/* 高亮颜色选择：点击直接高亮 */}
-                                <div className="flex items-center gap-1 border-t border-gray-100 pt-1">
-                                    <Palette size={10} className="text-gray-400 mr-1" />
-                                    {['yellow', 'green', 'blue', 'pink'].map(c => (
-                                        <button
-                                            key={c}
-                                            onClick={() => { setHighlightColor(c); handleAction('highlight'); }}
-                                            className={`w-4 h-4 rounded-full border-2 transition-all hover:scale-125 ${highlightColor === c ? 'border-black scale-125' : 'border-gray-300'}`}
-                                            style={{ backgroundColor: { yellow: '#fde047', green: '#86efac', blue: '#93c5fd', pink: '#f9a8d4' }[c] }}
-                                            title={`${c} 高亮`}
-                                        />
-                                    ))}
-                                </div>
-                                {/* 翻译结果 */}
-                                {translationResult && (
-                                    <div className="border-t border-gray-100 pt-1 max-w-[300px]">
-                                        <p className="text-[10px] text-gray-600 leading-relaxed whitespace-pre-wrap">{translationResult}</p>
-                                        <button onClick={() => { setTranslationResult(null); setSelection(null); }} className="text-[9px] text-blue-500 mt-1 hover:underline">关闭</button>
-                                    </div>
-                                )}
-                        </motion.div>,
-                        document.body
-                )
-            )}
-            </AnimatePresence>
-
             {/* Pixel Pagination Controls (Fixed Bottom Left) */}
-            <div className="absolute bottom-6 left-6 bg-white border-2 border-black shadow-[4px_4px_0px_#000] px-4 py-2 flex items-center gap-4 text-xs z-40 font-pixel transform transition-transform hover:scale-105 origin-bottom-left">
-                <button onClick={() => setCurrentPage(Math.max(1, currentPage - 1))} disabled={currentPage <= 1} className="hover:bg-gray-100 px-2 py-1 active:translate-y-1 disabled:opacity-50 text-blue-600 uppercase border border-transparent hover:border-gray-300">Prev</button>
-                <span className="text-gray-800">PAGE {currentPage} / {numPages || '--'}</span>
-                <button onClick={() => setCurrentPage(Math.min(numPages, currentPage + 1))} disabled={currentPage >= numPages} className="hover:bg-gray-100 px-2 py-1 active:translate-y-1 disabled:opacity-50 text-blue-600 uppercase border border-transparent hover:border-gray-300">Next</button>
+            <div className="absolute bottom-6 left-6 bg-white/95 border border-slate-200 rounded-lg shadow-lg px-3 py-2 flex items-center gap-3 text-xs z-40 font-sans">
+                <button onClick={() => setCurrentPage(Math.max(1, currentPage - 1))} disabled={currentPage <= 1} className="flex items-center gap-1 hover:bg-slate-100 px-2 py-1.5 rounded disabled:opacity-50 text-slate-600 hover:text-slate-900 disabled:cursor-not-allowed transition-colors" title="上一页">
+                    <ChevronLeft size={16} />
+                    <span>上一页</span>
+                </button>
+                <span className="text-slate-600 tabular-nums min-w-[4rem] text-center">第 {currentPage} / {numPages ?? '—'} 页</span>
+                <button onClick={() => setCurrentPage(Math.min(numPages ?? 999, currentPage + 1))} disabled={currentPage >= (numPages ?? 0)} className="flex items-center gap-1 hover:bg-slate-100 px-2 py-1.5 rounded disabled:opacity-50 text-slate-600 hover:text-slate-900 disabled:cursor-not-allowed transition-colors" title="下一页">
+                    <span>下一页</span>
+                    <ChevronRight size={16} />
+                </button>
             </div>
         </div>
     );

@@ -33,6 +33,45 @@ import httpx
 logger = logging.getLogger("uvicorn.error")
 
 # ══════════════════════════════════════════════════════════════
+# 图片持久化：将解析结果中的图片保存到 data/parse_images/{stem}/
+# ══════════════════════════════════════════════════════════════
+_PARSE_IMAGES_DIR = Path(__file__).parent.parent / "data" / "parse_images"
+_PARSE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _persist_and_rewrite_images(parsed_content: str, stem: str, img_sources) -> str:
+    """
+    持久化图片并改写 Markdown 中的图片 URL。
+    img_sources: Path（本地 CLI 的 images 目录）或 dict（云 API 的 {name: bytes}）
+    """
+    persist_dir = _PARSE_IMAGES_DIR / stem
+    persist_dir.mkdir(parents=True, exist_ok=True)
+
+    # 复制或写入图片文件
+    if isinstance(img_sources, Path):
+        # 本地 CLI 路径：从 images 目录复制
+        if img_sources.exists():
+            for img_file in img_sources.iterdir():
+                if img_file.is_file():
+                    shutil.copy2(img_file, persist_dir / img_file.name)
+    elif isinstance(img_sources, dict):
+        # 云 API 路径：从 zip 中提取的 bytes 写入
+        for name, data in img_sources.items():
+            (persist_dir / name).write_bytes(data)
+
+    # 改写 Markdown 中的图片 URL
+    def _rewrite(m: re.Match) -> str:
+        alt, orig = m.group(1), m.group(2)
+        # 跳过已经是绝对路径或网络 URL 的图片
+        if orig.startswith(("http://", "https://", "/")):
+            return m.group(0)
+        img_name = Path(orig).name
+        return f"![{alt}](/api/parse-images/{stem}/{img_name})"
+
+    return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _rewrite, parsed_content)
+
+
+# ══════════════════════════════════════════════════════════════
 # MinerU 云 API 配置
 # ══════════════════════════════════════════════════════════════
 MINERU_API_BASE = "https://mineru.net/api/v4"
@@ -281,9 +320,22 @@ async def _parse_via_cloud_api(
                     # 优先选 full.md
                     target = next((n for n in md_files if "full" in n), md_files[0])
                     parsed_content = zf.read(target).decode("utf-8", errors="replace")
+
+                    # 提取图片文件
+                    img_data = {
+                        Path(n).name: zf.read(n)
+                        for n in zf.namelist()
+                        if n.lower().endswith(
+                            (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg")
+                        )
+                    }
             except Exception as e:
                 yield _make_event("error", f"解压结果失败: {e}")
                 return
+
+            # 持久化图片并改写 URL
+            stem = Path(filename).stem
+            parsed_content = _persist_and_rewrite_images(parsed_content, stem, img_data)
 
             # 流式输出章节
             sections = _split_sections(parsed_content)
@@ -393,9 +445,13 @@ async def _parse_via_local_cli(
             yield _make_event("error", "CLI 未生成 Markdown 文件")
             return
 
-        parsed_content = max(md_files, key=lambda p: p.stat().st_size).read_text(
-            encoding="utf-8", errors="replace"
-        )
+        target_md = max(md_files, key=lambda p: p.stat().st_size)
+        parsed_content = target_md.read_text(encoding="utf-8", errors="replace")
+
+        # 持久化图片并改写 URL
+        stem = Path(filename).stem
+        src_img_dir = target_md.parent / "images"
+        parsed_content = _persist_and_rewrite_images(parsed_content, stem, src_img_dir)
 
         sections = _split_sections(parsed_content)
         for idx, sec in enumerate(sections):
