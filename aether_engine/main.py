@@ -116,7 +116,12 @@ app.mount(
 )
 
 # ── 前端静态资源（SPA 模式）──────────────────────────────────────────────
-_static_dir = Path(__file__).resolve().parent / "static"
+# 容器环境：静态文件在 /home/user/app/static（与 Dockerfile 一致）
+_static_dir = Path("/home/user/app/static")
+if not _static_dir.exists():
+    # 本地开发：静态文件在 aether_engine/../static
+    _static_dir = Path(__file__).resolve().parent.parent / "static"
+
 if _static_dir.exists():
     # 挂载 assets 目录
     _assets_dir = _static_dir / "assets"
