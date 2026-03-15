@@ -186,6 +186,10 @@ async def _parse_via_cloud_api(
 ) -> AsyncGenerator[str, None]:
     """通过 MinerU 云 API 解析 PDF，流式 yield SSE 事件"""
     token = MINERU_API_TOKEN
+    if not token:
+        yield _make_event("error", "未配置 MINERU_API_TOKEN 或 MINERU_API_KEY 环境变量")
+        return
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
@@ -212,17 +216,21 @@ async def _parse_via_cloud_api(
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(batch_url, headers=headers, json=batch_payload)
             result = resp.json()
+            logger.info("[MinerU] batch API 响应: %s", result)
     except Exception as e:
         yield _make_event("error", f"申请上传链接失败: {e}")
         return
 
     if result.get("code") != 0:
-        yield _make_event("error", f"申请上传链接失败: {result.get('msg', '未知错误')}")
+        error_msg = result.get("msg", "未知错误")
+        logger.warning("[MinerU] batch API 错误: code=%s, msg=%s", result.get("code"), error_msg)
+        yield _make_event("error", f"申请上传链接失败: {error_msg}")
         return
 
     file_items = result.get("data", {}).get("files", [])
     if not file_items:
-        yield _make_event("error", "API 未返回上传链接")
+        logger.warning("[MinerU] batch API 未返回 files: %s", result)
+        yield _make_event("error", f"API 未返回上传链接，响应: {result}")
         return
 
     upload_url = file_items[0].get("url")
