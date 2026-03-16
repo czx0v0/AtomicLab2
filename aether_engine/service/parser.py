@@ -76,7 +76,9 @@ def _persist_and_rewrite_images(parsed_content: str, stem: str, img_sources) -> 
 # ══════════════════════════════════════════════════════════════
 MINERU_API_BASE = "https://mineru.net/api/v4"
 # 支持两种环境变量名：MINERU_API_TOKEN 或 MINERU_API_KEY
-MINERU_API_TOKEN = os.environ.get("MINERU_API_TOKEN") or os.environ.get("MINERU_API_KEY", "")
+MINERU_API_TOKEN = os.environ.get("MINERU_API_TOKEN") or os.environ.get(
+    "MINERU_API_KEY", ""
+)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -223,16 +225,18 @@ async def _parse_via_cloud_api(
 
     if result.get("code") != 0:
         error_msg = result.get("msg", "未知错误")
-        logger.warning("[MinerU] batch API 错误：code=%s, msg=%s", result.get("code"), error_msg)
+        logger.warning(
+            "[MinerU] batch API 错误：code=%s, msg=%s", result.get("code"), error_msg
+        )
         yield _make_event("error", f"申请上传链接失败：{error_msg}")
         return
 
     file_items = result.get("data", {}).get("files", [])
-    
+
     # 兼容两种 API 响应格式：旧版返回 files，新版返回 file_urls
     upload_url = None
     batch_id = None
-    
+
     if not file_items:
         file_urls = result.get("data", {}).get("file_urls", [])
         if file_urls:
@@ -245,9 +249,11 @@ async def _parse_via_cloud_api(
             return
     else:
         upload_url = file_items[0].get("url")
-        batch_id = result.get("data", {}).get("batch_id") or file_items[0].get("batch_id")
+        batch_id = result.get("data", {}).get("batch_id") or file_items[0].get(
+            "batch_id"
+        )
         logger.info("[MinerU] 使用旧版 API 格式，files: %d", len(file_items))
-    
+
     if not upload_url:
         yield _make_event("error", "API 未返回 presigned 上传 URL")
         return
@@ -265,7 +271,19 @@ async def _parse_via_cloud_api(
                 headers={"Content-Type": "application/octet-stream"},
             )
         if put_resp.status_code not in (200, 204):
-            yield _make_event("error", f"上传文件失败 (HTTP {put_resp.status_code})")
+            try:
+                err_body = (put_resp.text or "")[:500]
+            except Exception:
+                err_body = "<no body>"
+            logger.error(
+                "[MinerU] 上传到 OSS 失败: status=%s, body=%s",
+                put_resp.status_code,
+                err_body,
+            )
+            yield _make_event(
+                "error",
+                f"上传文件失败 (HTTP {put_resp.status_code})。创空间环境常见为 OSS 策略限制，详情见日志: {err_body}",
+            )
             return
     except Exception as e:
         yield _make_event("error", f"上传文件失败: {e}")
