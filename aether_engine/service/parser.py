@@ -223,18 +223,31 @@ async def _parse_via_cloud_api(
 
     if result.get("code") != 0:
         error_msg = result.get("msg", "未知错误")
-        logger.warning("[MinerU] batch API 错误: code=%s, msg=%s", result.get("code"), error_msg)
-        yield _make_event("error", f"申请上传链接失败: {error_msg}")
+        logger.warning("[MinerU] batch API 错误：code=%s, msg=%s", result.get("code"), error_msg)
+        yield _make_event("error", f"申请上传链接失败：{error_msg}")
         return
 
     file_items = result.get("data", {}).get("files", [])
+    
+    # 兼容两种 API 响应格式：旧版返回 files，新版返回 file_urls
+    upload_url = None
+    batch_id = None
+    
     if not file_items:
-        logger.warning("[MinerU] batch API 未返回 files: %s", result)
-        yield _make_event("error", f"API 未返回上传链接，响应: {result}")
-        return
-
-    upload_url = file_items[0].get("url")
-    batch_id = result.get("data", {}).get("batch_id") or file_items[0].get("batch_id")
+        file_urls = result.get("data", {}).get("file_urls", [])
+        if file_urls:
+            upload_url = file_urls[0]
+            batch_id = result.get("data", {}).get("batch_id")
+            logger.info("[MinerU] 使用新版 API 格式，file_urls: %d", len(file_urls))
+        else:
+            logger.warning("[MinerU] batch API 未返回 files 或 file_urls: %s", result)
+            yield _make_event("error", f"API 未返回上传链接，响应：{result}")
+            return
+    else:
+        upload_url = file_items[0].get("url")
+        batch_id = result.get("data", {}).get("batch_id") or file_items[0].get("batch_id")
+        logger.info("[MinerU] 使用旧版 API 格式，files: %d", len(file_items))
+    
     if not upload_url:
         yield _make_event("error", "API 未返回 presigned 上传 URL")
         return
