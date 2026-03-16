@@ -263,13 +263,10 @@ async def _parse_via_cloud_api(
     )
 
     # ── Step 2: PUT 上传文件 ──────────────────────────────────
+    # 官方文档明确要求：上传文件时无须设置 Content-Type，否则 OSS 预签名校验会 SignatureDoesNotMatch
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            put_resp = await client.put(
-                upload_url,
-                content=file_content,
-                headers={"Content-Type": "application/octet-stream"},
-            )
+            put_resp = await client.put(upload_url, content=file_content)
         if put_resp.status_code not in (200, 204):
             try:
                 err_body = (put_resp.text or "")[:500]
