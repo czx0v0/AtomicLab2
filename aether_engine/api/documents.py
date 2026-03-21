@@ -99,6 +99,10 @@ class DocumentItem(BaseModel):
     original_filename: Optional[str] = None
     stored_filename: Optional[str] = None
     domain_id: Optional[str] = None
+    abstract: Optional[str] = None
+    zotero_item_key: Optional[str] = None
+    zotero_version: Optional[int] = None
+    source: Optional[str] = None
 
 
 class PatchDocumentBody(BaseModel):

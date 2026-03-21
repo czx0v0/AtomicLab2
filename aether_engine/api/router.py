@@ -17,6 +17,7 @@ from api.note import router as note_router
 from api.organize import router as organize_router
 from api.arxiv_secretary import router as arxiv_secretary_router
 from api.export_latex import router as export_latex_router
+from api.integration_zotero import router as integration_zotero_router
 
 root_router = APIRouter()
 root_router.include_router(health_router)  # health 已有自己的/api 前缀
@@ -36,3 +37,4 @@ root_router.include_router(chat_router, prefix="/api")
 root_router.include_router(documents_router, prefix="/api")
 root_router.include_router(domains_router, prefix="/api")
 root_router.include_router(writing_router, prefix="/api")
+root_router.include_router(integration_zotero_router, prefix="/api")

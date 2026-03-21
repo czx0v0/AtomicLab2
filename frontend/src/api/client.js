@@ -425,3 +425,26 @@ export const resolveCitation = (title = '', doi = '') =>
     method: 'POST',
     body: JSON.stringify({ title: (title || '').trim(), doi: (doi || '').trim() }),
   });
+
+// ─── Zotero 集成（会话凭据 + 手动同步）────────────────────────────────────────
+export const saveZoteroCredentials = (payload) =>
+  json('/integration/zotero/credentials', {
+    method: 'POST',
+    body: JSON.stringify({
+      user_id: String(payload.user_id || '').trim(),
+      api_key: String(payload.api_key || '').trim(),
+      collection_key: String(payload.collection_key || '').trim(),
+    }),
+  });
+
+export const getZoteroStatus = () => json('/integration/zotero/status');
+
+export const syncZoteroLibrary = (opts = {}) =>
+  json('/integration/zotero/sync', {
+    method: 'POST',
+    body: JSON.stringify({
+      limit: typeof opts.limit === 'number' ? opts.limit : 20,
+      dry_run: !!opts.dry_run,
+    }),
+    timeout: opts.timeout || 600000,
+  });

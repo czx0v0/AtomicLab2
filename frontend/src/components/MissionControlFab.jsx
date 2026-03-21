@@ -10,6 +10,7 @@ import {
   dateInputToDeadlineIso,
   useStore,
 } from '../store/useStore';
+import { getZoteroStatus, saveZoteroCredentials, syncZoteroLibrary } from '../api/client';
 
 /**
  * 全局右下角 🚩：投稿与进度「任务控制中心」浮层（Pastel Pixel）
@@ -29,6 +30,12 @@ export function MissionControlFab() {
   const [draftTitle, setDraftTitle] = useState('');
   const [draftTarget, setDraftTarget] = useState('');
   const [draftDate, setDraftDate] = useState('');
+
+  const [zoteroUserId, setZoteroUserId] = useState('');
+  const [zoteroApiKey, setZoteroApiKey] = useState('');
+  const [zoteroCollection, setZoteroCollection] = useState('To Read');
+  const [zoteroConfigured, setZoteroConfigured] = useState(false);
+  const [zoteroSyncing, setZoteroSyncing] = useState(false);
 
   const activeProject = useMemo(
     () => projects.find((p) => p.id === activeProjectId) ?? null,
@@ -54,6 +61,26 @@ export function MissionControlFab() {
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const st = await getZoteroStatus();
+        if (cancelled) return;
+        setZoteroConfigured(!!st.configured);
+        const m = st.meta || {};
+        if (m.user_id) setZoteroUserId(m.user_id);
+        if (m.collection_key) setZoteroCollection(m.collection_key);
+      } catch {
+        if (!cancelled) setZoteroConfigured(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   // 仅在打开浮层或切换激活课题时同步 store → 草稿（不把 projects 列入依赖，避免保存后覆盖正在输入的内容）
   useEffect(() => {
     if (!open) return;
@@ -71,6 +98,46 @@ export function MissionControlFab() {
       target_journal: (draftTarget || '').trim() || '毕业论文',
       deadline: dateInputToDeadlineIso(draftDate),
     });
+  };
+
+  const handleSaveZotero = async () => {
+    if (!String(zoteroUserId || '').trim()) {
+      setNotification('请填写 Zotero User ID', 'error');
+      return;
+    }
+    if (!String(zoteroCollection || '').trim()) {
+      setNotification('请填写 Collection 名称或 Key', 'error');
+      return;
+    }
+    if (!zoteroConfigured && !String(zoteroApiKey || '').trim()) {
+      setNotification('首次保存请填写 API Key', 'error');
+      return;
+    }
+    try {
+      await saveZoteroCredentials({
+        user_id: zoteroUserId,
+        api_key: zoteroApiKey,
+        collection_key: zoteroCollection,
+      });
+      setZoteroApiKey('');
+      setZoteroConfigured(true);
+      setNotification('Zotero 凭据已保存到当前会话（服务端内存加密，重启失效）', 'info');
+    } catch (e) {
+      setNotification(e?.message || '保存失败', 'error');
+    }
+  };
+
+  const handleSyncZotero = async () => {
+    setZoteroSyncing(true);
+    try {
+      const r = await syncZoteroLibrary({ limit: 20, dry_run: false });
+      const msg = `同步完成：成功 ${r.succeeded}，跳过 ${r.skipped}，失败 ${r.failed}`;
+      setNotification(msg, r.failed > 0 ? 'warning' : 'info');
+    } catch (e) {
+      setNotification(e?.message || '同步失败', 'error');
+    } finally {
+      setZoteroSyncing(false);
+    }
   };
 
   /** 点击 Timeline 阶段：跳转 Organize 子页 / 写作 / 打开助手模拟评审 */
@@ -320,6 +387,75 @@ export function MissionControlFab() {
                       <span>生成 LaTeX 压缩包</span>
                     </button>
                   </div>
+                </div>
+
+                <div className="border-t-[3px] border-black/10 pt-4 space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                    Zotero 书库（MCP）
+                  </p>
+                  <p className="text-[10px] text-slate-600 leading-relaxed">
+                    API Key 与 User ID 仅保存在<strong>当前浏览器会话对应的后端进程内存</strong>中（Fernet 加密），
+                    服务重启后需重新填写。请勿在公共设备上保存密钥。
+                  </p>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-slate-500">User ID</span>
+                    <input
+                      type="text"
+                      value={zoteroUserId}
+                      onChange={(e) => setZoteroUserId(e.target.value)}
+                      className="mt-0.5 w-full rounded-lg border-2 border-black bg-white px-2 py-1.5 text-xs font-medium text-slate-900"
+                      placeholder="数字 User ID"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-slate-500">API Key</span>
+                    <input
+                      type="password"
+                      value={zoteroApiKey}
+                      onChange={(e) => setZoteroApiKey(e.target.value)}
+                      className="mt-0.5 w-full rounded-lg border-2 border-black bg-white px-2 py-1.5 text-xs font-medium text-slate-900"
+                      placeholder={zoteroConfigured ? '已配置，留空则不更新' : '从 zotero.org 创建'}
+                      autoComplete="new-password"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-slate-500">Collection（名称或 Key）</span>
+                    <input
+                      type="text"
+                      value={zoteroCollection}
+                      onChange={(e) => setZoteroCollection(e.target.value)}
+                      className="mt-0.5 w-full rounded-lg border-2 border-black bg-white px-2 py-1.5 text-xs font-medium text-slate-900"
+                      placeholder="例如 To Read"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleSaveZotero}
+                      className={clsx(
+                        'inline-flex items-center gap-2 px-3 py-2 rounded-xl border-2 border-black bg-[#e0f2fe]',
+                        'text-xs font-bold shadow-[3px_3px_0px_rgba(0,0,0,0.15)] hover:bg-sky-100'
+                      )}
+                    >
+                      保存凭据
+                    </button>
+                    <button
+                      type="button"
+                      disabled={zoteroSyncing}
+                      onClick={handleSyncZotero}
+                      className={clsx(
+                        'inline-flex items-center gap-2 px-3 py-2 rounded-xl border-2 border-black bg-[#fef3c7]',
+                        'text-xs font-bold shadow-[3px_3px_0px_rgba(0,0,0,0.15)] hover:bg-amber-100',
+                        zoteroSyncing && 'opacity-60 cursor-wait'
+                      )}
+                    >
+                      {zoteroSyncing ? '同步中…' : '立即同步 PDF'}
+                    </button>
+                  </div>
+                  {zoteroConfigured && (
+                    <p className="text-[10px] text-emerald-700 font-bold">当前会话已配置 Zotero</p>
+                  )}
                 </div>
               </div>
             </motion.div>

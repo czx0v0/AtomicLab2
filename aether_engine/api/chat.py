@@ -595,6 +595,7 @@ def _route_with_tools(
     top_k: int,
     session_id: Optional[str],
     max_rounds: int = 2,
+    header_session_id: str = "",
 ) -> Tuple[List[dict], List[str], str]:
     """
     返回：(sources, tool_logs, local_context)。
@@ -621,6 +622,22 @@ def _route_with_tools(
             arxiv_hits = _search_arxiv_external(question, limit=3)
             tool_logs.append(f"search_arxiv('{question[:40]}...') -> {len(arxiv_hits)}")
             sources.extend(arxiv_hits)
+        ql = (question or "").lower()
+        if "zotero" in ql or "书库" in question:
+            try:
+                from service.zotero_sync import search_zotero_for_chat
+
+                zh, zlog = search_zotero_for_chat(
+                    question,
+                    header_session_id or "",
+                    session_id,
+                    fetch_recent=True,
+                    top_k=max(6, top_k),
+                )
+                sources.extend(zh)
+                tool_logs.append(zlog)
+            except Exception as e:
+                logger.warning("search_my_zotero 降级失败: %s", e)
         return sources, tool_logs, local_context
 
     from openai import OpenAI
@@ -698,6 +715,27 @@ def _route_with_tools(
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_my_zotero",
+                "description": "查询用户 Zotero 书库中最近收藏/指定文件夹的论文摘要与要点，并可与本地知识库联合",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "keywords": {
+                            "type": "string",
+                            "description": "主题关键词，如 Agent、RAG",
+                        },
+                        "fetch_recent": {
+                            "type": "boolean",
+                            "description": "为 true 时从 Zotero API 拉取最新条目摘要（需已在设置中配置凭据）",
+                        },
+                    },
+                    "required": ["keywords"],
+                },
+            },
+        },
     ]
     messages = [
         {
@@ -708,6 +746,7 @@ def _route_with_tools(
                 "当用户希望追踪某方向最新 arXiv 论文、需要秘书预读过滤并入库推荐时，调用 fetch_arxiv_recommendations。"
                 "当用户要求导出 LaTeX、打包 IEEE 论文、生成 .bib 时，调用 export_latex（需用户提供或粘贴 Markdown 全文）。"
                 "当用户粘贴 LaTeX 编译报错日志时，调用 debug_latex_error。"
+                "当用户提到 Zotero、个人书库、最近收藏的论文时，调用 search_my_zotero。"
                 "当用户询问通用概念、闲聊、或要求执行写作/润色类指令时，可以选择不调用工具。"
                 "只做路由决策，不输出最终答案。"
             ),
@@ -817,6 +856,24 @@ def _route_with_tools(
                 )
                 tool_result = {"analysis": analysis}
                 tool_logs.append("debug_latex_error -> 已分析日志")
+            elif name == "search_my_zotero":
+                from service.zotero_sync import search_zotero_for_chat
+
+                kw = (args.get("keywords") or keywords or question).strip()
+                fetch_recent = bool(args.get("fetch_recent", False))
+                zh, zlog = search_zotero_for_chat(
+                    kw,
+                    header_session_id or "",
+                    session_id,
+                    fetch_recent=fetch_recent,
+                    top_k=max(6, top_k),
+                )
+                sources.extend(zh)
+                tool_logs.append(zlog)
+                tool_result = {
+                    "total": len(zh),
+                    "hits": zh[:8],
+                }
             else:
                 tool_result = {"total": 0}
 
@@ -873,7 +930,7 @@ def _bucket_for_evidence(source: Optional[str]) -> str:
         return "atomic_notes"
     if src in ("graph_1hop", "graph_2hop"):
         return "graph_relations"
-    if src == "arxiv":
+    if src in ("arxiv", "zotero_library"):
         return "external_papers"
     return "other"
 
@@ -1029,6 +1086,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         top_k=body.top_k,
         session_id=session_id,
         max_rounds=body.max_rounds,
+        header_session_id=x_session_id,
     )
     detail_mode = _is_research_detail_question(body.question)
     router_txt = "已完成上下文准备。"
@@ -1124,6 +1182,7 @@ def _chat_stream_generator(
     session_id: Optional[str],
     mode: Optional[str] = None,
     max_rounds: int = 2,
+    header_session_id: str = "",
 ) -> Generator[str, None, None]:
     t0 = time.perf_counter()
     mode_raw = (mode or "").strip().lower()
@@ -1163,7 +1222,11 @@ def _chat_stream_generator(
 
     yield _sse_event("step", {"agent": "router", "content": "正在理解你的意图并准备上下文..."})
     sources, tool_logs, local_context = _route_with_tools(
-        question, top_k=top_k, session_id=session_id, max_rounds=max_rounds
+        question,
+        top_k=top_k,
+        session_id=session_id,
+        max_rounds=max_rounds,
+        header_session_id=header_session_id,
     )
     detail_mode = _is_research_detail_question(question)
     router_detail = "上下文已准备完成。"
@@ -1309,6 +1372,7 @@ def chat_stream(body: ChatRequest, x_session_id: str = Header(default="")):
             session_id=session_id,
             mode=body.mode,
             max_rounds=body.max_rounds,
+            header_session_id=x_session_id,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

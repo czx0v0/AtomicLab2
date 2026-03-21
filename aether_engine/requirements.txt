@@ -12,6 +12,8 @@ jieba>=0.42.0
 rank-bm25>=0.2.2
 sentence-transformers>=2.2.0
 modelscope>=1.10.0
+pyzotero>=1.5.0
+cryptography>=42.0.0
 
 # 预固定易冲突包，防止 pip 依赖回溯超时
 soupsieve>=2.5
