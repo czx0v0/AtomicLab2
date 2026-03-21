@@ -47,8 +47,21 @@ license: Apache License 2.0
 
 可以，有两种常用方式：
 
-1. **推送代码到创空间仓库**：在本地 `modelspace-deploy` 目录（或从主项目复制最新文件到该目录后）执行 `git add . && git commit -m "同步外部更新" && git push origin master`创空间若已关联本仓库，会按平台策略自动或手动重新构建/发布。
+1. **推送代码到创空间仓库**：在本地 `modelspace-deploy` 目录（或从主项目复制最新文件到该目录后）执行 `git add . && git commit -m "同步外部更新" && git push origin master`。创空间若已关联本仓库，会按平台策略自动或手动重新构建/发布。
 2. **在创空间网页端**：进入该创空间 → **设置 / 版本管理** → 使用「从 Git 拉取」或「重新部署」拉取最新 commit。
+
+### GitHub 镜像（第二远程，可选）
+
+- **主远程**：`origin` 指向魔搭创空间仓库（日常以此为准）。
+- **添加 GitHub**：在 `modelspace-deploy` 根目录执行  
+  `git remote add github https://github.com/<你的组织或用户名>/<仓库名>.git`  
+  （若已存在名为 `github` 的 remote，用 `git remote set-url github <url>` 更新。）
+- **同一提交推两处**（分支名按你本地为准，示例为 `master`）：  
+  `git push origin master`  
+  `git push github master`  
+  新建空 GitHub 仓库时首次推送可用  
+  `git push -u github master`。
+- **安全**：请勿把带个人访问令牌或 OAuth 的 URL 写进仓库内文档；远程地址建议用无凭据 HTTPS，由 Git 凭据管理器或 `gh auth` 保存登录。
 
 ---
 

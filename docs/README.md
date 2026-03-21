@@ -46,6 +46,7 @@
 
 ## 维护约定
 
+- **对内 / 对外两份短报告**：`REPORT_INTERNAL.md`（架构、接口、排障）与 `REPORT_EXTERNAL.md`（价值、Demo 话术）并行维护；**事实与接口以 INTERNAL 为准**，EXTERNAL 与 INTERNAL 冲突时改 EXTERNAL 或长文对外段落。
 - 每个里程碑更新 `CHANGELOG.md`
 - 大改架构时同步更新 `TECHNICAL_REPORT.md` 中「架构图谱与关键决策」
 - 对外汇报优先引用 `docs/` 内容，避免口径漂移
