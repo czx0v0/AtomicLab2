@@ -5,6 +5,7 @@
 """
 import logging
 import os
+import threading
 from typing import Optional
 
 from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
@@ -12,6 +13,7 @@ from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
 logger = logging.getLogger("aether")
 
 _model = None
+_model_lock = threading.Lock()
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
 
@@ -45,31 +47,33 @@ def _download_model_from_modelscope(model_name: str) -> Optional[str]:
 
 
 def _get_model():
-    """懒加载 SentenceTransformer（单例）。"""
+    """懒加载 SentenceTransformer（单例，线程安全；避免并发构造触发 meta tensor 竞态）。"""
     global _model
     if _model is None:
-        logger.info("加载 SentenceTransformer 模型 (%s)...", MODEL_NAME)
-        from sentence_transformers import SentenceTransformer
+        with _model_lock:
+            if _model is None:
+                logger.info("加载 SentenceTransformer 模型 (%s)...", MODEL_NAME)
+                from sentence_transformers import SentenceTransformer
 
-        model_path = MODEL_NAME
-        cache_folder = os.getenv("SENTENCE_TRANSFORMERS_HOME")
-        st_kwargs = {"device": "cpu"}
-        if cache_folder:
-            st_kwargs["cache_folder"] = cache_folder
+                model_path = MODEL_NAME
+                cache_folder = os.getenv("SENTENCE_TRANSFORMERS_HOME")
+                st_kwargs = {"device": "cpu"}
+                if cache_folder:
+                    st_kwargs["cache_folder"] = cache_folder
 
-        if IN_MODELSCOPE_SPACE:
-            # 创空间统一走 ModelScope/本地缓存，禁止运行时访问 HuggingFace。
-            local_model_path = _download_model_from_modelscope(MODEL_NAME)
-            if local_model_path:
-                model_path = local_model_path
-            st_kwargs["local_files_only"] = True
+                if IN_MODELSCOPE_SPACE:
+                    # 创空间统一走 ModelScope/本地缓存，禁止运行时访问 HuggingFace。
+                    local_model_path = _download_model_from_modelscope(MODEL_NAME)
+                    if local_model_path:
+                        model_path = local_model_path
+                    st_kwargs["local_files_only"] = True
 
-        # 显式指定 device='cpu'，避免 meta tensor 导致的同步报错
-        _model = SentenceTransformer(model_path, **st_kwargs)
-        logger.info(
-            "SentenceTransformer 加载完成 (dim=%d)",
-            _model.get_sentence_embedding_dimension(),
-        )
+                # 显式指定 device='cpu'，避免 meta tensor 导致的同步报错
+                _model = SentenceTransformer(model_path, **st_kwargs)
+                logger.info(
+                    "SentenceTransformer 加载完成 (dim=%d)",
+                    _model.get_sentence_embedding_dimension(),
+                )
     return _model
 
 
