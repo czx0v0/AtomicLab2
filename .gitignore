@@ -1,6 +1,5 @@
 # Python
 __pycache__/
-aether_engine/service/__pycache__/*
 *.py[cod]
 *.pyo
 *.pyd
@@ -21,18 +20,20 @@ frontend/dist/
 !.env.example
 
 # 项目文档（如 mission-control.md）纳入版本控制
+.vscode/*
+.cursor/*
+scripts/eval/*.csv
+scripts/eval/*.json
+
+data/*
+*.log
+*.pyc
+__pycache__/*
+aether_engine/service/__pycache__/*
 aether_engine/service/__pycache__/doc_rag.cpython-312.pyc
 aether_engine/service/__pycache__/note_rag.cpython-312.pyc
 aether_engine/service/__pycache__/doc_rag.cpython-312.pyc
 aether_engine/service/__pycache__/note_rag.cpython-312.pyc
 aether_engine/service/__pycache__/parser.cpython-312.pyc
 aether_engine/service/__pycache__/qdrant_client.cpython-312.pyc
-aether_engine/service/__pycache__/*
 aether_engine/service/__pycache__/parser.cpython-312.pyc
-.vscode/*
-.cursor/*
-scripts/*
-
-data/*
-*.log
-*.pyc
