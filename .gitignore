@@ -20,6 +20,8 @@ frontend/dist/
 .env.*
 !.env.example
 
-# 项目文档（如 mission-control.md）纳入版本控制
+# 默认忽略 docs/，仅纳入 mission-control 说明（避免本地报告混入仓库）
+docs/*
+!docs/mission-control.md
 aether_engine/service/__pycache__/doc_rag.cpython-312.pyc
 aether_engine/service/__pycache__/note_rag.cpython-312.pyc
