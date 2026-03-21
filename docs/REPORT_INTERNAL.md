@@ -89,6 +89,7 @@
 - 检索状态：`searchQuery`, `searchStatus`, `searchResults`
 - 写作状态：`markdownContent`, `pendingInsert`, `pendingEditorAction`
 - 助手状态：`messages`, `contextAttachment`, `copilotOpen`
+- **流式生命周期**：`isAgentThinking`（连接/首包前）、`agentStreamActive`（SSE 进行中）；`setAgentThinking` / `setAgentStreamActive`（`MiddleColumn`、`CopilotSidebar` 与 `App.jsx` 顶栏 HUD 消费）
 - 跨视图：`pendingOrganizeTab`, `pendingChatQuestion`（一次性消费，见 `useStore.js`）
 
 ## 5. 已知问题与技术债
@@ -123,6 +124,12 @@
 2. SSE 是否发出 `action` 事件
 3. 前端是否消费 `pendingEditorAction`
 
+### 6.4 SYNTHESIZER 气泡空白或「双加载」
+
+**现象**：流式刚开始时合成器气泡无正文，同时底部仍有全局「思考/加载」感。
+
+**预期行为**：首个 SSE 事件到达后 `isAgentThinking` 应为 false；合成器在正文仍为空时显示占位（如「正在生成回答…」）；`agentStreamActive` 在流式 `finally` 中清零。若仍异常，检查 `MiddleColumn` / `CopilotSidebar` 中首包是否调用 `setAgentThinking(false)` 以及 `setAgentStreamActive` 配对。
+
 ## 7. 测试建议（最小回归集）
 
 ### 7.1 E2E 用例
@@ -140,6 +147,14 @@
 - 跳转成功率
 - 写作动作执行成功率
 - 点赞/点踩比与评论密度
+
+### 7.3 离线 RAG 评测（`run_evaluation.py`）
+
+- **脚本**：[`scripts/eval/run_evaluation.py`](../scripts/eval/run_evaluation.py)；**说明**：[`scripts/eval/README.md`](../scripts/eval/README.md)
+- **裁判输出字段**：`context_precision`（0/1）、`faithfulness`（0–1）、`reason`（写入 `judge_reason`）
+- **终端汇总**：运行结束打印 `Evaluation Summary` 表；按 `question` **去重**，每题取 CSV **最后一行**；按 `type` 输出 `context_precision_avg`、`faithfulness_avg` 与 **overall**
+- **环境**：`DEEPSEEK_API_KEY`（裁判）；`--chat-url` 须与实际后端端口一致（默认 `http://localhost:8000/api/chat`，`UVICORN_PORT` 为 7860 时需显式改 URL）
+- **指标语义全文**：以脚本内 `JUDGE_SYSTEM_PROMPT` 为准，文档叙述见 [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) §3.7.1
 
 ## 8. 近期研发优先级
 

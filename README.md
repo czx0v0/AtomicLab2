@@ -25,8 +25,15 @@ license: Apache License 2.0
 ---
 ### 前端静态资源与 index.html
 
-- 源码中的 `Lumina-UI/index.html` 是 Vite 入口模板，**应纳入版本控制**。
-- 部署到 ModelScope 时无需单独“复制 index”：在项目根目录或 CI 中执行 `cd Lumina-UI && npm run build`，生成的 `Lumina-UI/dist/`（内含 `index.html` 与哈希化资源）由 Dockerfile 或部署脚本复制到后端 `static/` 目录，由 FastAPI 挂载对外提供。单镜像构建时通常已在 Dockerfile 中完成上述复制。
+- 源码中的 `frontend/index.html` 是 Vite 入口模板，**应纳入版本控制**。
+- 部署到 ModelScope 时无需单独「复制 index」：在项目根目录或 CI 中执行 `cd frontend && npm run build`，生成的 `frontend/dist/`（内含 `index.html` 与哈希化资源）由 Dockerfile 多阶段构建复制到后端 `static/`（见仓库根目录 `Dockerfile`），由 FastAPI 挂载对外提供。
+
+### 文档与离线评测
+
+- **文档索引**（阅读顺序、双视角报告）：[`docs/README.md`](docs/README.md)
+- **阶段变更记录**：[`docs/CHANGELOG.md`](docs/CHANGELOG.md)
+- **离线 RAG 批量评测**：[`scripts/eval/run_evaluation.py`](scripts/eval/run_evaluation.py)，运行说明见 [`scripts/eval/README.md`](scripts/eval/README.md)；指标 `context_precision` / `faithfulness` 的定义与终端汇总规则见 [`docs/TECHNICAL_REPORT.md`](docs/TECHNICAL_REPORT.md) §3.7.1
+- **项目深读一页纸**（目录、环境、数据流索引）：[`docs/PROJECT_DEEP_DIVE.md`](docs/PROJECT_DEEP_DIVE.md)
 
 ---
 

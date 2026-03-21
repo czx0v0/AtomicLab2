@@ -81,6 +81,17 @@
 - 修复 `DocumentRAG.reset` 缺失导致的重置告警
 - 修复写作/阅读跨视图 PDF 页码状态不一致导致的体验抖动
 
+### Added（2026-03 末 · 助手连接感与流式体验）
+
+- **顶栏 Agent 轻量 HUD**（`App.jsx` → `AgentPipelineHud`）：非 Zen 模式下展示连接/流式状态，与对话区解耦，避免「只有转圈、不知道在做什么」
+- **Zustand**：`agentStreamActive` / `setAgentStreamActive`，与 `isAgentThinking` 分工——流式首包到达即结束「全局思考」占位，流式生命周期由 `agentStreamActive` 跟踪；`startOver` 时一并重置
+- **MiddleColumn / CopilotSidebar**：发送时置 `agentStreamActive`；首个 SSE 事件即 `setAgentThinking(false)`；`finally` 结束流式标记；`ChatMessage` 在 SYNTHESIZER 正文仍为空时显示「正在生成回答…」占位（避免空气泡）
+- **`/help`**：固定文案补充「顶栏 Agent」说明（`frontend/src/lib/assistantHelp.js`）
+
+### Fixed（2026-03 末）
+
+- 修复流式开始时 **SYNTHESIZER_BOT** 气泡空白、同时底部仍显示「思考/加载」的重复体验
+
 ## 后续计划（建议）
 
 - 反馈日志改为 JSONL 逐行追加，便于离线训练样本抽取

@@ -31,6 +31,7 @@ venv/
 
 # IDE
 .vscode/
+.cursor/
 .idea/
 *.swp
 *.swo
@@ -60,3 +61,4 @@ models/
 # Frontend build artifacts (built in Docker Stage 1)
 frontend/node_modules/
 frontend/dist/
+
