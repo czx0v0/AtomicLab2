@@ -29,7 +29,8 @@ import {
     User,
     Waypoints,
     X,
-    Flag
+    Flag,
+    Globe,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
@@ -235,10 +236,11 @@ const NoteCard = ({ note, onDelete }) => {
 
   const handleHighlight = () => {
     if (note.page && note.bbox) {
+      const hlColor = note.highlight_color || note.color || 'yellow';
       addHighlight({
         page: note.page,
         text: note.content?.substring(0, 50) || '',
-        color: 'yellow',
+        color: hlColor,
         bbox: note.bbox,
         id: Date.now(),
         doc_id: activeDocId || '',
@@ -273,13 +275,57 @@ const NoteCard = ({ note, onDelete }) => {
       fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H2',location:'MiddleColumn.jsx:handleCrush:resp',message:'decompose response',data:{noteId:note.id||'',axiomLen:axiom.length,methodLen:method.length,boundaryLen:boundary.length,hasMessage:!!resp.message},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
       if (axiom || method || boundary) {
-        try {
-          await api.updateNote(note.id, { axiom, method, boundary });
-        } catch (_) {}
-        const notes = useStore.getState().notes;
-        useStore.getState().setNotes(notes.map(n =>
-          n.id === note.id ? { ...n, axiom, method, boundary } : n
-        ));
+        const isDemoDoc = (useStore.getState().activeDocId || '') === GLOBAL_DEMO_DOC_ID;
+        let idAfterPersist = note.id;
+        if (isDemoDoc) {
+          const notes = useStore.getState().notes;
+          useStore.getState().setNotes(notes.map(n =>
+            n.id === note.id ? { ...n, axiom, method, boundary } : n
+          ));
+        } else {
+          try {
+            await api.updateNote(note.id, { axiom, method, boundary });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            const isNotFound = /404|不存在|Not Found/i.test(msg);
+            if (isNotFound) {
+              try {
+                const created = await api.createNote({
+                  content: note.content || '',
+                  type: note.type || 'idea',
+                  page: note.page ?? undefined,
+                  bbox: Array.isArray(note.bbox) ? note.bbox : undefined,
+                  doc_id: note.doc_id || useStore.getState().activeDocId || undefined,
+                  translation: note.translation,
+                  keywords: note.keywords,
+                  screenshot: note.screenshot,
+                  axiom,
+                  method,
+                  boundary,
+                });
+                idAfterPersist = created.id;
+                const notes = useStore.getState().notes;
+                useStore.getState().setNotes(
+                  notes.map((n) => (n.id === note.id ? { ...n, ...created } : n))
+                );
+                useStore.getState().setNotification?.('笔记已在服务端同步并保存解构结果', 'info');
+              } catch (e2) {
+                useStore.getState().setNotification?.(
+                  `保存解构结果失败：${e2 instanceof Error ? e2.message : String(e2)}`,
+                  'warn'
+                );
+              }
+            } else {
+              useStore.getState().setNotification?.(`更新笔记失败：${msg}`, 'warn');
+            }
+          }
+          if (idAfterPersist === note.id) {
+            const notes = useStore.getState().notes;
+            useStore.getState().setNotes(notes.map(n =>
+              n.id === note.id ? { ...n, axiom, method, boundary } : n
+            ));
+          }
+        }
         // #region agent log
         fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H2',location:'MiddleColumn.jsx:handleCrush:setNotes',message:'set atomic fields to store note',data:{noteId:note.id||'',storeAtomicCount:(useStore.getState().notes||[]).filter(x=>x.axiom||x.method||x.boundary).length},timestamp:Date.now()})}).catch(()=>{});
         // #endregion
@@ -572,7 +618,7 @@ const isGraphAtomicType = (n) => {
 /** 从节点解析用于分组与统计的类型键（与后端 nodes[].type 一致） */
 const graphNodeTypeKey = (n) => String(n?.type || n?.level || n?.category || 'unknown');
 
-const GraphView = ({ scope = 'global', docId = '', docName = '' }) => {
+const GraphView = ({ scope = 'global', docId = '', docName = '', domainFilterId = '' }) => {
   const { setActiveReference } = useStore();
   const containerRef = useRef(null);
   const [dims, setDims] = useState({ w: 500, h: 400 });
@@ -594,7 +640,7 @@ const GraphView = ({ scope = 'global', docId = '', docName = '' }) => {
     let cancelled = false;
     setLoading(true);
     setError('');
-    api.getOrganizeGraph(scope === 'current' ? (docId || '') : 'global', 200)
+    api.getOrganizeGraph(scope === 'current' ? (docId || '') : 'global', 200, scope === 'global' ? (domainFilterId || '') : '')
       .then((resp) => {
         if (cancelled) return;
         const nodes = Array.isArray(resp?.nodes) ? resp.nodes.map((n) => {
@@ -631,7 +677,7 @@ const GraphView = ({ scope = 'global', docId = '', docName = '' }) => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [scope, docId]);
+  }, [scope, docId, domainFilterId]);
 
   /** 图例与统计完全来自当前画布 nodes，与节点颜色一致 */
   const graphLegendAndStats = useMemo(() => {
@@ -775,7 +821,7 @@ const GraphView = ({ scope = 'global', docId = '', docName = '' }) => {
 };
 
 // ─── GraphRAG 三元组列表（与图谱同源：文档→章节→笔记、标签、笔记间概念、手动连线）────
-const GraphRAGTriplesView = ({ scope = 'global', docId = '', docName = '' }) => {
+const GraphRAGTriplesView = ({ scope = 'global', docId = '', docName = '', domainFilterId = '' }) => {
   const { setPdfUrl, setViewMode } = useStore();
   const [triples, setTriples] = useState([]);
   const [showSourceColumn, setShowSourceColumn] = useState(true);
@@ -786,7 +832,7 @@ const GraphRAGTriplesView = ({ scope = 'global', docId = '', docName = '' }) => 
     let cancelled = false;
     setLoading(true);
     setError('');
-    api.getOrganizeTriples(scope === 'current' ? (docId || '') : 'global', 200)
+    api.getOrganizeTriples(scope === 'current' ? (docId || '') : 'global', 200, scope === 'global' ? (domainFilterId || '') : '')
       .then((resp) => {
         if (cancelled) return;
         setTriples(Array.isArray(resp?.triples) ? resp.triples : []);
@@ -799,7 +845,7 @@ const GraphRAGTriplesView = ({ scope = 'global', docId = '', docName = '' }) => 
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [scope, docId]);
+  }, [scope, docId, domainFilterId]);
 
   if (triples.length === 0) {
     return (
@@ -1263,12 +1309,20 @@ const jumpToKnowledgeSource = async (src, nav) => {
   const page = Math.max(1, Number(src.page_num || src.page || 1));
   const bbox = _normalizeBbox(src.bbox);
   const nextDocId = (src.doc_id || '').trim();
+  if (!isExternal && !nextDocId) {
+    nav.setNotification?.('引用缺少文档标识，无法跳转到 PDF。', 'warn');
+  }
 
   nav.setViewMode?.('read');
 
   if (nextDocId && nextDocId !== (nav.activeDocId || '')) {
     const title = src.doc_title || nextDocId;
-    nav.setPdfUrl?.(api.getDocumentFileUrl(nextDocId), title, nextDocId);
+    const pdfUrl = api.resolvePdfUrlByDocId(nextDocId);
+    if (!pdfUrl) {
+      nav.setNotification?.('引用跳转失败：未找到文档地址', 'error');
+      return;
+    }
+    nav.setPdfUrl?.(pdfUrl, title, nextDocId);
   }
 
   nav.setCurrentPage?.(page);
@@ -1322,11 +1376,59 @@ const renderCitedContent = (content, sources, onJumpSource) => {
   });
 };
 
+const ACTION_PLAN_RE = /<action_plan>\s*([\s\S]*?)\s*<\/action_plan>/i;
+
+function stripJsonFences(text) {
+  let t = String(text ?? '').trim();
+  if (t.startsWith('```')) {
+    t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  }
+  return t;
+}
+
+function parseActionPlan(raw) {
+  const s = typeof raw === 'string' ? raw : String(raw ?? '');
+  const m = s.match(ACTION_PLAN_RE);
+  const displayText = m ? s.replace(ACTION_PLAN_RE, '').trim() : s.trim();
+  let plan = null;
+  if (m) {
+    try {
+      plan = JSON.parse(stripJsonFences(m[1]));
+    } catch {
+      plan = null;
+    }
+  }
+  return { displayText, plan, rawInner: m ? m[1].trim() : null };
+}
+
+/** 将模型输出的别名字段规范为 { action, new_text } */
+function normalizeActionPlan(plan) {
+  if (!plan || typeof plan !== 'object') return null;
+  const rawAction = (plan.action || 'append').toString().trim().toLowerCase();
+  const valid = ['replace', 'insert', 'append'];
+  const action = valid.includes(rawAction) ? rawAction : 'append';
+  const newText = plan.new_text ?? plan.content ?? plan.text ?? plan.markdown;
+  if (typeof newText !== 'string') return null;
+  return { action, new_text: newText };
+}
+
+function isValidActionPlan(plan) {
+  return normalizeActionPlan(plan) !== null;
+}
+
 const ChatMessage = ({ msg }) => {
   const isUser = msg.role === 'user';
-  const { setActiveReference, setViewMode, setPdfUrl, setCurrentPage, activeDocId } = useStore();
+  const { setActiveReference, setViewMode, setPdfUrl, setCurrentPage, activeDocId, setPendingEditorAction } = useStore();
+  const { setNotification } = useStore();
   const [feedback, setFeedback] = useState(0);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [actionPlanDismissed, setActionPlanDismissed] = useState(false);
+  const rawContent = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
+  const { displayText, plan, rawInner } = parseActionPlan(rawContent);
+  const normalizedPlan = useMemo(() => normalizeActionPlan(plan), [plan]);
+  const showActionBox = !isUser && !actionPlanDismissed && normalizedPlan;
+  const showActionPlanParseHint =
+    !isUser && !actionPlanDismissed && rawContent.includes('<action_plan') && !normalizedPlan;
   const agentMeta = {
     router:     { label: 'ROUTER', color: 'bg-indigo-100 text-indigo-800', icon: <Waypoints size={16} /> },
     seeker:     { label: 'SEEKER', color: 'bg-cyan-100 text-cyan-800', icon: <Search size={16} /> },
@@ -1352,7 +1454,7 @@ const ChatMessage = ({ msg }) => {
         session_id: SESSION_ID,
         rating,
         user_comment: comment,
-        answer_text: typeof msg.content === 'string' ? msg.content : '',
+        answer_text: displayText,
         retrieved_contexts: Array.isArray(msg.relatedNotes) ? msg.relatedNotes : [],
       });
       setFeedback(rating);
@@ -1370,8 +1472,9 @@ const ChatMessage = ({ msg }) => {
       setCurrentPage,
       setActiveReference,
       activeDocId,
+      setNotification,
     });
-  }, [setViewMode, setPdfUrl, setCurrentPage, setActiveReference, activeDocId]);
+  }, [setViewMode, setPdfUrl, setCurrentPage, setActiveReference, activeDocId, setNotification]);
 
   return (
     <div className={clsx('flex gap-2 mb-4 w-full', isUser ? 'flex-row-reverse' : 'flex-row')}>
@@ -1393,13 +1496,48 @@ const ChatMessage = ({ msg }) => {
         {!isUser ? (
           <div className="leading-relaxed break-words text-gray-800 chat-synth-md">
             {renderCitedContent(
-              typeof msg.content === 'string' ? msg.content : String(msg.content ?? ''),
+              displayText,
               msg.relatedNotes || [],
               onJumpSource
             )}
           </div>
         ) : (
           <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+        )}
+        {showActionPlanParseHint && (
+          <div className="mt-2 p-2 rounded border border-amber-200 bg-amber-50/80 text-[9px] text-amber-900">
+            <p className="font-semibold mb-1">无法解析 action_plan，请检查模型输出是否为合法 JSON</p>
+            {rawInner != null && (
+              <pre className="whitespace-pre-wrap break-all text-[8px] text-gray-700 max-h-24 overflow-y-auto">{stripJsonFences(rawInner).slice(0, 1200)}</pre>
+            )}
+          </div>
+        )}
+        {showActionBox && normalizedPlan && (
+          <div className="mt-3 p-2.5 rounded-lg border-2 border-amber-400 bg-amber-50/90 flex flex-wrap items-center gap-2">
+            <span className="text-[9px] font-sans text-amber-950 font-semibold">审稿建议 · 可写入左侧正文</span>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode('write');
+                setPendingEditorAction({
+                  function: 'update_markdown_editor',
+                  action_type: normalizedPlan.action,
+                  content: normalizedPlan.new_text,
+                });
+                setActionPlanDismissed(true);
+              }}
+              className="text-[10px] px-2.5 py-1 rounded border-2 border-black bg-white hover:bg-amber-100 font-medium shadow-[2px_2px_0_#000]"
+            >
+              一键应用
+            </button>
+            <button
+              type="button"
+              onClick={() => setActionPlanDismissed(true)}
+              className="text-[10px] px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
+            >
+              忽略
+            </button>
+          </div>
         )}
         {/* 参考文献卡片（synthesizer 消息末尾） */}
         {msg.agentType === 'synthesizer' && msg.relatedNotes?.length > 0 && (
@@ -1499,8 +1637,21 @@ const ChatMessage = ({ msg }) => {
 
 // ─── 聊天面板 ──────────────────────────────────────────────────────────────────
 const ChatPanel = () => {
-  const { messages, addMessage, updateLastMessage, isAgentThinking, setAgentThinking, notes, clearMessages, pendingChatQuestion, setPendingChatQuestion } = useStore();
+  const {
+    messages,
+    addMessage,
+    updateLastMessage,
+    isAgentThinking,
+    setAgentThinking,
+    notes,
+    clearMessages,
+    pendingChatQuestion,
+    setPendingChatQuestion,
+    setPendingEditorAction,
+    setViewMode,
+  } = useStore();
   const [input, setInput] = useState('');
+  const [assistMode, setAssistMode] = useState('none');
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -1554,6 +1705,26 @@ const ChatPanel = () => {
         } else if (type === 'delta' && synthId != null) {
           synthContent += data.token || '';
           updateLastMessage({ content: synthContent });
+        } else if (type === 'editor_delta' && synthId != null) {
+          synthContent += data.token || '';
+          updateLastMessage({ content: synthContent });
+        } else if (type === 'action' && data?.function === 'update_markdown_editor') {
+          const content = (data.content || '').trim();
+          const actionType = data.action_type || 'append';
+          if (content) {
+            setViewMode('write');
+            setPendingEditorAction({
+              function: 'update_markdown_editor',
+              action_type: actionType,
+              content,
+            });
+            addMessage({
+              id: Date.now() + Math.random() * 100000,
+              role: 'agent',
+              agentType: 'writer',
+              content: '✅ 已为您将内容生成至左侧编辑器。',
+            });
+          }
         } else if (type === 'done') {
           const sources = data.sources ?? [];
           const patch = {
@@ -1568,6 +1739,13 @@ const ChatPanel = () => {
           }
           updateLastMessage(patch);
         }
+      }, {
+        mode:
+          assistMode === 'peer_review'
+            ? 'peer_review'
+            : assistMode === 'writer'
+              ? 'writer'
+              : undefined,
       });
     } catch (e) {
       // 降级：直接调用搜索接口
@@ -1639,7 +1817,28 @@ const ChatPanel = () => {
         <div ref={bottomRef} />
       </div>
 
-      <div className="p-3 border-t border-gray-200 flex gap-2 shrink-0"><button onClick={clearMessages} title="清空对话" className="px-2 py-2 bg-gray-100 text-gray-500 rounded hover:bg-red-50 hover:text-red-500 flex items-center justify-center transition-colors"><Trash2 size={16} /></button>
+      <div className="shrink-0 px-3 pt-2 pb-0 border-t border-gray-200 bg-slate-50/60 flex items-center gap-3 flex-wrap">
+        <label className="inline-flex items-center gap-1.5 text-[10px] text-slate-700 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            className="rounded border-gray-400"
+            checked={assistMode === 'peer_review'}
+            onChange={(e) => setAssistMode(e.target.checked ? 'peer_review' : 'none')}
+          />
+          <span>👀 审稿</span>
+        </label>
+        <label className="inline-flex items-center gap-1.5 text-[10px] text-slate-700 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            className="rounded border-gray-400"
+            checked={assistMode === 'writer'}
+            onChange={(e) => setAssistMode(e.target.checked ? 'writer' : 'none')}
+          />
+          <span>✍️ 写作</span>
+        </label>
+        <span className="text-[9px] text-slate-400">审稿与写作互斥</span>
+      </div>
+      <div className="p-3 flex gap-2 shrink-0"><button onClick={clearMessages} title="清空对话" className="px-2 py-2 bg-gray-100 text-gray-500 rounded hover:bg-red-50 hover:text-red-500 flex items-center justify-center transition-colors"><Trash2 size={16} /></button>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -1688,10 +1887,11 @@ const KnowledgeTree = ({ notes, sections = [], docName = '' }) => {
       className="flex items-start gap-2 py-1 px-2 rounded hover:bg-blue-50 cursor-pointer group transition-colors"
     >
       <span className={`text-[9px] font-bold shrink-0 mt-0.5 ${typeColors[note.type] || 'text-gray-500'}`}>
-        [{typeLabels[note.type] || note.type || '?'}]
+        [摘要]
       </span>
       <div className="min-w-0">
-        <p className="text-gray-700 line-clamp-2 group-hover:text-blue-700 transition-colors text-[11px]">{note.content?.substring(0, 60)}{note.content?.length > 60 ? '…' : ''}</p>
+        <p className="text-gray-700 whitespace-pre-wrap break-words group-hover:text-blue-700 transition-colors text-[11px]">{note.content || '（无摘要）'}</p>
+        <p className={`text-[9px] ${typeColors[note.type] || 'text-gray-500'}`}>类型：{typeLabels[note.type] || note.type || '其他'}</p>
         {note.page && <span className="text-[9px] text-gray-400">p.{note.page}</span>}
       </div>
     </div>
@@ -1726,7 +1926,7 @@ const KnowledgeTree = ({ notes, sections = [], docName = '' }) => {
               {isOpen && (
                 <div className="ml-5 border-l border-emerald-200 pl-3 mt-1 space-y-1">
                   {sec.summary && (
-                    <p className="text-[9px] text-gray-400 italic line-clamp-2 mb-1">{sec.summary}</p>
+                    <p className="text-[9px] text-gray-400 italic whitespace-pre-wrap break-words mb-1">【摘要】{sec.summary}</p>
                   )}
                   {secNotes.length > 0 ? secNotes.map(renderNote) : (
                     <p className="text-[9px] text-gray-300 py-1">暂无笔记</p>
@@ -1799,6 +1999,37 @@ const RecommendedCards = ({ notes }) => {
 
 const NEXUS_ORGANIZE_TAB_IDS = ['deck', 'atomic', 'tree', 'graph', 'graphrag', 'map', 'inbox', 'arxiv'];
 
+const mergeNotesForSync = (localNotes, serverNotes, activeDocId = '') => {
+  const aid = (activeDocId || '').trim();
+  const map = new Map();
+  (serverNotes || []).forEach((n) => {
+    if (!n?.id) return;
+    if (aid && (n.doc_id || '') && (n.doc_id || '') !== aid) return;
+    map.set(n.id, { ...n, sync_status: 'synced' });
+  });
+  (localNotes || []).forEach((n) => {
+    if (!n?.id) return;
+    if (aid && (n.doc_id || '') && (n.doc_id || '') !== aid) return;
+    if (n.sync_status === 'pending' || n.sync_status === 'failed') {
+      map.set(n.id, { ...n });
+      return;
+    }
+    if (map.has(n.id)) {
+      // 保留本地视觉字段，避免被服务端同 id 记录覆盖
+      const prev = map.get(n.id) || {};
+      map.set(n.id, {
+        ...prev,
+        color: n.color || prev.color,
+        highlight_color: n.highlight_color || prev.highlight_color,
+        tags: n.tags || prev.tags,
+      });
+    } else {
+      map.set(n.id, { ...n });
+    }
+  });
+  return Array.from(map.values());
+};
+
 // ─── 原子卡片面板（带 API 查询） ────────────────────────────────────────────────
 const NexusPanel = () => {
   const {
@@ -1813,6 +2044,10 @@ const NexusPanel = () => {
     setViewMode, setStartDemoLoad,
     setPdfUrl, setCurrentPage, setActiveReference,
     pendingOrganizeTab, setPendingOrganizeTab,
+    library,
+    domains, setDomains, addDomain,
+    activeDomainId, setActiveDomainId,
+    updateLibraryDocDomain,
   } = useStore();
   const [demoLoading, setDemoLoading] = useState(false);
   const [searchPanelOpen, setSearchPanelOpen] = useState(false);
@@ -1827,6 +2062,58 @@ const NexusPanel = () => {
   const [distilling, setDistilling] = useState(false);
 
   useEffect(() => {
+    api.listDomains()
+      .then((res) => setDomains(res?.domains || []))
+      .catch(() => {});
+  }, [setDomains]);
+
+  const currentDocDomainId = React.useMemo(() => {
+    const aid = activeDocId || '';
+    if (!aid) return '';
+    const entry = library.find(
+      (d) => d.docId === aid || d.id === aid || String(d.id || '').replace(/^local_/, '') === aid
+    );
+    return entry?.domain_id || '';
+  }, [library, activeDocId]);
+
+  const handleCreateDomain = useCallback(async () => {
+    const raw = window.prompt('新领域名称');
+    const name = (raw || '').trim();
+    if (!name) return;
+    try {
+      const created = await api.createDomain(name);
+      addDomain(created);
+      setNotification('已创建领域');
+    } catch (e) {
+      setNotification(e?.message || '创建失败', 'error');
+    }
+  }, [addDomain, setNotification]);
+
+  const handleAssignCurrentDocDomain = useCallback(async (domainId) => {
+    const id = activeDocId || '';
+    if (!id) {
+      setNotification('请先在阅读区打开一篇本地上传的 PDF', 'warn');
+      return;
+    }
+    if (id === GLOBAL_DEMO_DOC_ID) {
+      setNotification('Demo 白皮书不支持领域分类', 'warn');
+      return;
+    }
+    if (String(id).startsWith('arxiv_')) {
+      setNotification('ArXiv 代理文献请下载后上传以支持领域分类', 'warn');
+      return;
+    }
+    try {
+      const next = (domainId || '').trim() || null;
+      await api.patchDocument(id, { domain_id: next });
+      updateLibraryDocDomain(id, next);
+      setNotification(next ? '已归入领域' : '已取消领域分类');
+    } catch (e) {
+      setNotification(e?.message || '更新失败', 'error');
+    }
+  }, [activeDocId, setNotification, updateLibraryDocDomain]);
+
+  useEffect(() => {
     if (!pendingOrganizeTab) return;
     if (NEXUS_ORGANIZE_TAB_IDS.includes(pendingOrganizeTab)) {
       setActiveTab(pendingOrganizeTab);
@@ -1834,7 +2121,7 @@ const NexusPanel = () => {
     setPendingOrganizeTab(null);
   }, [pendingOrganizeTab, setPendingOrganizeTab]);
 
-  // 进入整理视图时以服务端为准同步笔记，避免旧会话/幽灵卡片残留
+  // 进入整理视图时同步服务端笔记；保留本地 pending/failed，避免切页覆盖丢失
   useEffect(() => {
     api.getNotes()
       .then((data) => {
@@ -1859,10 +2146,58 @@ const NexusPanel = () => {
           }),
         }).catch(() => {});
         // #endregion
-        setNotes(list);
+        const local = useStore.getState().notes || [];
+        const merged = mergeNotesForSync(local, list, activeDocId || '');
+        setNotes(merged);
+
+        // 对失败/待同步笔记执行一次后台重试，成功后标记为 synced。
+        const unsynced = merged.filter((n) => n?.id && (n.sync_status === 'pending' || n.sync_status === 'failed'));
+        unsynced.forEach((n) => {
+          api.createNote({
+            content: n.content || '',
+            type: n.type || 'idea',
+            page: n.page ?? null,
+            bbox: n.bbox ?? null,
+            screenshot: n.screenshot ?? null,
+            doc_id: n.doc_id || '',
+            translation: n.translation ?? null,
+            keywords: n.keywords ?? null,
+            axiom: n.axiom ?? null,
+            method: n.method ?? null,
+            boundary: n.boundary ?? null,
+            source: n.source ?? 'read_ui_retry',
+          })
+            .then((created) => {
+              setNotes((prev) =>
+                (prev || []).map((x) =>
+                  x.id === n.id
+                    ? {
+                        ...x,
+                        server_note_id: created?.id || x.server_note_id || '',
+                        sync_status: 'synced',
+                        sync_error: '',
+                      }
+                    : x
+                )
+              );
+            })
+            .catch((e) => {
+              setNotes((prev) =>
+                (prev || []).map((x) =>
+                  x.id === n.id
+                    ? {
+                        ...x,
+                        sync_status: 'failed',
+                        sync_error: e?.message || 'retry_failed',
+                      }
+                    : x
+                )
+              );
+            });
+        });
       })
       .catch(() => {});
-  }, [setNotes]);
+  }, [setNotes, activeDocId]);
 
   const clearSearchFlowTimers = useCallback(() => {
     searchFlowTimerRef.current.forEach((t) => clearTimeout(t));
@@ -1971,8 +2306,69 @@ const NexusPanel = () => {
   const rawDisplayNotes = scopedNotes.filter((n) => !isAtomicNote(n));
   const atomicDisplayNotes = scopedNotes.filter(isAtomicNote);
 
+  const domainFilterForGraph = graphScope === 'global' ? (activeDomainId || '') : '';
+
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-row h-full min-h-0">
+      <aside className="w-56 shrink-0 border-r border-slate-200 bg-white flex flex-col gap-2 p-3 overflow-y-auto custom-scrollbar">
+        <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">领域</p>
+        <button
+          type="button"
+          onClick={() => setActiveDomainId(null)}
+          className={clsx(
+            'flex items-center gap-2 w-full text-left px-2.5 py-2 rounded-lg border text-xs transition-colors',
+            activeDomainId == null
+              ? 'border-blue-400 bg-blue-50 text-blue-800'
+              : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+          )}
+        >
+          <Globe size={14} className="shrink-0 opacity-80" />
+          全部文献
+        </button>
+        <div className="flex flex-col gap-1">
+          {domains.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => setActiveDomainId(d.id)}
+              className={clsx(
+                'w-full text-left px-2.5 py-1.5 rounded-lg border text-xs truncate transition-colors',
+                activeDomainId === d.id
+                  ? 'border-violet-400 bg-violet-50 text-violet-900'
+                  : 'border-transparent text-slate-600 hover:bg-slate-100'
+              )}
+              title={d.name}
+            >
+              {d.name}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={handleCreateDomain}
+          className="flex items-center gap-2 w-full text-left px-2.5 py-2 rounded-lg border border-dashed border-slate-300 text-xs text-slate-600 hover:bg-slate-50 hover:border-slate-400"
+        >
+          <Plus size={14} />
+          新建领域
+        </button>
+        <div className="border-t border-slate-200 pt-3 mt-1 space-y-1.5">
+          <p className="text-[10px] text-slate-500 leading-snug">将当前文献归入领域（仅本地上传）</p>
+          <select
+            value={currentDocDomainId || ''}
+            onChange={(e) => handleAssignCurrentDocDomain(e.target.value)}
+            className="w-full text-xs border border-slate-200 rounded-lg px-2 py-2 bg-white text-slate-800"
+          >
+            <option value="">未分类</option>
+            {domains.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </aside>
+
+      <div className="flex flex-col flex-1 min-h-0 min-w-0">
       {/* 搜索框 */}
       <div className="p-3 border-b border-gray-200">
         <div className="relative">
@@ -2240,6 +2636,7 @@ const NexusPanel = () => {
             scope={graphScope}
             docId={graphScope === 'current' ? (activeDocId || '') : ''}
             docName={pdfFileName}
+            domainFilterId={domainFilterForGraph}
           />
         )}
         {activeTab === 'graphrag' && (
@@ -2247,6 +2644,7 @@ const NexusPanel = () => {
             scope={graphScope}
             docId={graphScope === 'current' ? (activeDocId || '') : ''}
             docName={pdfFileName}
+            domainFilterId={domainFilterForGraph}
           />
         )}
         {/* 结构图：脑图风格（中心+分支），与知识树、图谱区分 */}
@@ -2270,6 +2668,7 @@ const NexusPanel = () => {
         {activeTab === 'inbox' && <SecretaryInboxPanel />}
         {activeTab === 'arxiv' && <ArxivPanel />}
       </div>
+      </div>
     </div>
   );
 };
@@ -2286,6 +2685,138 @@ const ReadSidebar = () => {
         <h2 className="text-xs font-sans text-gray-600 uppercase tracking-wider">章节与笔记</h2>
       </div>
       <KnowledgeTree notes={notes} sections={sections} docName={pdfFileName} />
+    </div>
+  );
+};
+
+// ─── Write 中间栏：全局检索结果分类（不伪造学术标签）────────────────────────────
+function isDocumentChunkHit(hit) {
+  const src = hit?.source || '';
+  if (src === 'document' || src === 'doc_bm25') return true;
+  return String(hit?.note_id || '').includes('::chunk::');
+}
+
+/** @returns {'document_chunk'|'atomic'|'personal_note'} */
+function classifyWriteSearchHit(hit, noteMap) {
+  if (isDocumentChunkHit(hit)) return 'document_chunk';
+  const n = noteMap.get(String(hit?.note_id || ''));
+  if (n && (n.axiom || n.method || n.boundary)) return 'atomic';
+  return 'personal_note';
+}
+
+function buildInjectFromSearchHit(hit, mergedNote, buildInjectText) {
+  if (mergedNote) return buildInjectText(mergedNote);
+  if (isDocumentChunkHit(hit)) {
+    const title = hit.doc_title || hit.doc_id || '文献';
+    const pg = hit.page_num != null ? hit.page_num : '—';
+    return `> **${title}** · p.${pg}\n\n${(hit.summary || '').trim()}\n\n`;
+  }
+  return `${(hit.summary || '').trim()}\n\n`;
+}
+
+/** 全局 /search 单条结果卡片（与 Organize 风格对齐，分支 Badge） */
+const WriteSearchResultCard = ({
+  hit,
+  noteMap,
+  pdfFileName,
+  setPendingInsert,
+  setContextAttachment,
+  setCopilotOpen,
+  setCurrentPage,
+  setActiveReference,
+  buildInjectText,
+}) => {
+  const cat = classifyWriteSearchHit(hit, noteMap);
+  const merged = noteMap.get(String(hit?.note_id || ''));
+  const injectText = buildInjectFromSearchHit(hit, merged, buildInjectText);
+  const summary = (hit.summary || merged?.content || '').trim();
+  const page = merged?.page ?? hit.page_num;
+
+  if (cat === 'document_chunk') {
+    return (
+      <div className="p-2.5 rounded-xl bg-white border border-slate-200 shadow-[0_2px_10px_rgba(15,23,42,0.06)]">
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          <span className="px-2 py-0.5 text-[9px] font-bold rounded-md bg-slate-100 text-slate-700 border border-slate-300">
+            📄 原文片段
+          </span>
+          {hit.score != null && (
+            <span className="text-[8px] text-slate-400">score {(hit.score * 100).toFixed(0)}%</span>
+          )}
+        </div>
+        <p className="text-[10px] text-slate-500 mb-1 truncate">{hit.doc_title || hit.doc_id || ''}</p>
+        <p className="text-[11px] text-slate-800 line-clamp-4 whitespace-pre-wrap">{summary || '—'}</p>
+        <button
+          type="button"
+          onClick={() => setPendingInsert(injectText)}
+          className="mt-2 w-full py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
+        >
+          [+ 插入正文]
+        </button>
+      </div>
+    );
+  }
+
+  if (cat === 'atomic' && merged) {
+    return (
+      <div className="p-2.5 rounded-xl bg-white border border-slate-200 shadow-[0_4px_14px_rgba(15,23,42,0.07)] border-t-[3px] border-t-emerald-500">
+        <p className="text-[9px] font-bold text-emerald-800 mb-2">⚛️ 原子知识</p>
+        <AtomicCardDetail note={merged} compact />
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPendingInsert(injectText)}
+            className="flex-1 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
+          >
+            [+ 插入正文]
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setContextAttachment({
+                text: (merged.axiom || merged.content || '').trim(),
+                page: merged.page,
+                docName: pdfFileName,
+                noteId: merged.id,
+              });
+              setCopilotOpen(true);
+            }}
+            className="px-2 py-1.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-800 text-[10px] font-semibold"
+          >
+            问AI
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* personal_note：基础划线 / 截图等 */
+  return (
+    <div className="p-2.5 rounded-xl bg-sky-50/80 border border-sky-200/90 shadow-sm">
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        <span className="px-2 py-0.5 text-[9px] font-bold rounded-md bg-sky-100 text-sky-900 border border-sky-300">
+          📝 个人笔记
+        </span>
+      </div>
+      <div
+        className="cursor-pointer"
+        role="presentation"
+        onClick={() => {
+          if (page != null) {
+            setCurrentPage(page);
+            setActiveReference({ page, bbox: merged?.bbox ?? [0, 0, 0, 0] });
+          }
+        }}
+      >
+        <p className="text-[11px] text-slate-800 line-clamp-4 whitespace-pre-wrap">{summary || '—'}</p>
+        <p className="text-[9px] text-sky-700 mt-1">{merged?.type ? `#${merged.type}` : ''}{page ? ` · p.${page}` : ''}</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => setPendingInsert(injectText)}
+        className="mt-2 w-full py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
+      >
+        [+ 插入正文]
+      </button>
     </div>
   );
 };
@@ -2333,6 +2864,10 @@ const ReferencePanel = () => {
   const [pdfError, setPdfError] = useState(null);
   const [objectUrl, setObjectUrl] = useState(null);
   const [writeSearch, setWriteSearch] = useState('');
+  const [globalSearchResults, setGlobalSearchResults] = useState(null);
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
+  const [globalSearchError, setGlobalSearchError] = useState(null);
+  const searchReqIdRef = useRef(0);
   const [selectedGraphNote, setSelectedGraphNote] = useState(null);
   useEffect(() => {
     if (pdfFile && typeof pdfFile === 'object' && pdfFile instanceof File) {
@@ -2387,6 +2922,58 @@ const ReferencePanel = () => {
     }
   }, [pdfSrc]);
 
+  const noteById = useMemo(() => {
+    const m = new Map();
+    (notes || []).forEach((n) => {
+      if (n.id) m.set(n.id, n);
+    });
+    return m;
+  }, [notes]);
+
+  const usingGlobalSearch =
+    writeTabsOnly && refTab !== 'graph' && (writeSearch || '').trim().length > 0;
+
+  useEffect(() => {
+    if (!writeTabsOnly || refTab === 'graph') return;
+    const q = (writeSearch || '').trim();
+    if (!q) {
+      setGlobalSearchResults(null);
+      setGlobalSearchError(null);
+      setGlobalSearchLoading(false);
+      return;
+    }
+    const t = setTimeout(async () => {
+      const req = ++searchReqIdRef.current;
+      setGlobalSearchLoading(true);
+      setGlobalSearchError(null);
+      try {
+        const data = await api.searchGlobal(q, 24);
+        if (req !== searchReqIdRef.current) return;
+        setGlobalSearchResults(data.results || []);
+      } catch (e) {
+        if (req !== searchReqIdRef.current) return;
+        setGlobalSearchError(e instanceof Error ? e.message : String(e));
+        setGlobalSearchResults([]);
+      } finally {
+        if (req === searchReqIdRef.current) setGlobalSearchLoading(false);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [writeSearch, writeTabsOnly, refTab]);
+
+  const globalBaseHits = useMemo(() => {
+    if (!usingGlobalSearch || globalSearchResults == null) return null;
+    return globalSearchResults.filter((h) => classifyWriteSearchHit(h, noteById) !== 'atomic');
+  }, [usingGlobalSearch, globalSearchResults, noteById]);
+
+  const globalAtomicHits = useMemo(() => {
+    if (!usingGlobalSearch || globalSearchResults == null) return null;
+    return globalSearchResults.filter((h) => classifyWriteSearchHit(h, noteById) === 'atomic');
+  }, [usingGlobalSearch, globalSearchResults, noteById]);
+
+  const showGlobalSearchSpinner =
+    usingGlobalSearch && (globalSearchResults === null || globalSearchLoading);
+
   const isAtomic = useCallback((n) => !!(n?.axiom || n?.method || n?.boundary), []);
   const queryLower = (writeSearch || '').trim().toLowerCase();
   const matchesQuery = useCallback((n) => {
@@ -2414,10 +3001,10 @@ const ReferencePanel = () => {
     () => (notes || []).filter((n) => isAtomic(n) && matchesQuery(n)),
     [notes, isAtomic, matchesQuery]
   );
-  const graphNotes = useMemo(
-    () => (notes || []).filter((n) => matchesQuery(n)),
-    [notes, matchesQuery]
-  );
+  const graphNotes = useMemo(() => {
+    if (writeTabsOnly && refTab === 'graph') return notes || [];
+    return (notes || []).filter((n) => matchesQuery(n));
+  }, [notes, matchesQuery, writeTabsOnly, refTab]);
   const buildInjectText = useCallback((n) => {
     const blocks = [];
     if (n?.axiom) blocks.push(`**Axiom**: ${n.axiom}`);
@@ -2433,14 +3020,14 @@ const ReferencePanel = () => {
   return (
     <div className="h-full flex flex-col overflow-hidden min-h-0 bg-white border-l border-slate-200">
       <div className="shrink-0 bg-white border-b border-slate-200">
-        {writeTabsOnly && (
+        {writeTabsOnly && refTab !== 'graph' && (
           <div className="sticky top-0 z-10 px-3 pt-3 pb-2 border-b border-slate-100 bg-white">
             <div className="relative">
               <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 value={writeSearch}
                 onChange={(e) => setWriteSearch(e.target.value)}
-                placeholder="在当前视图中检索..."
+                placeholder="全库混合检索（基础卡片 / 原子知识）…"
                 className="w-full pl-8 pr-3 py-2 text-xs border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-300"
               />
             </div>
@@ -2559,86 +3146,156 @@ const ReferencePanel = () => {
         )}
         {writeTabsOnly && refTab === 'notes' && (
           <div className="space-y-2">
-            {baseNotes.length === 0 ? (
-              <p className="text-[10px] text-slate-400">当前关键词下无基础卡片。</p>
-            ) : (
-              baseNotes.slice(0, 80).map((n) => {
-                const summary = (n.content || '').trim();
-                const injectText = buildInjectText(n);
-                return (
-                  <div
-                    key={`note_${n.id}`}
-                    className="p-2.5 rounded-r-lg border-l-4 border-slate-500 bg-slate-100/95 border border-slate-200/90 shadow-sm text-[11px] text-slate-800 hover:bg-slate-100 transition-colors"
-                  >
-                    <p className="text-[9px] font-semibold text-slate-500 mb-1 tracking-wide">原文摘录</p>
-                    <div
-                      className="cursor-pointer"
-                      onClick={() => {
-                        if (n.page != null) {
-                          setCurrentPage(n.page);
-                          setActiveReference({ page: n.page, bbox: n.bbox ?? [0, 0, 0, 0] });
-                        }
-                      }}
-                    >
-                      <p className="line-clamp-3 whitespace-pre-wrap">{summary || '[空卡片]'}</p>
-                      <p className="text-[9px] text-slate-500 mt-1">#{n.type || 'note'}{n.page ? ` · p.${n.page}` : ''}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setPendingInsert(injectText)}
-                      className="mt-2 w-full py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
-                      title="插入正文（含引文来源锚点）"
-                    >
-                      [+ 插入正文]
-                    </button>
-                  </div>
-                );
-              })
+            {showGlobalSearchSpinner && (
+              <div className="flex items-center gap-2 text-slate-500 text-[10px] py-6 justify-center">
+                <Loader2 size={14} className="animate-spin shrink-0" />
+                全库检索中…
+              </div>
+            )}
+            {usingGlobalSearch && globalSearchError && !showGlobalSearchSpinner && (
+              <p className="text-[10px] text-red-600">{globalSearchError}</p>
+            )}
+            {usingGlobalSearch && !showGlobalSearchSpinner && !globalSearchError && globalBaseHits && (
+              <>
+                {globalBaseHits.length === 0 ? (
+                  <p className="text-[10px] text-slate-400">无匹配结果。</p>
+                ) : (
+                  globalBaseHits.map((hit, idx) => (
+                    <WriteSearchResultCard
+                      key={`gbase_${hit.note_id ?? idx}`}
+                      hit={hit}
+                      noteMap={noteById}
+                      pdfFileName={pdfFileName}
+                      setPendingInsert={setPendingInsert}
+                      setContextAttachment={setContextAttachment}
+                      setCopilotOpen={setCopilotOpen}
+                      setCurrentPage={setCurrentPage}
+                      setActiveReference={setActiveReference}
+                      buildInjectText={buildInjectText}
+                    />
+                  ))
+                )}
+              </>
+            )}
+            {!usingGlobalSearch && (
+              <>
+                {baseNotes.length === 0 ? (
+                  <p className="text-[10px] text-slate-400">暂无基础卡片（或输入关键词进行全库检索）。</p>
+                ) : (
+                  baseNotes.slice(0, 80).map((n) => {
+                    const summary = (n.content || '').trim();
+                    const injectText = buildInjectText(n);
+                    return (
+                      <div
+                        key={`note_${n.id}`}
+                        className="p-2.5 rounded-r-lg border-l-4 border-slate-500 bg-slate-100/95 border border-slate-200/90 shadow-sm text-[11px] text-slate-800 hover:bg-slate-100 transition-colors"
+                      >
+                        <p className="text-[9px] font-semibold text-slate-500 mb-1 tracking-wide">原文摘录</p>
+                        <div
+                          className="cursor-pointer"
+                          onClick={() => {
+                            if (n.page != null) {
+                              setCurrentPage(n.page);
+                              setActiveReference({ page: n.page, bbox: n.bbox ?? [0, 0, 0, 0] });
+                            }
+                          }}
+                        >
+                          <p className="line-clamp-3 whitespace-pre-wrap">{summary || '[空卡片]'}</p>
+                          <p className="text-[9px] text-slate-500 mt-1">#{n.type || 'note'}{n.page ? ` · p.${n.page}` : ''}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setPendingInsert(injectText)}
+                          className="mt-2 w-full py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
+                          title="插入正文（含引文来源锚点）"
+                        >
+                          [+ 插入正文]
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </>
             )}
           </div>
         )}
         {writeTabsOnly && refTab === 'atomic' && (
           <div className="space-y-2">
-            {atomicNotes.length === 0 ? (
-              <p className="text-[10px] text-slate-400">当前关键词下无原子知识卡片。</p>
-            ) : (
-              atomicNotes.slice(0, 80).map((n) => {
-                const injectText = buildInjectText(n);
-                return (
-                  <div
-                    key={`atomic_${n.id}`}
-                    className="p-2.5 rounded-xl bg-white border border-slate-200 shadow-[0_4px_14px_rgba(15,23,42,0.07)] border-t-[3px] border-t-emerald-500"
-                  >
-                    <p className="text-[9px] font-bold text-emerald-800 mb-2">⚛️ 原子知识</p>
-                    <AtomicCardDetail note={n} compact />
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPendingInsert(injectText)}
-                        className="flex-1 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
+            {showGlobalSearchSpinner && (
+              <div className="flex items-center gap-2 text-slate-500 text-[10px] py-6 justify-center">
+                <Loader2 size={14} className="animate-spin shrink-0" />
+                全库检索中…
+              </div>
+            )}
+            {usingGlobalSearch && globalSearchError && !showGlobalSearchSpinner && (
+              <p className="text-[10px] text-red-600">{globalSearchError}</p>
+            )}
+            {usingGlobalSearch && !showGlobalSearchSpinner && !globalSearchError && globalAtomicHits && (
+              <>
+                {globalAtomicHits.length === 0 ? (
+                  <p className="text-[10px] text-slate-400">无匹配结果。</p>
+                ) : (
+                  globalAtomicHits.map((hit, idx) => (
+                    <WriteSearchResultCard
+                      key={`gatom_${hit.note_id ?? idx}`}
+                      hit={hit}
+                      noteMap={noteById}
+                      pdfFileName={pdfFileName}
+                      setPendingInsert={setPendingInsert}
+                      setContextAttachment={setContextAttachment}
+                      setCopilotOpen={setCopilotOpen}
+                      setCurrentPage={setCurrentPage}
+                      setActiveReference={setActiveReference}
+                      buildInjectText={buildInjectText}
+                    />
+                  ))
+                )}
+              </>
+            )}
+            {!usingGlobalSearch && (
+              <>
+                {atomicNotes.length === 0 ? (
+                  <p className="text-[10px] text-slate-400">暂无原子知识卡片（或输入关键词进行全库检索）。</p>
+                ) : (
+                  atomicNotes.slice(0, 80).map((n) => {
+                    const injectText = buildInjectText(n);
+                    return (
+                      <div
+                        key={`atomic_${n.id}`}
+                        className="p-2.5 rounded-xl bg-white border border-slate-200 shadow-[0_4px_14px_rgba(15,23,42,0.07)] border-t-[3px] border-t-emerald-500"
                       >
-                        [+ 插入正文]
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setContextAttachment({
-                            text: (n.axiom || n.content || '').trim(),
-                            page: n.page,
-                            docName: pdfFileName,
-                            noteId: n.id,
-                          });
-                          setCopilotOpen(true);
-                        }}
-                        className="px-2 py-1.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-800 text-[10px] font-semibold"
-                        title="以该原子知识为上下文问 AI"
-                      >
-                        问AI
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
+                        <p className="text-[9px] font-bold text-emerald-800 mb-2">⚛️ 原子知识</p>
+                        <AtomicCardDetail note={n} compact />
+                        <div className="mt-2 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPendingInsert(injectText)}
+                            className="flex-1 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
+                          >
+                            [+ 插入正文]
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setContextAttachment({
+                                text: (n.axiom || n.content || '').trim(),
+                                page: n.page,
+                                docName: pdfFileName,
+                                noteId: n.id,
+                              });
+                              setCopilotOpen(true);
+                            }}
+                            className="px-2 py-1.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-800 text-[10px] font-semibold"
+                            title="以该原子知识为上下文问 AI"
+                          >
+                            问AI
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </>
             )}
           </div>
         )}

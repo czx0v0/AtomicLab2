@@ -1,0 +1,148 @@
+{
+  "doc_id": "global_demo_official",
+  "title": "demo_paper.pdf",
+  "markdown": "# Atomic Lab: A Technical Whitepaper on Agentic RAG and Atomic Knowledge Workflows\n\nInterstellar Office Team Product R&D Division\n\nMarch 14, 2026\n\n# Abstract\n\nWelcome to Atomic Lab. This document serves as both a technical whitepaper and an interactive demo file for our system. The exponential growth of scientific literature presents a dual crisis: the fragmentation of reading inspirations and the difficulty of tracing citations during writing. Atomic Lab solves this by deconstructing literature into ”Atomic Knowledge” and leveraging an Agentic RAG (RetrievalAugmented Generation) architecture. This manual outlines our core technical implementations.\n\n# 1 Introduction to Atomic Knowledge\n\nTraditional document-centric reading models trap knowledge within isolated PDFs. We advocate for ”Knowledge Atomization.” Every core argument, experimental result, or methodology is extracted as a semantically self-consistent ”Atomic Card.”\n\nBy passing extracted text through our Crusher Agent, non-structured text is automatically categorized into seven domains (Method, Formula, Image, Definition, Viewpoint, Data, Other) and tagged with AIgenerated keywords.\n\n![](/api/parse-images/demo_paper/175151b2f90a1d739328b05280436f6d2d7579a38c3cfa9bea15465376fd0f8d.jpg)  \nFigure 1: Atomic Lab\n\nAs demonstrated in Table 1, this approach guarantees the purity of the data fed into our Large Language Models (LLMs), reconstructing cross-page tables into HTML and formulas into LaTeX.\n\n![](/api/parse-images/demo_paper/078540fdf9c751a233b4503e79779917f7c52666e221cdf446b79d263b733bfd.jpg)\nTable 1: Parsing capabilities comparison.\n\n# 2 Core Technologies\n\n# 2.1 Multi-modal Deep Parsing\n\nAcademic literature parsing is notoriously difficult due to dual-column layouts and complex mathematical embeddings. Atomic Lab integrates the advanced MinerU parsing engine.\n\n# 2.2 Hybrid Retrieval & RRF Fusion\n\nTo balance retrieval precision (finding specific terms) and breadth (understanding context), Atomic Lab utilizes a Hybrid Retrieval architecture. We combine dense semantic vectors (FAISS HNSW) with sparse lexical search (BM25).\n\nTo fuse these ranking systems equitably, we apply the Reciprocal Rank Fusion (RRF) algorithm. For a document d in a set of rank lists R, the score is calculated as:\n\nwhere k = 60 acts as a smoothing constant. This ensures that only knowledge atoms ranking high across multiple strategies are presented to the user.\n\n# 2.3 GraphRAG & 1-Hop Expansion\n\nKnowledge in Atomic Lab is not flat. Atoms are stored in a dual-track architecture. When a user queries a concept, the system retrieves direct matches and performs a ”1-hop expansion” along the knowledge graph (e.g., following shared tags or citation links) to uncover hidden academic causality.\n\n# 3 The Agentic RAG Workflow\n\nThe chat interface of Atomic Lab is not a simple Q&A bot; it simulates a multi-agent ”virtual research group” meeting:\n\nSeeker: Executes multi-source retrieval, pulling evidence from document vectors, note cards, and external fallback APIs (e.g., arXiv).   \nReviewer: Critically evaluates the retrieved context. If the evidence is insufficient, it rewrites the query and triggers a secondary search.   \nSynthesizer: Generates the final, logically coherent response, embedding precise, verifiable citations.\n\n# 4 Conclusion\n\nBy integrating deep document parsing, GraphRAG, and Agentic workflows, Atomic Lab provides a seamless Read-Organize- Write loop. We invite you to explore the system by highlighting texts, asking questions, and generating your own verifiable academic insights.",
+  "sections": [
+    {
+      "title": "Atomic Lab: A Technical Whitepaper on Agentic RAG and Atomic Knowledge Workflows",
+      "content": "Interstellar Office Team Product R&D Division\n\nMarch 14, 2026",
+      "summary": "Interstellar Office Team Product R&D Division",
+      "image_refs": []
+    },
+    {
+      "title": "Abstract",
+      "content": "Welcome to Atomic Lab. This document serves as both a technical whitepaper and an interactive demo file for our system. The exponential growth of scientific literature presents a dual crisis: the fragmentation of reading inspirations and the difficulty of tracing citations during writing. Atomic Lab solves this by deconstructing literature into ”Atomic Knowledge” and leveraging an Agentic RAG (RetrievalAugmented Generation) architecture. This manual outlines our core technical implementations.",
+      "summary": "Welcome to Atomic Lab. This document serves as both a technical whitepaper and an interactive demo file for our system. The exponential growth of scientific lit",
+      "image_refs": []
+    },
+    {
+      "title": "1 Introduction to Atomic Knowledge",
+      "content": "Traditional document-centric reading models trap knowledge within isolated PDFs. We advocate for ”Knowledge Atomization.” Every core argument, experimental result, or methodology is extracted as a semantically self-consistent ”Atomic Card.”\n\nBy passing extracted text through our Crusher Agent, non-structured text is automatically categorized into seven domains (Method, Formula, Image, Definition, Viewpoint, Data, Other) and tagged with AIgenerated keywords.\n\n![](/api/parse-images/demo_paper/175151b2f90a1d739328b05280436f6d2d7579a38c3cfa9bea15465376fd0f8d.jpg)  \nFigure 1: Atomic Lab\n\nAs demonstrated in Table 1, this approach guarantees the purity of the data fed into our Large Language Models (LLMs), reconstructing cross-page tables into HTML and formulas into LaTeX.\n\n![](/api/parse-images/demo_paper/078540fdf9c751a233b4503e79779917f7c52666e221cdf446b79d263b733bfd.jpg)\nTable 1: Parsing capabilities comparison.",
+      "summary": "Traditional document-centric reading models trap knowledge within isolated PDFs. We advocate for ”Knowledge Atomization.” Every core argument, experimental resu",
+      "image_refs": [
+        "/api/parse-images/demo_paper/175151b2f90a1d739328b05280436f6d2d7579a38c3cfa9bea15465376fd0f8d.jpg",
+        "/api/parse-images/demo_paper/078540fdf9c751a233b4503e79779917f7c52666e221cdf446b79d263b733bfd.jpg"
+      ]
+    },
+    {
+      "title": "2.1 Multi-modal Deep Parsing",
+      "content": "Academic literature parsing is notoriously difficult due to dual-column layouts and complex mathematical embeddings. Atomic Lab integrates the advanced MinerU parsing engine.",
+      "summary": "Academic literature parsing is notoriously difficult due to dual-column layouts and complex mathematical embeddings. Atomic Lab integrates the advanced MinerU p",
+      "image_refs": []
+    },
+    {
+      "title": "2.2 Hybrid Retrieval & RRF Fusion",
+      "content": "To balance retrieval precision (finding specific terms) and breadth (understanding context), Atomic Lab utilizes a Hybrid Retrieval architecture. We combine dense semantic vectors (FAISS HNSW) with sparse lexical search (BM25).\n\nTo fuse these ranking systems equitably, we apply the Reciprocal Rank Fusion (RRF) algorithm. For a document d in a set of rank lists R, the score is calculated as:\n\nwhere k = 60 acts as a smoothing constant. This ensures that only knowledge atoms ranking high across multiple strategies are presented to the user.",
+      "summary": "To balance retrieval precision (finding specific terms) and breadth (understanding context), Atomic Lab utilizes a Hybrid Retrieval architecture. We combine den",
+      "image_refs": []
+    },
+    {
+      "title": "2.3 GraphRAG & 1-Hop Expansion",
+      "content": "Knowledge in Atomic Lab is not flat. Atoms are stored in a dual-track architecture. When a user queries a concept, the system retrieves direct matches and performs a ”1-hop expansion” along the knowledge graph (e.g., following shared tags or citation links) to uncover hidden academic causality.",
+      "summary": "Knowledge in Atomic Lab is not flat. Atoms are stored in a dual-track architecture. When a user queries a concept, the system retrieves direct matches and perfo",
+      "image_refs": []
+    },
+    {
+      "title": "3 The Agentic RAG Workflow",
+      "content": "The chat interface of Atomic Lab is not a simple Q&A bot; it simulates a multi-agent ”virtual research group” meeting:\n\nSeeker: Executes multi-source retrieval, pulling evidence from document vectors, note cards, and external fallback APIs (e.g., arXiv).   \nReviewer: Critically evaluates the retrieved context. If the evidence is insufficient, it rewrites the query and triggers a secondary search.   \nSynthesizer: Generates the final, logically coherent response, embedding precise, verifiable citations.",
+      "summary": "The chat interface of Atomic Lab is not a simple Q&A bot; it simulates a multi-agent ”virtual research group” meeting:",
+      "image_refs": []
+    },
+    {
+      "title": "4 Conclusion",
+      "content": "By integrating deep document parsing, GraphRAG, and Agentic workflows, Atomic Lab provides a seamless Read-Organize- Write loop. We invite you to explore the system by highlighting texts, asking questions, and generating your own verifiable academic insights.",
+      "summary": "By integrating deep document parsing, GraphRAG, and Agentic workflows, Atomic Lab provides a seamless Read-Organize- Write loop. We invite you to explore the sy",
+      "image_refs": []
+    }
+  ],
+  "demo_notes": [
+    {
+      "id": "demo_seed_0",
+      "type": "idea",
+      "content": "Interstellar Office Team Product R&D Division",
+      "keywords": [],
+      "tags": [],
+      "source": "demo_seed",
+      "doc_id": "global_demo_official",
+      "page": 1,
+      "bbox": []
+    },
+    {
+      "id": "demo_seed_1",
+      "type": "idea",
+      "content": "Welcome to Atomic Lab. This document serves as both a technical whitepaper and an interactive demo file for our system. The exponential growth of scientific lit",
+      "keywords": [],
+      "tags": [],
+      "source": "demo_seed",
+      "doc_id": "global_demo_official",
+      "page": 1,
+      "bbox": []
+    },
+    {
+      "id": "demo_seed_2",
+      "type": "idea",
+      "content": "Traditional document-centric reading models trap knowledge within isolated PDFs. We advocate for ”Knowledge Atomization.” Every core argument, experimental resu",
+      "keywords": [],
+      "tags": [],
+      "source": "demo_seed",
+      "doc_id": "global_demo_official",
+      "page": 2,
+      "bbox": []
+    },
+    {
+      "id": "demo_seed_3",
+      "type": "idea",
+      "content": "Academic literature parsing is notoriously difficult due to dual-column layouts and complex mathematical embeddings. Atomic Lab integrates the advanced MinerU p",
+      "keywords": [],
+      "tags": [],
+      "source": "demo_seed",
+      "doc_id": "global_demo_official",
+      "page": 2,
+      "bbox": []
+    },
+    {
+      "id": "demo_seed_4",
+      "type": "idea",
+      "content": "To balance retrieval precision (finding specific terms) and breadth (understanding context), Atomic Lab utilizes a Hybrid Retrieval architecture. We combine den",
+      "keywords": [],
+      "tags": [],
+      "source": "demo_seed",
+      "doc_id": "global_demo_official",
+      "page": 3,
+      "bbox": []
+    },
+    {
+      "id": "demo_seed_5",
+      "type": "idea",
+      "content": "Knowledge in Atomic Lab is not flat. Atoms are stored in a dual-track architecture. When a user queries a concept, the system retrieves direct matches and perfo",
+      "keywords": [],
+      "tags": [],
+      "source": "demo_seed",
+      "doc_id": "global_demo_official",
+      "page": 3,
+      "bbox": []
+    },
+    {
+      "id": "demo_seed_6",
+      "type": "idea",
+      "content": "The chat interface of Atomic Lab is not a simple Q&A bot; it simulates a multi-agent ”virtual research group” meeting:",
+      "keywords": [],
+      "tags": [],
+      "source": "demo_seed",
+      "doc_id": "global_demo_official",
+      "page": 4,
+      "bbox": []
+    },
+    {
+      "id": "demo_seed_7",
+      "type": "idea",
+      "content": "By integrating deep document parsing, GraphRAG, and Agentic workflows, Atomic Lab provides a seamless Read-Organize- Write loop. We invite you to explore the sy",
+      "keywords": [],
+      "tags": [],
+      "source": "demo_seed",
+      "doc_id": "global_demo_official",
+      "page": 4,
+      "bbox": []
+    }
+  ]
+}

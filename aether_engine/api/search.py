@@ -151,6 +151,55 @@ def _graph_one_hop_expand(
     return out
 
 
+def _graph_two_hop_expand(
+    seed_notes: List[dict],
+    session_id: Optional[str],
+    max_graph_items: int = 8,
+) -> List[dict]:
+    """对 seed notes 执行 2-hop 图谱扩展，source=graph_2hop。"""
+    if not seed_notes:
+        return []
+
+    note_map = {n.get("id"): n for n in _load_notes_for_session(session_id)}
+    seed_ids = [n.get("note_id") for n in seed_notes if n.get("note_id")]
+
+    try:
+        from service.knowledge_graph_store import get_two_hop_triples
+
+        graph_triples = get_two_hop_triples(session_id, seed_ids, max_items=max_graph_items)
+    except Exception as e:
+        logger.warning("图谱 2-hop 扩展失败: %s", e)
+        return []
+
+    out: List[dict] = []
+    for idx, t in enumerate(graph_triples[:max_graph_items]):
+        sid = t.get("source_note_id", "")
+        tid = t.get("target_note_id", "")
+        s_note = note_map.get(sid, {})
+        o_note = note_map.get(tid, {})
+        relation = t.get("relation", "related_to")
+        triple_text = (
+            f"[G2-{idx+1}] {s_note.get('axiom') or s_note.get('content') or sid} "
+            f"-{relation}-> "
+            f"{o_note.get('axiom') or o_note.get('content') or tid}"
+        )
+        out.append(
+            {
+                "note_id": f"graph2::{sid}::{relation}::{tid}::{idx}",
+                "summary": triple_text,
+                "concept": f"[G2-{idx+1}] graph_2hop",
+                "keywords": t.get("tags", []),
+                "doc_title": "KnowledgeGraph",
+                "page_num": int(s_note.get("page", 0) or 0),
+                "bbox": [],
+                "score": round(0.58 - idx * 0.02, 4),
+                "source": "graph_2hop",
+                "graph_ref": f"[G2-{idx+1}]",
+            }
+        )
+    return out
+
+
 # ── RRF 融合 ────────────────────────────────────────────────────────────────
 
 
@@ -397,6 +446,12 @@ def _search_pipeline(
                         all_channels.append(graph_hits)
                         channel_weights.append(1.0)
                         channel_stats["graph_1hop"] = len(graph_hits)
+                    graph_2 = _graph_two_hop_expand(seed_notes, session_id)
+                    graph_2 = _dedup(graph_2)
+                    if graph_2:
+                        all_channels.append(graph_2)
+                        channel_weights.append(0.85)
+                        channel_stats["graph_2hop"] = len(graph_2)
         except Exception as e:
             logger.warning("NoteRAG 检索失败 (round %d): %s", round_idx + 1, e)
 
@@ -507,6 +562,44 @@ def search_notes(body: SearchRequest, x_session_id: str = Header(default="")):
 
     # 知识库为空时返回空结果
     logger.info("知识库为空，返回 0 条结果")
+    return {
+        "results": [],
+        "total": 0,
+        "query": body.query,
+        "is_mock": False,
+    }
+
+
+@router.post("/global")
+def search_global(body: SearchRequest, x_session_id: str = Header(default="")):
+    """
+    全库混合检索别名：固定不按 doc_id 过滤，等价于 POST /search 且 doc_id 为空。
+    供 Write 中间栏等场景显式调用。
+    """
+    if not body.query.strip():
+        raise HTTPException(status_code=400, detail="查询内容不能为空")
+
+    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+
+    logger.info(
+        "[Session:%s] 全局检索 /search/global: query='%s', top_k=%d",
+        session_id or "default",
+        body.query,
+        body.top_k,
+    )
+
+    result = _search_pipeline(
+        query=body.query,
+        top_k=body.top_k,
+        doc_id=None,
+        max_rounds=body.max_rounds,
+        session_id=session_id,
+    )
+
+    if result["results"]:
+        return result
+
+    logger.info("全局检索：知识库为空，返回 0 条")
     return {
         "results": [],
         "total": 0,

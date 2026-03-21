@@ -294,7 +294,7 @@ export const useStore = create((set, get) => ({
       clearPendingScreenshotQueue: () => set({ pendingScreenshotQueue: [] }),
 
       // ── 文献库 ──────────────────────────────────────────────────────────────
-      library: [], // [{ id, name, addedAt, source: 'upload'|'arxiv', arxivId?, noteCount }]
+      library: [], // [{ id, name, addedAt, source: 'upload'|'arxiv', arxivId?, noteCount, domain_id?, docId? }]
       addToLibrary: (doc) =>
         set((s) => {
           if (s.library.some((d) => d.id === doc.id)) return {};
@@ -302,6 +302,28 @@ export const useStore = create((set, get) => ({
         }),
       removeFromLibrary: (id) =>
         set((s) => ({ library: s.library.filter((d) => d.id !== id) })),
+      updateLibraryDocDomain: (docId, domainId) =>
+        set((s) => ({
+          library: s.library.map((d) => {
+            const match =
+              d.docId === docId ||
+              d.id === docId ||
+              (String(d.id || '').startsWith('local_') && String(d.id).replace(/^local_/, '') === docId);
+            if (!match) return d;
+            return { ...d, domain_id: domainId ?? null };
+          }),
+        })),
+
+      // ── 领域（Domain）：整理视图降噪与文献归类 ─────────────────────────────────
+      domains: [], // [{ id, name, created_at? }]
+      activeDomainId: null, // null = 全部文献（图谱不过滤）
+      setDomains: (list) => set({ domains: Array.isArray(list) ? list : [] }),
+      addDomain: (d) =>
+        set((s) => ({
+          domains: [...(s.domains || []), d],
+        })),
+      setActiveDomainId: (id) =>
+        set({ activeDomainId: id == null || id === '' ? null : id }),
 
       // ── 导航 & 交叉引用 ────────────────────────────────────────────────────
       activeReference: null, // { page: number, bbox: [x,y,w,h] }
@@ -342,7 +364,13 @@ export const useStore = create((set, get) => ({
 
       // ── 原子笔记（会话态 + 后端同步） ──────────────────────────────────────
       notes: [],
-      setNotes: (notes) => set({ notes }),
+      setNotes: (notesOrUpdater) =>
+        set((s) => ({
+          notes:
+            typeof notesOrUpdater === 'function'
+              ? (notesOrUpdater(s.notes) || [])
+              : (Array.isArray(notesOrUpdater) ? notesOrUpdater : []),
+        })),
       addNote: (note) =>
         set((s) => {
           const id = note?.id ?? crypto.randomUUID();
@@ -518,6 +546,67 @@ export const useStore = create((set, get) => ({
         set({ pomodoroActive: false, pomodoroMinutes: minutes, pomodoroSeconds: 0 }),
 
       // ── PDF 解析状态 ─────────────────────────────────────────────────────────
+      uploadTasks: {}, // { [taskId]: { taskId, docId?, fileName, status, uploadProgress, parseProgress, logs, error, createdAt } }
+      activeUploadTaskId: '',
+      setActiveUploadTask: (taskId) => set({ activeUploadTaskId: taskId || '' }),
+      upsertUploadTask: (task) =>
+        set((s) => {
+          const tid = task?.taskId;
+          if (!tid) return {};
+          return {
+            uploadTasks: {
+              ...s.uploadTasks,
+              [tid]: {
+                ...(s.uploadTasks[tid] || {}),
+                ...task,
+                taskId: tid,
+              },
+            },
+          };
+        }),
+      patchUploadTask: (taskId, patch) =>
+        set((s) => {
+          if (!taskId) return {};
+          const prev = s.uploadTasks[taskId] || { taskId, createdAt: Date.now(), logs: [] };
+          const nextLogs = patch?.appendLog
+            ? [...(prev.logs || []), String(patch.appendLog)]
+            : (patch?.logs || prev.logs || []);
+          return {
+            uploadTasks: {
+              ...s.uploadTasks,
+              [taskId]: {
+                ...prev,
+                ...patch,
+                logs: nextLogs,
+                taskId,
+              },
+            },
+          };
+        }),
+      removeUploadTask: (taskId) =>
+        set((s) => {
+          if (!taskId || !s.uploadTasks[taskId]) return {};
+          const next = { ...s.uploadTasks };
+          delete next[taskId];
+          return { uploadTasks: next };
+        }),
+      setDocParseCache: (docId, patch) =>
+        set((s) => {
+          const did = (docId || '').trim();
+          if (!did) return {};
+          const prev = s.parseCacheByDocId[did] || {};
+          return {
+            parseCacheByDocId: {
+              ...s.parseCacheByDocId,
+              [did]: {
+                sections: patch?.sections ?? prev.sections ?? [],
+                markdown: patch?.markdown ?? prev.markdown ?? '',
+                docName: patch?.docName ?? prev.docName ?? '',
+                updatedAt: Date.now(),
+              },
+            },
+          };
+        }),
       parseStatus: 'idle', // 'idle' | 'parsing' | 'done' | 'error'
       parseProgress: [],   // 解析日志列表
       parsedMarkdown: '',
@@ -672,6 +761,8 @@ export const useStore = create((set, get) => ({
           parsedDocName: '',
           parseCacheByDocId: {},
           parseInflightId: 0,
+          uploadTasks: {},
+          activeUploadTaskId: '',
           currentPage: 1,
           graphData: { nodes: [], links: [] },
           noteLinks: [],
@@ -679,6 +770,8 @@ export const useStore = create((set, get) => ({
           searchQuery: '',
           references: [],
           pendingOrganizeTab: null,
+          domains: [],
+          activeDomainId: null,
           };
         }),
 

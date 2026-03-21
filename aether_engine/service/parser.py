@@ -75,10 +75,11 @@ def _persist_and_rewrite_images(parsed_content: str, stem: str, img_sources) -> 
 # MinerU 云 API 配置
 # ══════════════════════════════════════════════════════════════
 MINERU_API_BASE = "https://mineru.net/api/v4"
-# 支持两种环境变量名：MINERU_API_TOKEN 或 MINERU_API_KEY
-MINERU_API_TOKEN = os.environ.get("MINERU_API_TOKEN") or os.environ.get(
-    "MINERU_API_KEY", ""
-)
+
+
+def _get_mineru_api_token() -> str:
+    """运行时读取 token，避免受模块导入时机影响。"""
+    return (os.environ.get("MINERU_API_TOKEN") or os.environ.get("MINERU_API_KEY", "")).strip()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -114,9 +115,9 @@ _SUBPROCESS_ENV = {
     **os.environ,
     "MINERU_MODEL_SOURCE": os.environ.get("MINERU_MODEL_SOURCE", "modelscope"),
 }
-_PARSE_TIMEOUT = 300
+_PARSE_TIMEOUT = int(os.environ.get("MINERU_PARSE_TIMEOUT", "300"))
 
-if MINERU_API_TOKEN:
+if _get_mineru_api_token():
     logger.info("[MinerU] 使用云 API 模式")
 else:
     logger.info(f"[MinerU] 使用本地 CLI 模式，路径: {_MAGIC_PDF_BIN or 'NOT FOUND'}")
@@ -187,7 +188,7 @@ async def _parse_via_cloud_api(
     method: str = "auto",
 ) -> AsyncGenerator[str, None]:
     """通过 MinerU 云 API 解析 PDF，流式 yield SSE 事件"""
-    token = MINERU_API_TOKEN
+    token = _get_mineru_api_token()
     if not token:
         yield _make_event("error", "未配置 MINERU_API_TOKEN 或 MINERU_API_KEY 环境变量")
         return
@@ -516,7 +517,7 @@ async def parse_pdf_with_mineru(
     if method not in ("auto", "txt", "ocr"):
         method = "auto"
 
-    if MINERU_API_TOKEN:
+    if _get_mineru_api_token():
         async for event in _parse_via_cloud_api(file_content, filename, method):
             yield event
     else:

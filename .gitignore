@@ -31,3 +31,8 @@ aether_engine/service/__pycache__/*
 aether_engine/service/__pycache__/parser.cpython-312.pyc
 .vscode/*
 .cursor/*
+scripts/*
+
+data/*
+*.log
+*.pyc

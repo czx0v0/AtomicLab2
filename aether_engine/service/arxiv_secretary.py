@@ -44,7 +44,7 @@ def _load_inbox(session_id: Optional[str] = None) -> Dict[str, Any]:
 
 def _save_inbox(data: Dict[str, Any], session_id: Optional[str] = None) -> None:
     p = _get_inbox_path(session_id)
-    p.parent.mkdir(parents=True, exist=True)
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

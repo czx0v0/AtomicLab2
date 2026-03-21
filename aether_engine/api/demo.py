@@ -1,6 +1,6 @@
 """
-Demo 白皮书：全局单例解析 + 会话复用。
-首次请求触发解析并索引，后续请求直接复用缓存结果。
+Demo 白皮书：只读静态 bundle（demo_data/demo_static_bundle.json）+ PDF；
+不向 MinerU 发起解析。可选在 warm/load 时用静态 Markdown 构建全局向量索引。
 """
 
 import asyncio
@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -23,9 +23,9 @@ _MS_ROOT = _ENGINE_ROOT.parent  # modelspace-deploy 根目录
 DEMO_DIR = _ENGINE_ROOT / "demo_data"
 DEMO_PDF = (DEMO_DIR / "demo_paper.pdf").resolve()
 PUBLIC_DEMO_PDF = (_MS_ROOT / "public" / "demo_paper.pdf").resolve()
+DEMO_STATIC_BUNDLE = (DEMO_DIR / "demo_static_bundle.json").resolve()
 DATA_DIR = Path("data")
 DEMO_DOC_ID = "global_demo_official"
-DEMO_CACHE_FILE = DATA_DIR / "demo_cache.json"
 _DEMO_LOCK = asyncio.Lock()
 
 
@@ -103,72 +103,14 @@ def _clear_session(session_id: str) -> None:
         pass
 
 
-def _load_cache() -> Optional[Dict[str, Any]]:
-    if not DEMO_CACHE_FILE.exists():
-        return None
-    try:
-        return json.loads(DEMO_CACHE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def _build_demo_notes(markdown: str, sections: list) -> list:
-    notes = []
-    for idx, sec in enumerate((sections or [])[:8]):
-        text = (sec.get("summary") or sec.get("content") or "").strip()
-        if not text:
-            continue
-        notes.append(
-            {
-                "id": f"demo_seed_{idx}",
-                "type": "idea",
-                "content": text[:240],
-                "keywords": [],
-                "tags": [],
-                "source": "demo_seed",
-                "doc_id": DEMO_DOC_ID,
-                "page": int(idx / 2) + 1,
-                "bbox": [],
-            }
-        )
-    return notes
-
-
-def _save_cache(markdown: str, sections: list, demo_notes: list) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    DEMO_CACHE_FILE.write_text(
-        json.dumps(
-            {
-                "doc_id": DEMO_DOC_ID,
-                "title": "demo_paper.pdf",
-                "markdown": markdown,
-                "sections": sections,
-                "demo_notes": demo_notes,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-
-async def _parse_demo_markdown(path: Path) -> Tuple[str, list]:
-    from service.parser import parse_pdf_with_mineru, _split_sections
-
-    content = path.read_bytes()
-    markdown = ""
-    async for raw in parse_pdf_with_mineru(content, path.name, method="auto"):
-        if not raw.startswith("data: "):
-            continue
-        try:
-            payload = json.loads(raw[6:].strip())
-        except Exception:
-            continue
-        if payload.get("status") == "success":
-            markdown = payload.get("markdown", "") or ""
-    if not markdown.strip():
-        raise RuntimeError("Demo 解析失败：未生成 markdown")
-    sections = _split_sections(markdown)
-    return markdown, sections
+def _load_static_bundle() -> Dict[str, Any]:
+    """读取仓库内预置的 Demo 静态 JSON，失败则抛错由调用方转为 HTTP 异常。"""
+    if not DEMO_STATIC_BUNDLE.exists():
+        raise FileNotFoundError(f"缺少静态资源: {DEMO_STATIC_BUNDLE}")
+    raw = json.loads(DEMO_STATIC_BUNDLE.read_text(encoding="utf-8"))
+    if not (raw.get("markdown") and isinstance(raw.get("sections"), list)):
+        raise ValueError("demo_static_bundle.json 格式无效：需要 markdown 与 sections")
+    return raw
 
 
 def _is_demo_indexed() -> bool:
@@ -199,120 +141,109 @@ def _ensure_demo_index(markdown: str) -> None:
 
 async def warm_demo_global_assets() -> None:
     """
-    启动时预热：解析 public/demo_data 中的白皮书并写入 global_demo_official 只读命名空间。
-    不触碰任何用户 session，供创空间首次打开即「秒开」。
+    启动时预热：从 demo_static_bundle.json 读取 Markdown，写入 global_demo_official 向量索引（无 MinerU）。
+    不触碰任何用户 session。
     """
-    path = _find_demo_pdf()
-    if not path:
+    if not _find_demo_pdf():
         logger.warning("Demo 预热跳过：未找到 demo_paper.pdf")
         return
-    cache = _load_cache()
-    indexed = _is_demo_indexed()
-    if cache and cache.get("markdown") and indexed:
-        logger.info("Demo 全局缓存已就绪，跳过预热")
+    try:
+        bundle = _load_static_bundle()
+    except Exception as e:
+        logger.warning("Demo 预热跳过：无法读取静态 bundle: %s", e)
+        return
+    markdown = bundle.get("markdown") or ""
+    if not markdown.strip():
+        logger.warning("Demo 预热跳过：静态 bundle 中 markdown 为空")
+        return
+    if _is_demo_indexed():
+        logger.info("Demo 全局向量索引已就绪，跳过预热")
         return
     async with _DEMO_LOCK:
-        cache = _load_cache()
-        indexed = _is_demo_indexed()
-        if cache and cache.get("markdown") and indexed:
+        if _is_demo_indexed():
             return
         try:
-            markdown, sections = await _parse_demo_markdown(path)
-            demo_notes = _build_demo_notes(markdown, sections)
             _ensure_demo_index(markdown)
-            _save_cache(markdown, sections, demo_notes)
-            logger.info("Demo 全局缓存预热完成: doc_id=%s", DEMO_DOC_ID)
+            logger.info("Demo 全局向量预热完成: doc_id=%s", DEMO_DOC_ID)
         except Exception as e:
-            logger.warning("Demo 预热失败（首次点击仍将尝试解析）: %s", e)
+            logger.warning("Demo 向量预热失败（检索可能不可用）: %s", e)
 
 
 @router.post("/load")
 async def load_demo(session_id: str = Depends(get_session_id)):
     """
     清空当前会话，并挂载全局 demo 文档。
-    首次加载时解析并缓存；后续直接复用。
+    仅从 demo_static_bundle.json 读取解析结果，不调用 MinerU。Demo 笔记由前端 Local-First 管理，不落库到服务端会话。
     """
     _clear_session(session_id)
 
-    path = _find_demo_pdf()
-    if not path:
+    if not _find_demo_pdf():
         raise HTTPException(status_code=404, detail="Demo 白皮书文件不存在")
 
-    cache = _load_cache()
-    cached = False
-    indexed = _is_demo_indexed()
+    try:
+        cache = _load_static_bundle()
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Demo 静态数据未部署: {e}",
+        ) from e
+    except (json.JSONDecodeError, ValueError) as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Demo 静态数据无效: {e}",
+        ) from e
+
+    markdown = cache.get("markdown") or ""
+    indexed_before = _is_demo_indexed()
     _debug_log(
         "H1",
         "demo.py:load_demo:pre-check",
-        "demo cache/index precheck",
+        "demo static bundle + index precheck",
         {
             "session_id": (session_id or "")[:16],
-            "cache_has_markdown": bool(cache and cache.get("markdown")),
-            "indexed": bool(indexed),
+            "has_markdown": bool(markdown.strip()),
+            "indexed": bool(indexed_before),
         },
     )
 
-    if cache and cache.get("markdown") and indexed:
-        cached = True
-    else:
+    if not indexed_before:
         async with _DEMO_LOCK:
-            cache = _load_cache()
-            indexed = _is_demo_indexed()
-            if cache and cache.get("markdown") and indexed:
-                cached = True
-            else:
-                _debug_log(
-                    "H1",
-                    "demo.py:load_demo:parse-branch",
-                    "enter parse branch for demo",
-                    {"session_id": (session_id or "")[:16], "indexed": bool(indexed)},
-                )
-                markdown, sections = await _parse_demo_markdown(path)
-                demo_notes = _build_demo_notes(markdown, sections)
-                _ensure_demo_index(markdown)
-                _save_cache(markdown, sections, demo_notes)
-                cache = _load_cache()
-                cached = False
+            if not _is_demo_indexed():
+                try:
+                    _ensure_demo_index(markdown)
+                except Exception as e:
+                    logger.warning("Demo 向量索引失败: %s", e)
+
+    indexed_after = _is_demo_indexed()
     _debug_log(
         "H1",
         "demo.py:load_demo:result",
-        "demo load branch result",
+        "demo load static result",
         {
             "session_id": (session_id or "")[:16],
-            "cached": bool(cached),
-            "notes_count": len(((cache or {}).get("demo_notes") or [])),
+            "indexed": bool(indexed_after),
+            "notes_count": len((cache.get("demo_notes") or [])),
         },
     )
 
-    # 将 demo 卡片挂载到当前会话（仅 demo doc_id）
-    try:
-        from api.notes import _load_notes, _save_notes
-
-        current = _load_notes(session_id)
-        keep = [n for n in current if (n.get("doc_id") or "") != DEMO_DOC_ID]
-        demo_notes = (cache or {}).get("demo_notes") or []
-        _save_notes([*keep, *demo_notes], session_id)
-    except Exception as e:
-        logger.warning("Demo 卡片挂载失败: %s", e)
-
     logger.info(
-        "Demo 加载完成: session=%s cached=%s doc_id=%s",
+        "Demo 加载完成: session=%s static=True indexed=%s doc_id=%s",
         (session_id or "")[:16],
-        cached,
+        indexed_after,
         DEMO_DOC_ID,
     )
     return {
         "ok": True,
-        "cached": cached,
+        "cached": True,
         "doc_id": DEMO_DOC_ID,
-        "title": "demo_paper.pdf",
+        "title": cache.get("title") or "demo_paper.pdf",
         "file_url": "/api/demo/pdf",
         "pdf_url": "/api/demo/pdf",
-        "markdown": (cache or {}).get("markdown", ""),
-        "sections": (cache or {}).get("sections", []),
-        "demo_notes": (cache or {}).get("demo_notes", []),
-        "parsed_data": (cache or {}).get("markdown", ""),
-        "tree_data": (cache or {}).get("sections", []),
+        "markdown": markdown,
+        "sections": cache.get("sections") or [],
+        "demo_notes": cache.get("demo_notes") or [],
+        "parsed_data": markdown,
+        "tree_data": cache.get("sections") or [],
     }
 
 

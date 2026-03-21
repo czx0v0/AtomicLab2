@@ -27,6 +27,8 @@ export function AssistantSidebar({ embedded = false }) {
   } = useStore();
 
   const [input, setInput] = useState('');
+  /** none | peer_review | writer — 互斥 */
+  const [assistMode, setAssistMode] = useState('none');
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -90,6 +92,9 @@ export function AssistantSidebar({ embedded = false }) {
         } else if (type === 'delta' && synthId != null) {
           synthContent += data.token || '';
           updateLastMessage({ content: synthContent });
+        } else if (type === 'editor_delta' && synthId != null) {
+          synthContent += data.token || '';
+          updateLastMessage({ content: synthContent });
         } else if (type === 'action' && data?.function === 'update_markdown_editor') {
           const content = (data.content || '').trim();
           const actionType = data.action_type || 'append';
@@ -124,6 +129,12 @@ export function AssistantSidebar({ embedded = false }) {
       }, {
         history,
         topK: 5,
+        mode:
+          assistMode === 'peer_review'
+            ? 'peer_review'
+            : assistMode === 'writer'
+              ? 'writer'
+              : undefined,
         document_id: activeDocId || undefined,
         note_ids: contextAttachment?.noteId ? [contextAttachment.noteId] : undefined,
       });
@@ -204,8 +215,30 @@ export function AssistantSidebar({ embedded = false }) {
           </div>
         )}
 
+        <div className="shrink-0 px-3 pt-2 pb-0 border-t border-gray-200 bg-slate-50/60 flex items-center gap-3 flex-wrap">
+          <label className="inline-flex items-center gap-1.5 text-[10px] text-slate-700 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="rounded border-gray-400"
+              checked={assistMode === 'peer_review'}
+              onChange={(e) => setAssistMode(e.target.checked ? 'peer_review' : 'none')}
+            />
+            <span>👀 审稿</span>
+          </label>
+          <label className="inline-flex items-center gap-1.5 text-[10px] text-slate-700 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="rounded border-gray-400"
+              checked={assistMode === 'writer'}
+              onChange={(e) => setAssistMode(e.target.checked ? 'writer' : 'none')}
+            />
+            <span>✍️ 写作</span>
+          </label>
+          <span className="text-[9px] text-slate-400">审稿与写作互斥；写作将强制落左侧编辑器</span>
+        </div>
+
         {/* 输入区 */}
-        <div className="shrink-0 p-3 border-t border-gray-200 flex gap-2 bg-white">
+        <div className="shrink-0 p-3 flex gap-2 bg-white">
           <button
             onClick={clearMessages}
             title="清空对话"

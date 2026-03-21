@@ -139,3 +139,57 @@ def get_one_hop_triples(
             if len(triples) >= max_items:
                 return triples
     return triples
+
+
+def get_two_hop_triples(
+    session_id: Optional[str],
+    seed_note_ids: List[str],
+    max_items: int = 8,
+) -> List[dict]:
+    """
+    从 seed 的 1-hop 邻居再继续走一步，得到 2-hop 可达的边（用于 GraphRAG 扩展）。
+    返回与 get_one_hop_triples 相同字段结构，relation 标记为便于区分的类型。
+    """
+    g = _load_graph(session_id)
+    if g.number_of_nodes() == 0 or not seed_note_ids:
+        return []
+
+    triples: List[dict] = []
+    seen = set()
+    seed_set = {n for n in seed_note_ids if n}
+
+    # 1-hop 邻居（不含 seed 自身）
+    hop1: set = set()
+    for sid in seed_note_ids:
+        if not sid or not g.has_node(sid):
+            continue
+        hop1.update(g.successors(sid))
+        hop1.update(g.predecessors(sid))
+    hop1 -= seed_set
+
+    # 从 1-hop 邻居再扩展
+    for mid in hop1:
+        if not g.has_node(mid):
+            continue
+        for tid in list(g.successors(mid)) + list(g.predecessors(mid)):
+            if tid in seed_set or tid == mid:
+                continue
+            edge_data = g.get_edge_data(mid, tid) or g.get_edge_data(tid, mid) or {}
+            relation = edge_data.get("relation", "related_to")
+            key = (mid, relation, tid)
+            if key in seen:
+                continue
+            seen.add(key)
+            triples.append(
+                {
+                    "subject": mid,
+                    "relation": f"2hop::{relation}",
+                    "object": tid,
+                    "tags": edge_data.get("tags", []),
+                    "source_note_id": mid,
+                    "target_note_id": tid,
+                }
+            )
+            if len(triples) >= max_items:
+                return triples
+    return triples

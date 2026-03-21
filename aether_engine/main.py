@@ -54,7 +54,7 @@ async def lifespan(application: FastAPI):
         "   API文档:  http://%s:%s/docs", settings.UVICORN_HOST, settings.UVICORN_PORT
     )
     logger.info("=" * 50)
-    # Demo 只读单例预热（不阻塞启动；失败时首次 POST /api/demo/load 仍会解析）
+    # Demo 静态 bundle + 向量索引预热（不阻塞启动；无 MinerU）
     try:
         asyncio.create_task(warm_demo_global_assets())
     except Exception as e:

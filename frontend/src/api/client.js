@@ -4,6 +4,7 @@
  */
 
 import { SESSION_ID } from '../store/useStore';
+import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
 
 const BASE_URL = '/api';
 
@@ -88,7 +89,7 @@ export async function getDemoPdfBlob() {
  * @param {string} method  'auto' | 'txt' | 'ocr'
  * @param {(event: {status, message?, markdown?}) => void} onEvent
  */
-export async function parsePDF(file, method = 'auto', onEvent) {
+export async function parsePDF(file, method = 'auto', onEvent, options = {}) {
   const formData = new FormData();
   formData.append('file', file);
 
@@ -96,6 +97,7 @@ export async function parsePDF(file, method = 'auto', onEvent) {
     method: 'POST',
     headers: { 'X-Session-ID': SESSION_ID },
     body: formData,
+    signal: options?.signal,
   });
 
   if (!res.ok) throw new Error(`解析失败: HTTP ${res.status}`);
@@ -162,17 +164,51 @@ export const searchNotes = (query, topK = 5, docId = '') =>
     body: JSON.stringify({ query, top_k: topK, doc_id: docId }),
   });
 
+/** 全库混合检索（不按 doc_id 过滤），对应 POST /search/global */
+export const searchGlobal = (query, topK = 16, maxRounds = 2) =>
+  json('/search/global', {
+    method: 'POST',
+    body: JSON.stringify({ query, top_k: topK, max_rounds: maxRounds }),
+  });
+
 export const indexDocument = (docId, docTitle, markdown) =>
   json('/search/index-document', {
     method: 'POST',
     body: JSON.stringify({ doc_id: docId, doc_title: docTitle, markdown }),
   });
 
-export const getOrganizeGraph = (docId = '', topN = 200) =>
-  json(`/organize/graph?doc_id=${encodeURIComponent(docId || 'global')}&top_n=${topN}`);
+export const getOrganizeGraph = (docId = '', topN = 200, domainId = '') => {
+  const q = new URLSearchParams();
+  q.set('doc_id', docId || 'global');
+  q.set('top_n', String(topN));
+  if (domainId) q.set('domain_id', domainId);
+  return json(`/organize/graph?${q.toString()}`);
+};
 
-export const getOrganizeTriples = (docId = '', topN = 200) =>
-  json(`/organize/triples?doc_id=${encodeURIComponent(docId || 'global')}&top_n=${topN}`);
+export const getOrganizeTriples = (docId = '', topN = 200, domainId = '') => {
+  const q = new URLSearchParams();
+  q.set('doc_id', docId || 'global');
+  q.set('top_n', String(topN));
+  if (domainId) q.set('domain_id', domainId);
+  return json(`/organize/triples?${q.toString()}`);
+};
+
+/** 领域列表（会话级） */
+export const listDomains = () => json('/domains');
+
+/** 创建领域 */
+export const createDomain = (name) =>
+  json('/domains', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+
+/** 更新文献元数据（如 domain_id） */
+export const patchDocument = (docId, patch) =>
+  json(`/documents/${encodeURIComponent(docId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
 
 // ─── 文献文件管理 ─────────────────────────────────────────────────────────────
 export async function uploadDocument(file) {
@@ -187,9 +223,51 @@ export async function uploadDocument(file) {
   return res.json();
 }
 
+/** 上传文件并返回实时进度；返回对象含 promise 与 cancel() */
+export function uploadDocumentWithProgress(file, { onProgress } = {}) {
+  const xhr = new XMLHttpRequest();
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const promise = new Promise((resolve, reject) => {
+    xhr.open('POST', `${BASE_URL}/documents`, true);
+    xhr.setRequestHeader('X-Session-ID', SESSION_ID);
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const pct = Math.min(100, Math.max(0, Math.round((event.loaded / event.total) * 100)));
+      try { onProgress?.(pct, event.loaded, event.total); } catch {}
+    };
+    xhr.onerror = () => reject(new Error('上传失败：网络错误'));
+    xhr.onabort = () => reject(new Error('上传已取消'));
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`上传失败: HTTP ${xhr.status}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(xhr.responseText));
+      } catch {
+        reject(new Error('上传失败：响应格式错误'));
+      }
+    };
+    xhr.send(formData);
+  });
+
+  return {
+    promise,
+    cancel: () => xhr.abort(),
+  };
+}
+
 export const listDocuments = () => json('/documents');
 export const deleteDocument = (docId) => request(`/documents/${docId}`, { method: 'DELETE' });
 export const getDocumentFileUrl = (docId) => `${BASE_URL}/documents/${docId}/file?session_id=${SESSION_ID}`;
+export const resolvePdfUrlByDocId = (docId = '') => {
+  const did = String(docId || '').trim();
+  if (!did) return '';
+  if (did === GLOBAL_DEMO_DOC_ID) return `${BASE_URL}/demo/pdf`;
+  return getDocumentFileUrl(did);
+};
 
 // ─── 翻译 ────────────────────────────────────────────────────────────────────
 export const translateText = (text, targetLang = 'zh') =>
@@ -261,6 +339,7 @@ export const chat = (question, history = [], topK = 5, opts = {}) =>
       question,
       history,
       top_k: topK,
+      mode: opts.mode ?? undefined,
       document_id: opts.document_id ?? undefined,
       note_ids: opts.note_ids?.length ? opts.note_ids : undefined,
     }),
@@ -270,11 +349,11 @@ export const chat = (question, history = [], topK = 5, opts = {}) =>
  * SSE 流式 AgenticRAG 对话
  * @param {string} question
  * @param {(event: {type: string, data: object}) => void} onEvent  每个 SSE 事件回调
- * @param {{ history?: Array, topK?: number, document_id?: string, note_ids?: string[] }} opts
+ * @param {{ history?: Array, topK?: number, mode?: 'peer_review'|'writer', document_id?: string, note_ids?: string[] }} opts
  * @returns {Promise<void>}
  */
 export async function chatStream(question, onEvent, opts = {}) {
-  const { history = [], topK = 5, document_id, note_ids } = opts;
+  const { history = [], topK = 5, mode, document_id, note_ids } = opts;
   const res = await fetch(`${BASE_URL}/chat/stream`, {
     method: 'POST',
     headers: getHeaders(),
@@ -282,6 +361,7 @@ export async function chatStream(question, onEvent, opts = {}) {
       question,
       history,
       top_k: topK,
+      mode: mode ?? undefined,
       document_id: document_id ?? undefined,
       note_ids: note_ids?.length ? note_ids : undefined,
     }),

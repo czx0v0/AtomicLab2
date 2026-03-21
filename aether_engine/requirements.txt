@@ -6,6 +6,7 @@ networkx
 tenacity
 openai>=1.30.0
 httpx
+tqdm
 python-dotenv
 jieba>=0.42.0
 rank-bm25>=0.2.2

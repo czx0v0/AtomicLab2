@@ -129,10 +129,10 @@ export function MissionControlFab() {
         type="button"
         onClick={() => setOpen(true)}
         className={clsx(
-          'fixed bottom-6 right-20 z-[9999] w-12 h-12 rounded-xl',
+          'w-12 h-12 rounded-xl shrink-0',
           'border-[3px] border-black bg-[#ffe8f0] shadow-[4px_4px_0px_rgba(0,0,0,0.85)]',
           'flex items-center justify-center hover:bg-[#ffd6e5] transition-colors',
-          'focus:outline-none focus:ring-2 focus:ring-rose-400 focus:ring-offset-2 cursor-pointer pointer-events-auto'
+          'focus:outline-none focus:ring-2 focus:ring-rose-400 focus:ring-offset-2 cursor-pointer'
         )}
         aria-label="打开任务控制中心（投稿与进度）"
         whileHover={{ scale: 1.05 }}
@@ -158,14 +158,17 @@ export function MissionControlFab() {
               role="dialog"
               aria-modal="true"
               aria-labelledby="mission-control-title"
-              initial={{ opacity: 0, scale: 0.96, y: 8 }}
+              initial={{ opacity: 0, scale: 0.96, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 8 }}
+              exit={{ opacity: 0, scale: 0.96, y: 10 }}
               transition={{ type: 'spring', damping: 26, stiffness: 320 }}
               className={clsx(
-                'fixed left-1/2 top-1/2 z-[10001] w-[min(92vw,420px)] -translate-x-1/2 -translate-y-1/2',
+                'fixed z-[10001] left-auto top-auto right-4 origin-bottom-right',
+                'bottom-[calc(9rem+env(safe-area-inset-bottom,0px))]',
+                'w-[90vw] max-w-[400px] sm:w-[400px]',
+                'max-h-[80vh] min-h-0 overflow-y-auto overflow-x-hidden',
                 'rounded-2xl border-[3px] border-black bg-[#fdf6ff] shadow-[8px_8px_0px_rgba(0,0,0,0.12)]',
-                'text-slate-800 overflow-hidden'
+                'text-slate-800 flex flex-col'
               )}
               onClick={(e) => e.stopPropagation()}
             >

@@ -422,9 +422,15 @@ function App() {
           </div>
         </div>
       )}
-      {/* 投稿进度 🚩 + 原子助手入口（z 高于专注层以保可点） */}
-      <MissionControlFab />
-      <AssistantFab />
+      {/* 投稿进度 🚩 + 原子助手：单层视口固定栈，避免 fixed 受异常包含块影响；含 safe-area */}
+      <div
+        className="fixed bottom-6 right-4 z-[9999] pointer-events-none flex flex-col items-end gap-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pr-[max(0.75rem,env(safe-area-inset-right))]"
+      >
+        <div className="flex flex-col gap-3 items-end pointer-events-auto">
+          <MissionControlFab />
+          <AssistantFab />
+        </div>
+      </div>
     </div>
   );
 }

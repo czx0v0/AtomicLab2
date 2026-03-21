@@ -23,6 +23,28 @@ GLOBAL_SCOPE_MARKERS = {"", "global", "__global__", "all", "*"}
 GLOBAL_DEMO_DOC_ID = "global_demo_official"
 
 
+def _domain_allowed_doc_ids(docs: List[dict], domain_id: Optional[str]) -> Optional[Set[str]]:
+    """若 domain_id 非空则返回该领域下的文档 id 集合；空字符串表示不过滤。"""
+    did = (domain_id or "").strip()
+    if not did:
+        return None
+    return {d.get("id") for d in docs if d.get("domain_id") == did}
+
+
+def _filter_notes_by_domain(notes: List[dict], allowed: Set[str]) -> List[dict]:
+    out = []
+    for n in notes:
+        raw = (n.get("doc_id") or "").strip()
+        doc_id = raw or "unscoped"
+        if doc_id in allowed:
+            out.append(n)
+    return out
+
+
+def _filter_chunks_by_domain(chunks: List[dict], allowed: Set[str]) -> List[dict]:
+    return [c for c in chunks if (c.get("doc_id") or "").strip() in allowed]
+
+
 def _debug_log(hid: str, location: str, message: str, data: Dict) -> None:
     try:
         with open("debug-360e80.log", "a", encoding="utf-8") as f:
@@ -446,6 +468,7 @@ def _trim_global_graph(
 def get_organize_graph(
     doc_id: str = "",
     top_n: int = 200,
+    domain_id: str = "",
     x_session_id: str = Header(default=""),
 ):
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
@@ -454,11 +477,24 @@ def get_organize_graph(
 
     notes = _load_notes(session_id)
     docs = _load_documents_meta(session_id)
+    allowed = _domain_allowed_doc_ids(docs, domain_id if is_global else "")
+    if is_global and allowed is not None:
+        if len(allowed) == 0:
+            notes = []
+        else:
+            notes = _filter_notes_by_domain(notes, allowed)
+
     docs_map = {d.get("id", ""): d.get("name", "") for d in docs}
     docs_map[GLOBAL_DEMO_DOC_ID] = "demo_paper.pdf"
     docs_map["unscoped"] = "未归档文献"
 
     doc_chunks = _load_doc_chunks(session_id, scope_doc_id)
+    if is_global and allowed is not None:
+        if len(allowed) == 0:
+            doc_chunks = []
+        else:
+            doc_chunks = _filter_chunks_by_domain(doc_chunks, allowed)
+
     g, nodes, edges = _build_graph(notes, docs_map, scope_doc_id, doc_chunks)
 
     meta = {"truncated": False, "message": ""}
@@ -480,6 +516,7 @@ def get_organize_graph(
 def get_organize_triples(
     doc_id: str = "",
     top_n: int = 200,
+    domain_id: str = "",
     x_session_id: str = Header(default=""),
 ):
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
@@ -488,11 +525,24 @@ def get_organize_triples(
 
     notes = _load_notes(session_id)
     docs = _load_documents_meta(session_id)
+    allowed = _domain_allowed_doc_ids(docs, domain_id if is_global else "")
+    if is_global and allowed is not None:
+        if len(allowed) == 0:
+            notes = []
+        else:
+            notes = _filter_notes_by_domain(notes, allowed)
+
     docs_map = {d.get("id", ""): d.get("name", "") for d in docs}
     docs_map[GLOBAL_DEMO_DOC_ID] = "demo_paper.pdf"
     docs_map["unscoped"] = "未归档文献"
 
     doc_chunks = _load_doc_chunks(session_id, scope_doc_id)
+    if is_global and allowed is not None:
+        if len(allowed) == 0:
+            doc_chunks = []
+        else:
+            doc_chunks = _filter_chunks_by_domain(doc_chunks, allowed)
+
     g, nodes, edges = _build_graph(notes, docs_map, scope_doc_id, doc_chunks)
     if is_global:
         nodes, edges, _ = _trim_global_graph(g, nodes, edges, max(50, min(top_n, 500)))

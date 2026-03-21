@@ -5,9 +5,20 @@ Aether-Engine FastAPI 服务
 
 import os
 import sys
+from dotenv import load_dotenv
 
 # 添加项目路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "aether_engine"))
+
+# 尽早加载 .env，避免模块导入时读不到关键环境变量（如 MINERU_API_TOKEN）
+# 优先 modelspace-deploy/.env，回退仓库根 .env；不覆盖已存在环境变量
+_MS_ENV = os.path.join(os.path.dirname(__file__), ".env")
+_REPO_ENV = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+for _env in (_MS_ENV, _REPO_ENV):
+    if os.path.exists(_env):
+        load_dotenv(_env, override=False)
+        print(f"[Config] loaded env: {_env}")
+        break
 
 # 检测是否在 ModelScope 创空间环境
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")

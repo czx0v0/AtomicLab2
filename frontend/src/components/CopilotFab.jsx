@@ -13,7 +13,7 @@ export function AssistantFab() {
     <motion.button
       type="button"
       onClick={() => setCopilotOpen(!copilotOpen)}
-      className="fixed bottom-6 right-6 z-[9999] w-12 h-12 rounded-xl border border-slate-200 bg-white shadow-lg flex items-center justify-center hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 cursor-pointer pointer-events-auto"
+      className="w-12 h-12 rounded-xl border border-slate-200 bg-white shadow-lg flex items-center justify-center hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 cursor-pointer shrink-0"
       aria-label={copilotOpen ? '收起原子助手' : '展开原子助手'}
       whileHover={{ scale: 1.05 }}
       whileTap={{ scale: 0.98 }}

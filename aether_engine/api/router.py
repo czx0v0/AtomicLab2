@@ -8,6 +8,7 @@ from api.translate import router as translate_router
 from api.arxiv import router as arxiv_router
 from api.chat import router as chat_router
 from api.documents import router as documents_router
+from api.domains import router as domains_router
 from api.writing import router as writing_router
 from api.reset import router as reset_router
 from api.demo import router as demo_router
@@ -33,4 +34,5 @@ root_router.include_router(translate_router, prefix="/api")
 root_router.include_router(arxiv_router, prefix="/api")
 root_router.include_router(chat_router, prefix="/api")
 root_router.include_router(documents_router, prefix="/api")
+root_router.include_router(domains_router, prefix="/api")
 root_router.include_router(writing_router, prefix="/api")

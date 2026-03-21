@@ -10,6 +10,7 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import clsx from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as api from '../api/client';
+import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -262,7 +263,9 @@ const MarkdownPreview = ({ content, references: refsProp }) => {
 
   return (
     <div className="h-full overflow-y-auto p-8 custom-scrollbar">
-      <div className="prose prose-sm max-w-none prose-a:text-blue-600 prose-code:bg-slate-100 prose-code:px-1 prose-code:rounded prose-h1:text-2xl prose-h1:font-extrabold prose-h1:mt-8 prose-h1:mb-3 prose-h1:text-slate-900 prose-h1:border-b prose-h1:border-slate-200 prose-h1:pb-2 prose-h2:text-xl prose-h2:font-bold prose-h2:mt-6 prose-h2:mb-2 prose-h2:text-slate-800 prose-h2:border-b prose-h2:border-slate-100 prose-h2:pb-1 prose-h3:text-lg prose-h3:font-semibold prose-h3:mt-4 prose-h3:mb-1 prose-h3:text-slate-800">
+      <div
+        className="write-preview-area prose prose-slate prose-sm max-w-none prose-a:text-blue-600 prose-code:bg-slate-100 prose-code:px-1 prose-code:rounded prose-h1:text-2xl prose-h1:font-extrabold prose-h1:mt-8 prose-h1:mb-3 prose-h1:text-slate-900 prose-h1:border-b prose-h1:border-slate-200 prose-h1:pb-2 prose-h2:text-xl prose-h2:font-bold prose-h2:mt-6 prose-h2:mb-2 prose-h2:text-slate-800 prose-h2:border-b prose-h2:border-slate-100 prose-h2:pb-1 prose-h3:text-lg prose-h3:font-semibold prose-h3:mt-4 prose-h3:mb-1 prose-h3:text-slate-800"
+      >
         <MarkdownRenderer components={components}>
           {typeof content === 'string' ? content : ''}
         </MarkdownRenderer>
@@ -933,6 +936,9 @@ export const RightColumn = () => {
     };
     addNote(payload);
     setWriteSelectionMenu(null);
+    if ((activeDocId || '') === GLOBAL_DEMO_DOC_ID) {
+      return;
+    }
     try {
       await api.createNote({
         content: payload.content,

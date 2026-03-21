@@ -16,6 +16,7 @@ import { loadLocalDocState, mergeNotesById, saveLocalDocState } from '../lib/loc
 
 // Load PDF worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+const HIGHLIGHT_COLOR_KEY = 'atomiclab_highlight_color';
 
 export const LeftColumn = () => {
     const {
@@ -32,12 +33,15 @@ export const LeftColumn = () => {
         startDemoLoad, setStartDemoLoad,
         clearHighlights, setHighlights, clearPendingScreenshotQueue,
         bumpParseInflight,
+        uploadTasks, activeUploadTaskId, setActiveUploadTask, upsertUploadTask, patchUploadTask, setDocParseCache,
     } = useStore();
     const accumulatedMarkdownRef = useRef('');
     const [pdfLoadError, setPdfLoadError] = useState(null);
     const [selection, setSelection] = useState(null);
     const [pageWidth, setPageWidth] = useState(600);
-    const [highlightColor, setHighlightColor] = useState('yellow');
+    const [highlightColor, setHighlightColor] = useState(() => {
+        try { return sessionStorage.getItem(HIGHLIGHT_COLOR_KEY) || 'yellow'; } catch { return 'yellow'; }
+    });
     const [translating, setTranslating] = useState(false);
     const [translationResult, setTranslationResult] = useState(null);
     const [showLibrary, setShowLibrary] = useState(false);
@@ -55,6 +59,68 @@ export const LeftColumn = () => {
     const scrollUnlockTimerRef = useRef(null);
     /** 用于文献切换时保存上一篇的 Local-First 快照 */
     const prevDocIdRef = useRef('');
+    useEffect(() => {
+        try { sessionStorage.setItem(HIGHLIGHT_COLOR_KEY, highlightColor || 'yellow'); } catch {}
+    }, [highlightColor]);
+    const uploadCancelRef = useRef(new Map());
+    const parseAbortRef = useRef(new Map());
+    const taskFileRef = useRef(new Map());
+
+    const buildCreatePayload = useCallback((note) => ({
+        content: note?.content || '',
+        type: note?.type || 'idea',
+        page: note?.page ?? null,
+        bbox: note?.bbox ?? null,
+        screenshot: note?.screenshot ?? null,
+        doc_id: note?.doc_id || '',
+        translation: note?.translation ?? null,
+        keywords: note?.keywords ?? null,
+        axiom: note?.axiom ?? null,
+        method: note?.method ?? null,
+        boundary: note?.boundary ?? null,
+        source: note?.source ?? 'read_ui',
+    }), []);
+
+    const createNoteWithSync = useCallback(async (draft) => {
+        const tempId = draft?.id || `local_${crypto.randomUUID()}`;
+        const optimistic = {
+            ...draft,
+            id: tempId,
+            client_temp_id: tempId,
+            sync_status: 'pending',
+            doc_id: draft?.doc_id || activeDocId || '',
+        };
+        addNote(optimistic);
+        try {
+            const created = await api.createNote(buildCreatePayload(optimistic));
+            setNotes((prev) =>
+                (prev || []).map((n) =>
+                    n.id === tempId
+                        ? {
+                              ...n,
+                              server_note_id: created?.id || '',
+                              client_temp_id: tempId,
+                              sync_status: 'synced',
+                          }
+                        : n
+                )
+            );
+            return created;
+        } catch (e) {
+            setNotes((prev) =>
+                (prev || []).map((n) =>
+                    n.id === tempId
+                        ? {
+                              ...n,
+                              sync_status: 'failed',
+                              sync_error: e?.message || 'sync_failed',
+                          }
+                        : n
+                )
+            );
+            return null;
+        }
+    }, [activeDocId, addNote, buildCreatePayload, setNotes]);
 
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -168,7 +234,7 @@ export const LeftColumn = () => {
             }
 
             const shotNote = {
-                id: crypto.randomUUID(),
+                id: `local_${crypto.randomUUID()}`,
                 type: 'data',
                 content: extractedText,
                 page: currentPage,
@@ -177,11 +243,10 @@ export const LeftColumn = () => {
                 timestamp: new Date().toISOString(),
                 doc_id: activeDocId || '',
             };
-            addNote(shotNote);
+            await createNoteWithSync(shotNote);
             if (!extractedText || extractedText === '[截图高亮]') {
                 addPendingScreenshot({ noteId: shotNote.id, page: currentPage, bbox: bbox });
             }
-            // Local-First：截图与 Base64 仅存 IndexedDB，不上传后端
             actionInFlightRef.current = false;
         }
         setShotDraft(null);
@@ -205,6 +270,28 @@ export const LeftColumn = () => {
         }
         return 10;
     }, [parseStatus, parseProgress, parsedSections.length]);
+
+    const uploadTaskList = useMemo(
+        () => Object.values(uploadTasks || {}).sort((a, b) => (b?.createdAt || 0) - (a?.createdAt || 0)),
+        [uploadTasks]
+    );
+    const currentTask = useMemo(() => {
+        if (activeUploadTaskId && uploadTasks?.[activeUploadTaskId]) return uploadTasks[activeUploadTaskId];
+        return uploadTaskList[0] || null;
+    }, [activeUploadTaskId, uploadTasks, uploadTaskList]);
+
+    const cancelTask = useCallback((taskId) => {
+        const cancelUpload = uploadCancelRef.current.get(taskId);
+        if (cancelUpload) cancelUpload();
+        const parseAbort = parseAbortRef.current.get(taskId);
+        if (parseAbort) parseAbort.abort();
+        patchUploadTask(taskId, { status: 'cancelled', appendLog: '任务已取消' });
+        if (activeUploadTaskId === taskId) {
+            setParseStatus('error');
+            addParseLog('任务已取消');
+        }
+    }, [patchUploadTask, activeUploadTaskId, setParseStatus, addParseLog]);
+
 
     // 待识别队列：当前页与 PDF 就绪时，从文字层补全截图/高亮笔记内容
     useEffect(() => {
@@ -378,76 +465,170 @@ export const LeftColumn = () => {
     }, [pdfObjectUrl, pdfUrl]);
 
     const applyFileAsUpload = useCallback((file) => {
+        const taskId = `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const taskBase = {
+            taskId,
+            fileName: file?.name || 'unknown.pdf',
+            status: 'uploading',
+            uploadProgress: 0,
+            parseProgress: 0,
+            logs: ['开始上传文件...'],
+            error: '',
+            createdAt: Date.now(),
+        };
+        taskFileRef.current.set(taskId, file);
+        upsertUploadTask(taskBase);
+        setActiveUploadTask(taskId);
+
         setNotes([]);
         resetParseUiState();
         setPdfFile(file);
         accumulatedMarkdownRef.current = '';
-        api.uploadDocument(file).then((doc) => {
+        setParseStatus('parsing');
+        addParseLog(`上传中: ${file.name}`);
+
+        const uploadReq = api.uploadDocumentWithProgress(file, {
+            onProgress: (pct) => {
+                patchUploadTask(taskId, { status: 'uploading', uploadProgress: pct, appendLog: `上传进度 ${pct}%` });
+                if (useStore.getState().activeUploadTaskId === taskId) {
+                    addParseLog(`上传中 ${pct}%`);
+                }
+            },
+        });
+        uploadCancelRef.current.set(taskId, uploadReq.cancel);
+
+        uploadReq.promise.then((doc) => {
+            uploadCancelRef.current.delete(taskId);
             const fileUrl = api.getDocumentFileUrl(doc.id);
-            setPdfUrl(fileUrl, doc.name, doc.id);
+            const runId = bumpParseInflight();
+            const parseAbort = new AbortController();
+            parseAbortRef.current.set(taskId, parseAbort);
+            patchUploadTask(taskId, {
+                status: 'parsing',
+                uploadProgress: 100,
+                docId: doc.id,
+                fileUrl,
+                appendLog: '上传完成，开始解析',
+            });
+            if (useStore.getState().activeUploadTaskId === taskId) {
+                setPdfUrl(fileUrl, doc.name, doc.id);
+                addParseLog(`开始解析: ${file.name}`);
+            }
             addToLibrary({
                 id: `local_${doc.id}`,
                 docId: doc.id,
                 fileUrl,
                 name: doc.name,
+                domain_id: doc.domain_id ?? null,
                 addedAt: new Date().toISOString(),
                 source: 'local',
                 noteCount: 0,
             });
             accumulatedMarkdownRef.current = '';
-            const runId = bumpParseInflight();
-            setParseStatus('parsing');
-            addParseLog(`开始解析: ${file.name}`);
+            let sectionCount = 0;
             api.parsePDF(file, 'auto', (evt) => {
-                const st = useStore.getState();
-                if (st.parseInflightId !== runId || st.activeDocId !== doc.id) return;
-                if (evt.message) addParseLog(evt.message);
+                if (evt.message) {
+                    patchUploadTask(taskId, { appendLog: evt.message });
+                    if (useStore.getState().activeUploadTaskId === taskId) addParseLog(evt.message);
+                    if (String(evt.message).includes('解析超时')) {
+                        patchUploadTask(taskId, {
+                            status: 'error',
+                            error: evt.message,
+                            appendLog: '解析超时，建议切换 txt/ocr 或稍后重试',
+                        });
+                        if (useStore.getState().activeUploadTaskId === taskId) {
+                            setParseStatus('error');
+                            addParseLog('解析超时，建议切换 txt/ocr 或稍后重试');
+                        }
+                    }
+                }
                 if (evt.status === 'chunk') {
+                    sectionCount += 1;
                     const part = (evt.section_title ? '## ' + evt.section_title + '\n\n' : '') + (evt.markdown_chunk || '');
                     if (part) accumulatedMarkdownRef.current += (accumulatedMarkdownRef.current ? '\n\n' : '') + part;
-                    addParsedSection({
-                        title: evt.section_title || 'Untitled',
-                        summary: evt.section_summary || '',
-                        content: evt.markdown_chunk || '',
-                        imageRefs: evt.image_refs || [],
-                    });
+                    patchUploadTask(taskId, { parseProgress: Math.min(95, 10 + sectionCount * 6), appendLog: `已解析 ${sectionCount} 个分块` });
+                    if (useStore.getState().activeUploadTaskId === taskId && useStore.getState().activeDocId === doc.id) {
+                        addParsedSection({
+                            title: evt.section_title || 'Untitled',
+                            summary: evt.section_summary || '',
+                            content: evt.markdown_chunk || '',
+                            imageRefs: evt.image_refs || [],
+                        });
+                    }
                 }
-                if (evt.status === 'summary') {
+                if (evt.status === 'summary' && useStore.getState().activeUploadTaskId === taskId && useStore.getState().activeDocId === doc.id) {
                     updateParsedSectionSummary(evt.section_title || '', evt.section_summary || '');
                 }
                 if (evt.markdown) {
-                    setParsedMarkdown(evt.markdown, file.name);
+                    setDocParseCache(doc.id, { markdown: evt.markdown, docName: file.name });
+                    if (useStore.getState().activeUploadTaskId === taskId && useStore.getState().activeDocId === doc.id) {
+                        setParsedMarkdown(evt.markdown, file.name);
+                    }
                 }
                 if (evt.status === 'success') {
                     const fullMd = evt.markdown || accumulatedMarkdownRef.current || '';
+                    patchUploadTask(taskId, { status: 'indexing', parseProgress: 98, appendLog: '解析成功，正在建立索引...' });
                     if (fullMd) {
-                        setParsedMarkdown(fullMd, file.name);
+                        setDocParseCache(doc.id, { markdown: fullMd, docName: file.name });
+                        if (useStore.getState().activeUploadTaskId === taskId && useStore.getState().activeDocId === doc.id) {
+                            setParsedMarkdown(fullMd, file.name);
+                        }
                         api.indexDocument(`doc_${file.name}`, file.name, fullMd)
-                            .then(() => addParseLog('知识库已索引，可检索。'))
+                            .then(() => {
+                                patchUploadTask(taskId, { status: 'done', parseProgress: 100, appendLog: '知识库已索引，可检索。' });
+                                if (useStore.getState().activeUploadTaskId === taskId) {
+                                    setParseStatus('done');
+                                    addParseLog('解析完成。');
+                                }
+                            })
                             .catch((e) => {
-                                setNotification('知识库索引失败: ' + (e?.message || String(e)), 'error');
-                                addParseLog('知识库索引失败');
+                                patchUploadTask(taskId, { status: 'error', error: e?.message || String(e), appendLog: '知识库索引失败' });
+                                if (useStore.getState().activeUploadTaskId === taskId) {
+                                    setParseStatus('error');
+                                    setNotification('知识库索引失败: ' + (e?.message || String(e)), 'error');
+                                    addParseLog('知识库索引失败');
+                                }
                             });
                     }
-                    setParseStatus('done');
-                    addParseLog('解析完成。');
                 }
                 if (evt.status === 'error') {
-                    setParseStatus('error');
+                    patchUploadTask(taskId, { status: 'error', error: evt?.message || '解析失败', appendLog: '解析失败' });
+                    if (useStore.getState().activeUploadTaskId === taskId) setParseStatus('error');
                 }
-            }).catch((e) => {
-                const st = useStore.getState();
-                if (st.parseInflightId !== runId || st.activeDocId !== doc.id) return;
-                setParseStatus('error');
-                addParseLog(`解析失败: ${e instanceof Error ? e.message : String(e)}`);
+            }, { signal: parseAbort.signal }).catch((e) => {
+                const msg = e instanceof Error ? e.message : String(e);
+                patchUploadTask(taskId, { status: 'error', error: msg, appendLog: `解析失败: ${msg}` });
+                if (useStore.getState().activeUploadTaskId === taskId) {
+                    setParseStatus('error');
+                    addParseLog(`解析失败: ${msg}`);
+                }
+            }).finally(() => {
+                parseAbortRef.current.delete(taskId);
             });
-        }).catch(() => {});
-    }, [setNotes, resetParseUiState, setPdfFile, setPdfUrl, addToLibrary, setParseStatus, addParseLog, addParsedSection, updateParsedSectionSummary, setParsedMarkdown, setNotification, bumpParseInflight]);
+        }).catch((e) => {
+            uploadCancelRef.current.delete(taskId);
+            const msg = e instanceof Error ? e.message : String(e);
+            patchUploadTask(taskId, { status: 'error', error: msg, appendLog: `上传失败: ${msg}` });
+            if (useStore.getState().activeUploadTaskId === taskId) {
+                setParseStatus('error');
+                addParseLog(`上传失败: ${msg}`);
+            }
+        });
+    }, [setNotes, resetParseUiState, setPdfFile, setPdfUrl, addToLibrary, setParseStatus, addParseLog, addParsedSection, updateParsedSectionSummary, setParsedMarkdown, setNotification, bumpParseInflight, upsertUploadTask, patchUploadTask, setActiveUploadTask, setDocParseCache]);
 
     const onFileChange = (event) => {
         const file = event.target.files[0];
         if (file) applyFileAsUpload(file);
     };
+
+    const retryTask = useCallback((taskId) => {
+        const file = taskFileRef.current.get(taskId);
+        if (!file) {
+            setNotification('重试失败：找不到原始文件，请重新上传。', 'warn');
+            return;
+        }
+        applyFileAsUpload(file);
+    }, [setNotification, applyFileAsUpload]);
 
     const loadSharedDemo = useCallback(() => {
         setDemoLoading(true);
@@ -800,7 +981,7 @@ export const LeftColumn = () => {
             }
 
             const payload = {
-                id: crypto.randomUUID(),
+                id: `local_${crypto.randomUUID()}`,
                 type: 'idea',
                 content: selection.text,
                 page: currentPage,
@@ -813,7 +994,7 @@ export const LeftColumn = () => {
             };
             
             // 本地先加：快速反馈
-            addNote(payload);
+            createNoteWithSync(payload);
             setSelection(null);
             actionInFlightRef.current = false;
 
@@ -851,7 +1032,7 @@ export const LeftColumn = () => {
                     doc_id: activeDocId || '',
                 });
                 const hlNote = {
-                    id: crypto.randomUUID(),
+                    id: `local_${crypto.randomUUID()}`,
                     type: 'idea',
                     content: selection.text,
                     page: currentPage,
@@ -859,7 +1040,7 @@ export const LeftColumn = () => {
                     timestamp: new Date().toISOString(),
                     doc_id: activeDocId || '',
                 };
-                addNote(hlNote);
+                createNoteWithSync(hlNote);
             } catch (e) {
                 console.error('高亮操作失败:', e);
             }
@@ -872,8 +1053,8 @@ export const LeftColumn = () => {
             try {
                 const resp = await api.translateText(selection.text.substring(0, 2000));
                 setTranslationResult(resp.translation);
-                addNote({
-                    id: crypto.randomUUID(),
+                createNoteWithSync({
+                    id: `local_${crypto.randomUUID()}`,
                     type: 'idea',
                     content: selection.text,
                     translation: resp.translation,
@@ -890,8 +1071,8 @@ export const LeftColumn = () => {
         } else if (action === 'annotate') {
             const annotation = prompt('输入批注内容：');
             if (annotation) {
-                addNote({
-                    id: crypto.randomUUID(),
+                createNoteWithSync({
+                    id: `local_${crypto.randomUUID()}`,
                     type: 'idea',
                     content: `[批注] ${annotation}\n\n原文: ${selection.text.substring(0, 100)}...`,
                     page: currentPage,
@@ -1028,6 +1209,8 @@ export const LeftColumn = () => {
                                                     loadSharedDemo();
                                                 } else if (doc.source === 'local' && doc.docId) {
                                                     setPdfUrl(doc.fileUrl || api.getDocumentFileUrl(doc.docId), doc.name, doc.docId);
+                                                    const matched = Object.values(useStore.getState().uploadTasks || {}).find((t) => t?.docId === doc.docId);
+                                                    if (matched?.taskId) setActiveUploadTask(matched.taskId);
                                                 } else {
                                                     useStore.getState().setNotification("本地文件因浏览器安全限制无法自动恢复，请重新上传。", "warn");
                                                 }
@@ -1160,6 +1343,58 @@ export const LeftColumn = () => {
                             style={{ width: `${parsePercent}%` }}
                         />
                     </div>
+                </div>
+            )}
+
+            {uploadTaskList.length > 0 && (
+                <div className="px-4 py-2 bg-slate-50 border-b border-slate-100 shrink-0 space-y-2">
+                    <div className="flex items-center justify-between">
+                        <p className="text-[10px] text-slate-500">上传任务</p>
+                        <p className="text-[10px] text-slate-400">{uploadTaskList.length} 个</p>
+                    </div>
+                    {uploadTaskList.slice(0, 3).map((task) => {
+                        const status = task.status || 'idle';
+                        const pct = status === 'uploading'
+                            ? (task.uploadProgress || 0)
+                            : (status === 'done' ? 100 : (task.parseProgress || 0));
+                        const busy = status === 'uploading' || status === 'parsing' || status === 'indexing';
+                        return (
+                            <div key={task.taskId} className={clsx('rounded border p-2 bg-white', activeUploadTaskId === task.taskId ? 'border-slate-400' : 'border-slate-200')}>
+                                <div className="flex items-center justify-between gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setActiveUploadTask(task.taskId)}
+                                        className="text-[11px] text-left truncate text-slate-700 hover:text-slate-900"
+                                        title={task.fileName}
+                                    >
+                                        {task.fileName}
+                                    </button>
+                                    <span className="text-[10px] text-slate-500">{status}</span>
+                                </div>
+                                <div className="mt-1 h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+                                    <div className={clsx('h-full transition-all', status === 'error' ? 'bg-rose-400' : status === 'done' ? 'bg-emerald-500' : 'bg-slate-500')} style={{ width: `${Math.max(2, Math.min(100, pct))}%` }} />
+                                </div>
+                                <div className="mt-1 flex items-center justify-between">
+                                    <span className="text-[10px] text-slate-400 truncate">{(task.logs || []).slice(-1)[0] || ''}</span>
+                                    <div className="flex items-center gap-1">
+                                        {busy && (
+                                            <button type="button" onClick={() => cancelTask(task.taskId)} className="text-[10px] px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100">
+                                                取消
+                                            </button>
+                                        )}
+                                        {(status === 'error' || status === 'cancelled') && (
+                                            <button type="button" onClick={() => retryTask(task.taskId)} className="text-[10px] px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100">
+                                                重试
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                    {currentTask?.status === 'parsing' && uploadTaskList.some((t) => t.taskId !== currentTask.taskId && (t.status === 'uploading' || t.status === 'parsing' || t.status === 'indexing')) && (
+                        <p className="text-[10px] text-slate-500">当前文档解析中，其他任务在后台继续，不会被中断。</p>
+                    )}
                 </div>
             )}
 

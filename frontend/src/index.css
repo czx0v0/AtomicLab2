@@ -3,6 +3,15 @@
 @tailwind utilities;
 
 @layer components {
+  /* Write Tab：仅预览区 — 学术感标题（衬线 + 行高），勿用于全局 Layout */
+  .write-preview-area.prose h1,
+  .write-preview-area.prose h2,
+  .write-preview-area.prose h3 {
+    font-family: Georgia, 'Times New Roman', Times, serif;
+    font-weight: 700;
+    line-height: 1.38;
+  }
+
   .prose table {
     width: 100%;
     border-collapse: collapse;

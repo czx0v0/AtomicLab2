@@ -30,6 +30,9 @@ class ChatRequest(BaseModel):
     question: str
     history: Optional[List[dict]] = None
     top_k: int = 5
+    max_rounds: int = 2
+    # peer_review：审稿；writer：强制写作工具落编辑器（与 peer_review 互斥，由前端保证）。
+    mode: Optional[str] = None
 
 
 class AgentStep(BaseModel):
@@ -60,6 +63,31 @@ class FeedbackRequest(BaseModel):
 
 _FEEDBACK_LOG = Path("data/feedback_log.json")
 _FEEDBACK_LOCK = threading.Lock()
+
+_SYNTHESIS_SYSTEM_BASE = (
+    "你是高级学术 Copilot。"
+    "根据用户意图回答：细节问题严格引用；通用/指令问题自然表达。"
+    "用户消息中会给出 <document_chunks>、<atomic_notes>、<graph_relations> 等检索分区时，"
+    "须综合利用各分区信息作答，并优先依据 PDF 原文分块与图谱关系；不要忽略图谱区。"
+    "不要向用户暴露检索流程、卡片编号来源等底层实现。"
+)
+
+_PEER_REVIEW_ACTION_SUFFIX = (
+    "\n\n【审稿模式】在 Markdown 正文之后，必须另起一行输出且仅输出下列机器可读块（不要 Markdown 代码围栏）：\n"
+    '<action_plan>{"action":"replace","new_text":"..."}</action_plan>\n'
+    "其中 action 只能为 replace（整篇替换草稿）、insert（在光标处插入）、append（追加到文末）三者之一；"
+    "new_text 为建议写入左侧编辑器的完整 Markdown 字符串（JSON 中需正确转义引号与换行）。"
+)
+
+
+def _synthesis_system_prompt(peer_review: bool) -> str:
+    if peer_review:
+        return _SYNTHESIS_SYSTEM_BASE + _PEER_REVIEW_ACTION_SUFFIX
+    return _SYNTHESIS_SYSTEM_BASE
+
+
+def _peer_review_user_suffix() -> str:
+    return "\n\n请在给出审稿意见后，在末尾严格按系统要求输出 <action_plan> JSON 块。"
 
 
 def _sse_event(event: str, data: dict) -> str:
@@ -261,16 +289,36 @@ def _is_editor_action_intent(q: str) -> bool:
         r"插入正文",
         r"放到左侧",
         r"生成到编辑器",
+        r"起草",
+        r"撰写",
+        r"生成一段",
+        r"输出到",
+        r"落稿",
+        r"补一段",
+        r"写一版",
+        r"写",
+        r"\b[Ww]rite\b",
+        r"\b[Dd]raft\b",
+        r"\bgenerate\b",
+        r"\bcompose\b",
+        r"produce\s+a\s+paragraph",
     ]
     return any(re.search(p, q) for p in patterns)
 
 
-def _plan_editor_action(question: str) -> Optional[dict]:
+def _iter_editor_sse_chunks(text: str, chunk_size: int = 48) -> Generator[str, None, None]:
+    t = text or ""
+    for i in range(0, len(t), chunk_size):
+        yield t[i : i + chunk_size]
+
+
+def _plan_editor_action(question: str, force: bool = False) -> Optional[dict]:
     """
     使用 function-calling 生成编辑器动作。
     返回: {"function":"update_markdown_editor","action_type":"append|replace|insert","content":"..."}
+    force=True（写作模式）：跳过关键词意图检测，直接调用写作工具。
     """
-    if not _is_editor_action_intent(question):
+    if not force and not _is_editor_action_intent(question):
         return None
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -303,22 +351,22 @@ def _plan_editor_action(question: str) -> Optional[dict]:
                     },
                 }
             ]
+            sys_writing = (
+                "你是写作 Agent。"
+                "当用户表达“帮我写/润色/添加到正文”意图时，必须调用 update_markdown_editor，"
+                "禁止输出常规解释文本。"
+                "action_type 选择规则："
+                "1) 润色/改写已有草稿 -> replace；"
+                "2) 明确要求插入某处 -> insert；"
+                "3) 其它写作生成默认 -> append。"
+                "content 必须是可直接放入论文草稿的 Markdown。"
+            )
+            if force:
+                sys_writing += " 用户已开启「写作模式」，必须调用 update_markdown_editor 将结果写入编辑器。"
             resp = client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是写作 Agent。"
-                            "当用户表达“帮我写/润色/添加到正文”意图时，必须调用 update_markdown_editor，"
-                            "禁止输出常规解释文本。"
-                            "action_type 选择规则："
-                            "1) 润色/改写已有草稿 -> replace；"
-                            "2) 明确要求插入某处 -> insert；"
-                            "3) 其它写作生成默认 -> append。"
-                            "content 必须是可直接放入论文草稿的 Markdown。"
-                        ),
-                    },
+                    {"role": "system", "content": sys_writing},
                     {"role": "user", "content": question},
                 ],
                 tools=tools,
@@ -406,6 +454,73 @@ def _stream_deepseek(system_prompt: str, user_prompt: str, max_tokens: int = 120
             yield delta.content
 
 
+def _get_chat_llm_config() -> dict:
+    """
+    仅用于 /api/chat 主回答链路。
+    默认 deepseek；当 CHAT_LLM_PROVIDER=aliyun 时切换到 DashScope OpenAI 兼容接口。
+    """
+    provider = (os.getenv("CHAT_LLM_PROVIDER", "deepseek") or "deepseek").strip().lower()
+    if provider == "aliyun":
+        return {
+            "provider": "aliyun",
+            "api_key": os.getenv("ALIYUN_API_KEY", ""),
+            "base_url": os.getenv(
+                "ALIYUN_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            ),
+            "model": os.getenv("ALIYUN_MODEL", "qwen3.5-flash"),
+        }
+    return {
+        "provider": "deepseek",
+        "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
+        "base_url": os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
+        "model": os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+    }
+
+
+def _call_chat_llm(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> str:
+    cfg = _get_chat_llm_config()
+    api_key = cfg.get("api_key", "")
+    if not api_key:
+        return ""
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, base_url=cfg.get("base_url"))
+    resp = client.chat.completions.create(
+        model=cfg.get("model"),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=max_tokens,
+        temperature=0.2,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+def _stream_chat_llm(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> Generator[str, None, None]:
+    cfg = _get_chat_llm_config()
+    api_key = cfg.get("api_key", "")
+    if not api_key:
+        return
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, base_url=cfg.get("base_url"))
+    stream = client.chat.completions.create(
+        model=cfg.get("model"),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=max_tokens,
+        temperature=0.2,
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        if delta.content:
+            yield delta.content
+
+
 def _search_arxiv_external(query: str, limit: int = 3) -> List[dict]:
     import httpx
 
@@ -458,10 +573,28 @@ def _tool_search_local(query: str, top_k: int, session_id: Optional[str]) -> dic
     )
 
 
+def _global_search_for_chat(
+    query: str,
+    top_k: int,
+    session_id: Optional[str],
+    max_rounds: int = 2,
+) -> dict:
+    """与 POST /search/global 一致：全库混合检索，供 Chat 基线合并。"""
+    eff_k = max(8, top_k, 12)
+    return _search_pipeline(
+        query=query,
+        top_k=eff_k,
+        doc_id=None,
+        max_rounds=max_rounds,
+        session_id=session_id,
+    )
+
+
 def _route_with_tools(
     question: str,
     top_k: int,
     session_id: Optional[str],
+    max_rounds: int = 2,
 ) -> Tuple[List[dict], List[str], str]:
     """
     返回：(sources, tool_logs, local_context)。
@@ -478,7 +611,7 @@ def _route_with_tools(
 
     # 无 API key 时，降级路由：细节问题优先本地；通用问题不强制外部检索
     if not api_key:
-        local = _tool_search_local(question, top_k=top_k, session_id=session_id)
+        local = _global_search_for_chat(question, top_k, session_id, max_rounds)
         local_hits = local.get("results", [])
         local_context = local.get("context", "")
         if local_hits:
@@ -498,7 +631,7 @@ def _route_with_tools(
             "type": "function",
             "function": {
                 "name": "search_local_knowledge",
-                "description": "检索本地知识库（向量+BM25+Graph 1-hop）",
+                "description": "检索本地知识库（向量+BM25+Graph 1-hop/2-hop）",
                 "parameters": {
                     "type": "object",
                     "properties": {"keywords": {"type": "string"}},
@@ -597,7 +730,7 @@ def _route_with_tools(
 
         # 细节问题且未调用 tool，则强制本地检索
         if not tool_calls and detail_mode:
-            local = _tool_search_local(question, top_k=top_k, session_id=session_id)
+            local = _global_search_for_chat(question, top_k, session_id, max_rounds)
             local_hits = local.get("results", [])
             local_context = local.get("context", "")
             sources.extend(local_hits[: max(top_k, 6)])
@@ -623,7 +756,7 @@ def _route_with_tools(
             keywords = (args.get("keywords") or question).strip()
 
             if name == "search_local_knowledge":
-                local = _tool_search_local(keywords, top_k=top_k, session_id=session_id)
+                local = _global_search_for_chat(keywords, top_k, session_id, max_rounds)
                 local_hits = local.get("results", [])
                 local_context = local.get("context", local_context)
                 sources.extend(local_hits[: max(top_k, 6)])
@@ -704,16 +837,45 @@ def _route_with_tools(
             sources.extend(arxiv_hits)
             tool_logs.append(f"search_arxiv('{question[:40]}...') -> {len(arxiv_hits)} [fallback]")
 
-    # 去重
+    # 与 /search/global 对齐：始终再合并一次全库混合检索，避免 Router 漏调工具时缺少 PDF 分块/笔记/图谱
+    if api_key:
+        try:
+            bl = _global_search_for_chat(question, top_k, session_id, max_rounds)
+            bl_hits = bl.get("results") or []
+            for it in bl_hits:
+                sources.append(it)
+            bl_ctx = (bl.get("context") or "").strip()
+            if bl_ctx:
+                local_context = bl_ctx
+            tool_logs.append(f"baseline_global_merge -> {len(bl_hits)} [pipeline]")
+        except Exception as e:
+            logger.warning("baseline global merge failed: %s", e)
+
+    # 去重（无 note_id 的条目用稳定占位键保留）
     dedup = {}
-    for s in sources:
+    for i, s in enumerate(sources):
         sid = s.get("note_id")
         if not sid:
-            continue
+            sid = f"__anon_{i}_{s.get('source', 'x')}"
         if sid not in dedup or s.get("score", 0) > dedup[sid].get("score", 0):
             dedup[sid] = s
     merged = sorted(dedup.values(), key=lambda x: x.get("score", 0), reverse=True)
-    return merged[:10], tool_logs, local_context
+    out_cap = min(16, max(10, top_k))
+    return merged[:out_cap], tool_logs, local_context
+
+
+def _bucket_for_evidence(source: Optional[str]) -> str:
+    """将 search 通道映射到 XML 分区名。"""
+    src = (source or "unknown").strip()
+    if src in ("doc_vector", "doc_bm25"):
+        return "document_chunks"
+    if src in ("note_vector", "note_bm25", "screenshot_ocr"):
+        return "atomic_notes"
+    if src in ("graph_1hop", "graph_2hop"):
+        return "graph_relations"
+    if src == "arxiv":
+        return "external_papers"
+    return "other"
 
 
 def _build_synthesis_prompt(
@@ -726,30 +888,67 @@ def _build_synthesis_prompt(
             else ""
         )
         return f"用户问题：{question}\n\n请直接给出清晰、自然的人类表达答案。{tail}"
-    blocks = []
-    for i, s in enumerate(sources[:10], start=1):
-        src = s.get("source", "unknown")
-        concept = s.get("concept", "")
-        summary = s.get("summary", "")
-        graph_mark = s.get("graph_ref", "")
-        blocks.append(f"[{i}] src={src} concept={concept} {graph_mark}\n{summary}")
-    # 只要有检索证据，就要求用 [1][2] 与证据列表对齐，便于前端点击跳转
+
+    order = (
+        "document_chunks",
+        "atomic_notes",
+        "graph_relations",
+        "external_papers",
+        "other",
+    )
+    buckets: Dict[str, List[dict]] = {k: [] for k in order}
+    for s in sources[:16]:
+        b = _bucket_for_evidence(s.get("source"))
+        if b in buckets:
+            buckets[b].append(s)
+        else:
+            buckets["other"].append(s)
+
     if detail_mode:
         requirements = (
-            "回答要求：研究/技术细节问题，严格基于证据作答；凡引用或复述某条证据，必须在对应句末使用半角角标 [1] [2]（与上方证据编号一致）；可用 [G1] 表示图谱关系。\n\n"
+            "回答要求：研究/技术细节问题，严格基于证据作答；凡引用或复述某条证据，必须在对应句末使用半角角标 [1] [2]（与下方分区内全局编号一致）；"
+            "图谱分区内可用 [G1] 等与 graph_ref 对齐。\n\n"
         )
     else:
         requirements = (
-            "回答要求：已提供检索证据时请优先采用证据内容；凡直接来自某条证据的句子，在句末标注半角 [1][2]（编号与证据列表一致）。"
+            "回答要求：已提供检索证据时请优先采用证据内容；凡直接来自某条证据的句子，在句末标注半角 [1][2]（编号与下方分区内列表一致）。"
             "可补充通用知识，无证据支撑处请说明。不要使用全角［］括号作引用编号。\n\n"
         )
-    return (
-        f"用户问题：{question}\n\n"
-        + requirements
-        + "检索证据：\n"
-        + "\n\n".join(blocks)
-        + ("\n\n融合上下文：\n" + local_context[:2000] if local_context else "")
-    )
+
+    xml_parts: List[str] = []
+    n = 1
+    tag_names = {
+        "document_chunks": "document_chunks",
+        "atomic_notes": "atomic_notes",
+        "graph_relations": "graph_relations",
+        "external_papers": "external_papers",
+        "other": "other_evidence",
+    }
+    for key in order:
+        items = buckets[key]
+        if not items:
+            continue
+        lines: List[str] = []
+        for s in items:
+            src = s.get("source", "unknown")
+            concept = s.get("concept", "")
+            summary = s.get("summary", "")
+            graph_mark = s.get("graph_ref", "")
+            doc_t = s.get("doc_title") or ""
+            lines.append(
+                f"[{n}] src={src} doc={doc_t} concept={concept} {graph_mark}\n{summary}"
+            )
+            n += 1
+        tag = tag_names[key]
+        xml_parts.append(f"<{tag}>\n" + "\n\n".join(lines) + f"\n</{tag}>")
+
+    body = "\n\n".join(xml_parts)
+    # local_context 与分区内容同源时不再重复拼接长文本
+    extra = ""
+    if local_context and len(local_context) > 400 and not xml_parts:
+        extra = "\n\n<fusion_context>\n" + local_context[:2000] + "\n</fusion_context>"
+
+    return f"用户问题：{question}\n\n{requirements}检索证据（分区 XML）：\n\n{body}{extra}"
 
 
 def _general_fallback_answer(question: str) -> str:
@@ -798,8 +997,16 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
     t0 = time.perf_counter()
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
     steps: List[dict] = []
+    mode_raw = (body.mode or "").strip().lower()
+    peer_review = mode_raw == "peer_review"
+    writer_mode = mode_raw == "writer"
 
-    editor_action = _plan_editor_action(body.question)
+    if peer_review:
+        editor_action = None
+    elif writer_mode:
+        editor_action = _plan_editor_action(body.question, force=True)
+    else:
+        editor_action = _plan_editor_action(body.question, force=False)
     if editor_action:
         answer = "✅ 已为您将内容生成至左侧编辑器。"
         steps.append({"agent": "writer", "content": "写作工具已触发。"})
@@ -818,7 +1025,10 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         }
 
     sources, tool_logs, local_context = _route_with_tools(
-        body.question, top_k=body.top_k, session_id=session_id
+        body.question,
+        top_k=body.top_k,
+        session_id=session_id,
+        max_rounds=body.max_rounds,
     )
     detail_mode = _is_research_detail_question(body.question)
     router_txt = "已完成上下文准备。"
@@ -842,9 +1052,17 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
 
     # 无证据时：仍给自然答案，不向用户暴露底层检索流程
     if not sources:
-        answer = _general_fallback_answer(body.question)
-        if detail_mode and "本地文献库暂无该特定细节" not in answer:
-            answer = answer.rstrip() + "\n\n（注：本地文献库暂无该特定细节，此为通用学术解释）"
+        api_key_ns = _get_chat_llm_config().get("api_key", "")
+        if peer_review and api_key_ns:
+            answer = _call_chat_llm(
+                system_prompt=_synthesis_system_prompt(True),
+                user_prompt=body.question + _peer_review_user_suffix(),
+                max_tokens=1400,
+            )
+        else:
+            answer = _general_fallback_answer(body.question)
+            if detail_mode and "本地文献库暂无该特定细节" not in answer:
+                answer = answer.rstrip() + "\n\n（注：本地文献库暂无该特定细节，此为通用学术解释）"
         steps.append({"agent": "synthesizer", "content": answer})
         router_txt_full = router_txt
         agent_traces = _build_agent_traces(
@@ -864,21 +1082,20 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         }
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = _get_chat_llm_config().get("api_key", "")
     if api_key:
-        answer = _call_deepseek(
-            system_prompt=(
-                "你是高级学术 Copilot。"
-                "根据用户意图回答：细节问题严格引用；通用/指令问题自然表达。"
-                "不要向用户暴露检索流程、卡片编号来源等底层实现。"
-            ),
-            user_prompt=_build_synthesis_prompt(
-                body.question, sources, local_context, detail_mode=detail_mode
-            ),
+        user_prompt = _build_synthesis_prompt(
+            body.question, sources, local_context, detail_mode=detail_mode
+        )
+        if peer_review:
+            user_prompt = user_prompt + _peer_review_user_suffix()
+        answer = _call_chat_llm(
+            system_prompt=_synthesis_system_prompt(peer_review),
+            user_prompt=user_prompt,
             max_tokens=1400,
         )
     else:
-        answer = "未配置 DEEPSEEK_API_KEY。以下为检索结果摘要：\n\n" + "\n".join(
+        answer = "未配置聊天模型 API KEY（DEEPSEEK_API_KEY 或 ALIYUN_API_KEY）。以下为检索结果摘要：\n\n" + "\n".join(
             f"- [{i+1}] {s.get('concept','')} {s.get('summary','')[:120]}" for i, s in enumerate(sources[:6])
         )
 
@@ -901,10 +1118,32 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
     }
 
 
-def _chat_stream_generator(question: str, top_k: int, session_id: Optional[str]) -> Generator[str, None, None]:
+def _chat_stream_generator(
+    question: str,
+    top_k: int,
+    session_id: Optional[str],
+    mode: Optional[str] = None,
+    max_rounds: int = 2,
+) -> Generator[str, None, None]:
     t0 = time.perf_counter()
-    editor_action = _plan_editor_action(question)
+    mode_raw = (mode or "").strip().lower()
+    peer_review = mode_raw == "peer_review"
+    writer_mode = mode_raw == "writer"
+    if peer_review:
+        editor_action = None
+    elif writer_mode:
+        editor_action = _plan_editor_action(question, force=True)
+    else:
+        editor_action = _plan_editor_action(question, force=False)
     if editor_action:
+        content_preview = (editor_action.get("content") or "").strip()
+        if writer_mode and content_preview:
+            yield _sse_event(
+                "step",
+                {"agent": "writer", "content": "写作内容流式下发…", "streaming": True},
+            )
+            for chunk in _iter_editor_sse_chunks(content_preview):
+                yield _sse_event("editor_delta", {"token": chunk})
         yield _sse_event("action", editor_action)
         traces = [
             {"step": "Router", "status": "success", "detail": "识别为写作/编辑意图，调用写作工具。"},
@@ -924,7 +1163,7 @@ def _chat_stream_generator(question: str, top_k: int, session_id: Optional[str])
 
     yield _sse_event("step", {"agent": "router", "content": "正在理解你的意图并准备上下文..."})
     sources, tool_logs, local_context = _route_with_tools(
-        question, top_k=top_k, session_id=session_id
+        question, top_k=top_k, session_id=session_id, max_rounds=max_rounds
     )
     detail_mode = _is_research_detail_question(question)
     router_detail = "上下文已准备完成。"
@@ -940,6 +1179,34 @@ def _chat_stream_generator(question: str, top_k: int, session_id: Optional[str])
     )
 
     if not sources:
+        api_key_ns = _get_chat_llm_config().get("api_key", "")
+        if peer_review and api_key_ns:
+            yield _sse_event("step", {"agent": "synthesizer", "content": "", "streaming": True})
+            up_ns = question + _peer_review_user_suffix()
+            for tk in _stream_chat_llm(
+                system_prompt=_synthesis_system_prompt(True),
+                user_prompt=up_ns,
+                max_tokens=1400,
+            ):
+                yield _sse_event("delta", {"token": tk})
+            traces = _build_agent_traces(
+                detail_mode,
+                tool_logs,
+                [],
+                router_detail,
+                has_evidence=False,
+                synthesizer_note="无检索证据，审稿模式流式生成完成。",
+            )
+            yield _sse_event(
+                "done",
+                {
+                    "sources": [],
+                    "agent_traces": traces,
+                    "retrieved_cards": [],
+                    "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                },
+            )
+            return
         msg = _general_fallback_answer(question)
         if detail_mode and "本地文献库暂无该特定细节" not in msg:
             msg = msg.rstrip() + "\n\n（注：本地文献库暂无该特定细节，此为通用学术解释）"
@@ -963,9 +1230,9 @@ def _chat_stream_generator(question: str, top_k: int, session_id: Optional[str])
         )
         return
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = _get_chat_llm_config().get("api_key", "")
     if not api_key:
-        fallback = "未配置 DEEPSEEK_API_KEY。以下为检索结果摘要：\n\n" + "\n".join(
+        fallback = "未配置聊天模型 API KEY（DEEPSEEK_API_KEY 或 ALIYUN_API_KEY）。以下为检索结果摘要：\n\n" + "\n".join(
             f"- [{i+1}] {s.get('concept','')} {s.get('summary','')[:120]}" for i, s in enumerate(sources[:6])
         )
         yield _sse_event("step", {"agent": "synthesizer", "content": fallback})
@@ -1000,15 +1267,14 @@ def _chat_stream_generator(question: str, top_k: int, session_id: Optional[str])
     )
 
     yield _sse_event("step", {"agent": "synthesizer", "content": "", "streaming": True})
-    for tk in _stream_deepseek(
-        system_prompt=(
-            "你是高级学术 Copilot。"
-            "根据用户意图回答：细节问题严格引用；通用/指令问题自然表达。"
-            "不要向用户暴露检索流程、卡片编号来源等底层实现。"
-        ),
-        user_prompt=_build_synthesis_prompt(
-            question, sources, local_context, detail_mode=detail_mode
-        ),
+    up = _build_synthesis_prompt(
+        question, sources, local_context, detail_mode=detail_mode
+    )
+    if peer_review:
+        up = up + _peer_review_user_suffix()
+    for tk in _stream_chat_llm(
+        system_prompt=_synthesis_system_prompt(peer_review),
+        user_prompt=up,
         max_tokens=1400,
     ):
         yield _sse_event("delta", {"token": tk})
@@ -1037,7 +1303,13 @@ def chat_stream(body: ChatRequest, x_session_id: str = Header(default="")):
         raise HTTPException(status_code=400, detail="问题不能为空")
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
     return StreamingResponse(
-        _chat_stream_generator(body.question, top_k=body.top_k, session_id=session_id),
+        _chat_stream_generator(
+            body.question,
+            top_k=body.top_k,
+            session_id=session_id,
+            mode=body.mode,
+            max_rounds=body.max_rounds,
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
