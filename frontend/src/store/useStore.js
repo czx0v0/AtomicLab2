@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import * as writingSnapshots from '../lib/writingSnapshots';
 
 // 生成或恢复会话 ID
 function getOrCreateSessionId() {
@@ -13,6 +14,31 @@ function getOrCreateSessionId() {
 
 export const SESSION_ID = getOrCreateSessionId();
 const MARKDOWN_CACHE_KEY = 'atomiclab_markdown_cache';
+/** 每课题写作草稿（localStorage，与 projects 的 id 对应） */
+const DRAFT_KEY_PREFIX = 'atomiclab_draft_';
+function draftStorageKey(projectId) {
+  return `${DRAFT_KEY_PREFIX}${projectId}`;
+}
+function readDraftFromStorage(projectId) {
+  if (!projectId) return '';
+  try {
+    return localStorage.getItem(draftStorageKey(projectId)) || '';
+  } catch {
+    return '';
+  }
+}
+function writeDraftToStorage(projectId, md) {
+  if (!projectId) return;
+  try {
+    localStorage.setItem(draftStorageKey(projectId), typeof md === 'string' ? md : '');
+  } catch {}
+}
+function removeDraftFromStorage(projectId) {
+  if (!projectId) return;
+  try {
+    localStorage.removeItem(draftStorageKey(projectId));
+  } catch {}
+}
 
 /** 刷新后恢复当前文献 URL，便于笔记 bbox 重新裁图（File 上传仍无法跨刷新恢复） */
 const PDF_URL_KEY = 'atomiclab_pdf_url';
@@ -67,24 +93,6 @@ export const PROJECT_REMINDER_SESSION_KEY = 'atomiclab_project_deadline_reminder
 /** localStorage：持久化课题标题、目标类型、截止日期（用户可改，非写死会议名） */
 export const PROJECT_LOCAL_STORAGE_KEY = 'atomiclab_projects_v1';
 
-function loadPersistedProjectsState() {
-  try {
-    const raw = localStorage.getItem(PROJECT_LOCAL_STORAGE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (!data || !Array.isArray(data.projects) || data.projects.length === 0) return null;
-    const id = typeof data.activeProjectId === 'string' ? data.activeProjectId : data.projects[0]?.id;
-    const projects = data.projects.filter(
-      (p) => p && typeof p.id === 'string' && typeof p.title === 'string' && typeof p.target_journal === 'string' && p.deadline && p.status
-    );
-    if (projects.length === 0) return null;
-    const activeProjectId = projects.some((p) => p.id === id) ? id : projects[0].id;
-    return { projects, activeProjectId };
-  } catch {
-    return null;
-  }
-}
-
 function persistProjectsState(projects, activeProjectId) {
   try {
     localStorage.setItem(PROJECT_LOCAL_STORAGE_KEY, JSON.stringify({ projects, activeProjectId }));
@@ -133,7 +141,54 @@ export const MOCK_PROJECT = {
   target_journal: '毕业论文',
   deadline: makeDeadlineIsoDaysFromNow(5),
   status: 'Drafting',
+  researchGoal: '',
+  plannerTodos: [],
+  milestones: [],
+  activityLog: [],
 };
+
+/** @param {any} raw */
+function normalizeProject(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const status = PROJECT_STATUSES.includes(raw.status) ? raw.status : 'Drafting';
+  return {
+    id: String(raw.id),
+    title: typeof raw.title === 'string' ? raw.title : '我的课题',
+    target_journal: typeof raw.target_journal === 'string' ? raw.target_journal : '毕业论文',
+    deadline: raw.deadline || makeDeadlineIsoDaysFromNow(5),
+    status,
+    researchGoal: typeof raw.researchGoal === 'string' ? raw.researchGoal : '',
+    plannerTodos: Array.isArray(raw.plannerTodos) ? raw.plannerTodos : [],
+    milestones: Array.isArray(raw.milestones) ? raw.milestones : [],
+    activityLog: Array.isArray(raw.activityLog) ? raw.activityLog : [],
+  };
+}
+
+function loadPersistedProjectsState() {
+  try {
+    const raw = localStorage.getItem(PROJECT_LOCAL_STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.projects) || data.projects.length === 0) return null;
+    const id = typeof data.activeProjectId === 'string' ? data.activeProjectId : data.projects[0]?.id;
+    const projects = data.projects
+      .map((p) => normalizeProject(p))
+      .filter(
+        (p) =>
+          p &&
+          typeof p.id === 'string' &&
+          typeof p.title === 'string' &&
+          typeof p.target_journal === 'string' &&
+          p.deadline &&
+          p.status
+      );
+    if (projects.length === 0) return null;
+    const activeProjectId = projects.some((p) => p.id === id) ? id : projects[0].id;
+    return { projects, activeProjectId };
+  } catch {
+    return null;
+  }
+}
 
 function buildProjectDeadlineReminder(project) {
   const days = daysUntilDeadline(project.deadline);
@@ -144,7 +199,28 @@ function buildProjectDeadlineReminder(project) {
 }
 
 const persistedProjectState = loadPersistedProjectsState();
-const defaultProjectsSeed = () => [{ ...MOCK_PROJECT, deadline: makeDeadlineIsoDaysFromNow(5) }];
+const defaultProjectsSeed = () => [
+  normalizeProject({ ...MOCK_PROJECT, deadline: makeDeadlineIsoDaysFromNow(5) }) || { ...MOCK_PROJECT, deadline: makeDeadlineIsoDaysFromNow(5) },
+];
+
+function bootstrapMarkdownContent(activeProjectId) {
+  const fromDraft = readDraftFromStorage(activeProjectId);
+  if (fromDraft.trim()) return fromDraft;
+  try {
+    const legacy = sessionStorage.getItem(MARKDOWN_CACHE_KEY);
+    if (legacy && legacy.trim()) {
+      writeDraftToStorage(activeProjectId, legacy);
+      return legacy;
+    }
+  } catch {}
+  return '# 研究笔记\n\n在此开始写作...\n\n## 研究问题\n\n';
+}
+
+const _bootActiveId = persistedProjectState?.activeProjectId ?? MOCK_PROJECT.id;
+const _initialMarkdown = bootstrapMarkdownContent(_bootActiveId);
+try {
+  sessionStorage.setItem(MARKDOWN_CACHE_KEY, _initialMarkdown);
+} catch {}
 
 function getInitialMarkdown() {
   try {
@@ -162,9 +238,6 @@ export const useStore = create((set, get) => ({
       viewMode: 'read', // 'read' | 'organize' | 'write'（ArXiv/对话在 Organize 子视图）
       setViewMode: (mode) =>
         set((s) => {
-          // #region agent log
-          fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'useStore.js:setViewMode',message:'view mode transition',data:{from:s.viewMode,to:mode,markdownLen:(s.markdownContent||'').length},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
           const patch = { viewMode: mode };
           // 进入写作页前：保证 markdown 为字符串，避免 RightColumn 对非 string 调用 slice 崩溃
           if (mode === 'write' && typeof s.markdownContent !== 'string') {
@@ -172,7 +245,7 @@ export const useStore = create((set, get) => ({
           }
           return patch;
         }),
-      writeRefTab: 'notes', // write 右侧固定栏 tab: notes | atomic | graph
+      writeRefTab: 'notes', // write 右侧固定栏 tab: notes | atomic | pdf
       setWriteRefTab: (tab) => set({ writeRefTab: tab }),
       mobileReferenceOpen: false, // 移动端写作参考资料半屏抽屉
       setMobileReferenceOpen: (v) => set({ mobileReferenceOpen: v }),
@@ -330,17 +403,49 @@ export const useStore = create((set, get) => ({
       setActiveReference: (ref) =>
         set({ activeReference: ref, currentPage: ref?.page ?? get().currentPage }),
 
-      // ── 编辑器状态（会话态） ────────────────────────────────────────────────
-      markdownContent: getInitialMarkdown(),
+      // ── 编辑器状态（会话态；按 activeProjectId 分文件持久化到 localStorage） ─────
+      markdownContent: _initialMarkdown,
       setMarkdownContent: (content) =>
         set((s) => {
           const next = typeof content === 'string' ? content : content == null ? '' : String(content);
-          try { sessionStorage.setItem(MARKDOWN_CACHE_KEY, next); } catch {}
-          // #region agent log
-          fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'useStore.js:setMarkdownContent',message:'markdown content mutation',data:{prevLen:(s.markdownContent||'').length,nextLen:next.length,viewMode:s.viewMode},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
+          try {
+            sessionStorage.setItem(MARKDOWN_CACHE_KEY, next);
+          } catch {}
+          writeDraftToStorage(s.activeProjectId, next);
           return { markdownContent: next };
         }),
+
+      /** 本地写作快照列表刷新计数（RightColumn 订阅以重读 localStorage） */
+      writingSnapshotTick: 0,
+      saveWritingSnapshot: (label) => {
+        const s = get();
+        const res = writingSnapshots.pushSnapshot(s.activeProjectId, s.markdownContent, label);
+        if (res.ok) {
+          set({ writingSnapshotTick: (s.writingSnapshotTick || 0) + 1 });
+          get().setNotification?.('已保存本地快照（仅本机浏览器）', 'info');
+        } else {
+          get().setNotification?.(res.error || '保存快照失败', 'warn');
+        }
+        return res;
+      },
+      restoreWritingSnapshot: (id) => {
+        const s = get();
+        const snap = writingSnapshots.getSnapshotById(s.activeProjectId, id);
+        if (!snap) {
+          get().setNotification?.('未找到该快照', 'warn');
+          return false;
+        }
+        get().setMarkdownContent(snap.content);
+        get().setNotification?.('已恢复快照为当前正文', 'info');
+        return true;
+      },
+      deleteWritingSnapshot: (id) => {
+        const s = get();
+        writingSnapshots.deleteSnapshot(s.activeProjectId, id);
+        set({ writingSnapshotTick: (s.writingSnapshotTick || 0) + 1 });
+        get().setNotification?.('已删除快照', 'info');
+      },
+
       citations: [],
       // 参考文献列表（写作区引用）[{ id, key, title, authors, year, doi, url, journal, source }]
       references: [],
@@ -458,13 +563,86 @@ export const useStore = create((set, get) => ({
         persistProjectsState(s.projects, s.activeProjectId);
       },
       setActiveProjectId: (id) => {
-        set({ activeProjectId: id });
         const s = get();
-        persistProjectsState(s.projects, s.activeProjectId);
+        if (id === s.activeProjectId) return;
+        if (!s.projects.some((p) => p.id === id)) return;
+        const prevId = s.activeProjectId;
+        const md = typeof s.markdownContent === 'string' ? s.markdownContent : '';
+        writeDraftToStorage(prevId, md);
+        try {
+          sessionStorage.setItem(MARKDOWN_CACHE_KEY, md);
+        } catch {}
+        let nextMd = readDraftFromStorage(id);
+        if (!nextMd.trim()) {
+          nextMd = '# 研究笔记\n\n在此开始写作...\n\n## 研究问题\n\n';
+        }
+        try {
+          sessionStorage.setItem(MARKDOWN_CACHE_KEY, nextMd);
+        } catch {}
+        set({ activeProjectId: id, markdownContent: nextMd });
+        persistProjectsState(get().projects, id);
+      },
+      addProject: (partial = {}) => {
+        const id = crypto.randomUUID();
+        const base = {
+          id,
+          title: (partial.title && String(partial.title).trim()) || '新课题',
+          target_journal: partial.target_journal || '毕业论文',
+          deadline: partial.deadline || makeDeadlineIsoDaysFromNow(14),
+          status: PROJECT_STATUSES.includes(partial.status) ? partial.status : 'Plan',
+          researchGoal: typeof partial.researchGoal === 'string' ? partial.researchGoal : '',
+          plannerTodos: [],
+          milestones: [],
+          activityLog: [],
+        };
+        const p = normalizeProject(base);
+        if (!p) return id;
+        set((st) => {
+          const projects = [...st.projects, p];
+          persistProjectsState(projects, st.activeProjectId);
+          return { projects };
+        });
+        return id;
+      },
+      removeProject: (projectId) => {
+        set((st) => {
+          if (st.projects.length <= 1) return {};
+          const projects = st.projects.filter((p) => p.id !== projectId);
+          removeDraftFromStorage(projectId);
+          writingSnapshots.removeAllSnapshotsForProject(projectId);
+          let activeProjectId = st.activeProjectId;
+          let markdownContent = st.markdownContent;
+          if (activeProjectId === projectId) {
+            activeProjectId = projects[0].id;
+            let nm = readDraftFromStorage(activeProjectId);
+            if (!nm.trim()) {
+              nm = '# 研究笔记\n\n在此开始写作...\n\n## 研究问题\n\n';
+            }
+            markdownContent = nm;
+            try {
+              sessionStorage.setItem(MARKDOWN_CACHE_KEY, nm);
+            } catch {}
+          }
+          persistProjectsState(projects, activeProjectId);
+          return { projects, activeProjectId, markdownContent };
+        });
       },
       updateProject: (id, patch) =>
         set((s) => {
           const projects = s.projects.map((p) => (p.id === id ? { ...p, ...patch } : p));
+          persistProjectsState(projects, s.activeProjectId);
+          return { projects };
+        }),
+
+      /** 追加课题活动流（最多保留 50 条） */
+      appendProjectActivity: (projectId, entry) =>
+        set((s) => {
+          const projects = s.projects.map((p) => {
+            if (p.id !== projectId) return p;
+            const log = Array.isArray(p.activityLog) ? p.activityLog : [];
+            const next = [...log, { at: new Date().toISOString(), ...entry }].slice(-50);
+            return { ...p, activityLog: next };
+          });
           persistProjectsState(projects, s.activeProjectId);
           return { projects };
         }),
@@ -523,6 +701,9 @@ export const useStore = create((set, get) => ({
       clearMessages: () => set({ messages: [] }),
       isAgentThinking: false,
       setAgentThinking: (v) => set({ isAgentThinking: v }),
+      /** 聊天 SSE 未结束（含路由/检索/流式合成），供顶栏 Agent HUD 与去重「加载中」指示 */
+      agentStreamActive: false,
+      setAgentStreamActive: (v) => set({ agentStreamActive: !!v }),
 
       // ── ArXiv 相关 ──────────────────────────────────────────────────────────
       arxivResults: [],
@@ -731,9 +912,6 @@ export const useStore = create((set, get) => ({
             sessionStorage.removeItem(PROJECT_REMINDER_SESSION_KEY);
           } catch {}
           clearPersistedPdfState();
-          // #region agent log
-          fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'useStore.js:startOver',message:'startOver called',data:{viewMode:s.viewMode,markdownLen:(s.markdownContent||'').length,activeDocId:s.activeDocId||''},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
           return {
           pdfFile: null,
           pdfUrl: null,
@@ -772,6 +950,8 @@ export const useStore = create((set, get) => ({
           pendingOrganizeTab: null,
           domains: [],
           activeDomainId: null,
+          isAgentThinking: false,
+          agentStreamActive: false,
           };
         }),
 

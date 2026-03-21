@@ -307,6 +307,18 @@ export const secretaryImport = (itemId) =>
   });
 
 // ─── LaTeX 导出（ZIP：main.tex + references.bib）───────────────────────────────
+/** 生成研究待办（课题规划） */
+export const planResearchTodos = (body) =>
+  json('/projects/plan_todos', {
+    method: 'POST',
+    body: JSON.stringify({
+      title: body.title ?? '',
+      target_journal: body.target_journal ?? '',
+      goal: body.goal ?? '',
+      status: body.status ?? '',
+    }),
+  });
+
 export async function exportLatexZip(markdown) {
   const res = await fetchWithTimeout(
     `${BASE_URL}/export/latex_zip`,
@@ -353,7 +365,15 @@ export const chat = (question, history = [], topK = 5, opts = {}) =>
  * @returns {Promise<void>}
  */
 export async function chatStream(question, onEvent, opts = {}) {
-  const { history = [], topK = 5, mode, document_id, note_ids } = opts;
+  const {
+    history = [],
+    topK = 5,
+    mode,
+    document_id,
+    note_ids,
+    project_context,
+    user_state,
+  } = opts;
   const res = await fetch(`${BASE_URL}/chat/stream`, {
     method: 'POST',
     headers: getHeaders(),
@@ -364,6 +384,8 @@ export async function chatStream(question, onEvent, opts = {}) {
       mode: mode ?? undefined,
       document_id: document_id ?? undefined,
       note_ids: note_ids?.length ? note_ids : undefined,
+      project_context: project_context ?? undefined,
+      user_state: user_state ?? undefined,
     }),
   });
 

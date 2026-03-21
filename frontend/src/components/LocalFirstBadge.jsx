@@ -4,19 +4,23 @@ import React, { useId, useState } from 'react';
 /**
  * Local-First 隐私卖点：像素风徽章 + Hover 说明（数据仅存 IndexedDB）
  */
-export function LocalFirstBadge({ className = '', compact = false }) {
+export function LocalFirstBadge({ className = '', compact = false, variant = 'default' }) {
   const tipId = useId();
   const [open, setOpen] = useState(false);
+  const isHeader = variant === 'header';
 
   return (
     <div className={clsx('relative inline-flex items-center', className)}>
       <button
         type="button"
         className={clsx(
-          'group inline-flex items-center gap-1.5 px-2 py-1 rounded border-2 border-black shadow-[3px_3px_0px_#000] bg-emerald-50',
-          'font-mono text-[9px] sm:text-[10px] font-bold text-emerald-900 tracking-tight',
+          'group inline-flex items-center gap-1.5 rounded border-2 border-black bg-emerald-50',
+          'font-mono font-bold text-emerald-900 tracking-tight',
           'hover:bg-emerald-100 transition-colors select-none',
-          compact && 'px-1.5 py-0.5 text-[8px]'
+          isHeader
+            ? 'px-1.5 py-0.5 text-[8px] sm:text-[9px] border-emerald-300 shadow-none'
+            : 'px-2 py-1 shadow-[3px_3px_0px_#000] text-[9px] sm:text-[10px]',
+          compact && !isHeader && 'px-1.5 py-0.5 text-[8px]'
         )}
         aria-describedby={tipId}
         onMouseEnter={() => setOpen(true)}
@@ -25,7 +29,16 @@ export function LocalFirstBadge({ className = '', compact = false }) {
         onBlur={() => setOpen(false)}
       >
         <span aria-hidden>🔒</span>
-        <span>Local-First 隐私模式开启</span>
+        <span>
+          {isHeader ? (
+            <>
+              <span className="sm:hidden">Local</span>
+              <span className="hidden sm:inline">Local-First</span>
+            </>
+          ) : (
+            'Local-First 隐私模式开启'
+          )}
+        </span>
       </button>
       {open && (
         <div

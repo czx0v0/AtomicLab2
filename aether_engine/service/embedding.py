@@ -18,9 +18,17 @@ MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
 
 
+def _use_modelscope_download() -> bool:
+    """创空间默认走 ModelScope；本地也可设 EMBEDDING_USE_MODELSCOPE=1 避免直连 HuggingFace。"""
+    v = os.getenv("EMBEDDING_USE_MODELSCOPE", "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    return IN_MODELSCOPE_SPACE
+
+
 def _download_model_from_modelscope(model_name: str) -> Optional[str]:
-    """仅在创空间下从 ModelScope 下载模型，返回本地路径。"""
-    if not IN_MODELSCOPE_SPACE:
+    """从 ModelScope 下载 embedding 模型到本地缓存目录，返回本地路径。"""
+    if not _use_modelscope_download():
         return None
 
     ms_mapping = {
@@ -35,7 +43,8 @@ def _download_model_from_modelscope(model_name: str) -> Optional[str]:
         logger.warning("modelscope 未安装，无法下载 embedding 模型")
         return None
 
-    cache_dir = os.getenv("MODELSCOPE_CACHE", "/mnt/workspace/.cache/modelscope")
+    default_cache = "/mnt/workspace/.cache/modelscope" if IN_MODELSCOPE_SPACE else os.path.expanduser("~/.cache/modelscope")
+    cache_dir = os.getenv("MODELSCOPE_CACHE", default_cache)
     try:
         logger.info("从 ModelScope 下载 embedding 模型: %s", ms_model_name)
         local_path = snapshot_download(ms_model_name, cache_dir=cache_dir)
@@ -61,15 +70,28 @@ def _get_model():
                 if cache_folder:
                     st_kwargs["cache_folder"] = cache_folder
 
-                if IN_MODELSCOPE_SPACE:
-                    # 创空间统一走 ModelScope/本地缓存，禁止运行时访问 HuggingFace。
+                if _use_modelscope_download():
                     local_model_path = _download_model_from_modelscope(MODEL_NAME)
                     if local_model_path:
                         model_path = local_model_path
-                    st_kwargs["local_files_only"] = True
+                    elif IN_MODELSCOPE_SPACE:
+                        logger.info(
+                            "未从 ModelScope 获得路径，尝试使用 HF_HOME/transformers 已有缓存（local_files_only）"
+                        )
+                    if IN_MODELSCOPE_SPACE:
+                        st_kwargs["local_files_only"] = True
 
                 # 显式指定 device='cpu'，避免 meta tensor 导致的同步报错
-                _model = SentenceTransformer(model_path, **st_kwargs)
+                try:
+                    _model = SentenceTransformer(model_path, **st_kwargs)
+                except Exception as e:
+                    if IN_MODELSCOPE_SPACE:
+                        raise RuntimeError(
+                            "创空间 Embedding 模型不可用：请确保已安装 modelscope 且能从 ModelScope "
+                            "下载 sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2，"
+                            "或将模型完整放入 HF_HOME/TRANSFORMERS_CACHE 后重试。"
+                        ) from e
+                    raise
                 logger.info(
                     "SentenceTransformer 加载完成 (dim=%d)",
                     _model.get_sentence_embedding_dimension(),

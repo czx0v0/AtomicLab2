@@ -31,6 +31,8 @@ import {
     X,
     Flag,
     Globe,
+    ZoomIn,
+    ZoomOut,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
@@ -43,6 +45,7 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { AssistantSidebar } from './CopilotSidebar';
 import { useScreenshot } from '../hooks/useScreenshot';
 import { SESSION_ID, useStore } from '../store/useStore';
+import { buildProjectChatPayload } from '../lib/chatProjectPayload';
 
 // ─── 笔记连接面板（连接至其他卡片，在图谱中显示）────────────────────────────────
 const NoteLinkPanel = ({ note, otherNotes = [] }) => {
@@ -1326,6 +1329,21 @@ const _normalizeBbox = (bbox) => {
   return [0, 0, 0, 0];
 };
 
+/** 校验当前会话下 PDF 是否仍可访问；部分网关对 HEAD 返回 405，则用 Range GET 只取首字节 */
+async function verifySessionPdfUrl(pdfUrl) {
+  const h = { 'X-Session-ID': SESSION_ID };
+  let r = await fetch(pdfUrl, { method: 'HEAD', headers: h });
+  if (r.ok) return true;
+  if (r.status === 405) {
+    r = await fetch(pdfUrl, {
+      method: 'GET',
+      headers: { ...h, Range: 'bytes=0-0' },
+    });
+    return r.ok || r.status === 206;
+  }
+  return false;
+}
+
 const jumpToKnowledgeSource = async (src, nav) => {
   if (!src) return;
   const isExternal = src.source === 'arxiv' || src.source === 'semantic_scholar';
@@ -1349,6 +1367,18 @@ const jumpToKnowledgeSource = async (src, nav) => {
     if (!pdfUrl) {
       nav.setNotification?.('引用跳转失败：未找到文档地址', 'error');
       return;
+    }
+    if (nextDocId !== GLOBAL_DEMO_DOC_ID) {
+      try {
+        const ok = await verifySessionPdfUrl(pdfUrl);
+        if (!ok) {
+          nav.setNotification?.('该文献已不在当前会话，无法打开 PDF。', 'warn');
+          return;
+        }
+      } catch {
+        nav.setNotification?.('无法验证文献链接，请从左侧文献库重新打开。', 'warn');
+        return;
+      }
     }
     nav.setPdfUrl?.(pdfUrl, title, nextDocId);
   }
@@ -1383,6 +1413,19 @@ const renderCitedContent = (content, sources, onJumpSource) => {
       const src = sources?.[idx];
       if (!src) return <sup key={i} className="text-blue-500">{part}</sup>;
       const isExternal = src.source === 'arxiv' || src.source === 'semantic_scholar';
+      const hasLocalDoc = !!(src.doc_id || '').trim();
+      const unlinked = src.session_doc_unlinked || (!isExternal && !hasLocalDoc);
+      if (unlinked) {
+        return (
+          <sup
+            key={i}
+            className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 mx-0.5 text-[9px] font-bold bg-slate-100 text-slate-500 rounded cursor-help"
+            title="该条证据未关联本会话可打开的 PDF，仅作摘要参考"
+          >
+            {part}
+          </sup>
+        );
+      }
       return (
         <sup
           key={i}
@@ -1523,10 +1566,14 @@ const ChatMessage = ({ msg }) => {
         {msg.agentTrace && <AgentTraceThoughtChain agentTrace={msg.agentTrace} />}
         {!isUser ? (
           <div className="leading-relaxed break-words text-gray-800 chat-synth-md">
-            {renderCitedContent(
-              displayText,
-              msg.relatedNotes || [],
-              onJumpSource
+            {msg.agentType === 'synthesizer' && !displayText.trim() ? (
+              <span className="text-slate-400 italic animate-pulse">正在生成回答…</span>
+            ) : (
+              renderCitedContent(
+                displayText,
+                msg.relatedNotes || [],
+                onJumpSource
+              )
             )}
           </div>
         ) : (
@@ -1671,6 +1718,8 @@ const ChatPanel = () => {
     updateLastMessage,
     isAgentThinking,
     setAgentThinking,
+    setAgentStreamActive,
+    agentStreamActive,
     notes,
     clearMessages,
     pendingChatQuestion,
@@ -1684,7 +1733,7 @@ const ChatPanel = () => {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isAgentThinking]);
+  }, [messages, isAgentThinking, agentStreamActive]);
 
   useEffect(() => {
     if (pendingChatQuestion) {
@@ -1700,13 +1749,20 @@ const ChatPanel = () => {
 
     addMessage({ id: Date.now(), role: 'user', content: text });
     setAgentThinking(true);
+    setAgentStreamActive(true);
 
     // 用于 synthesizer 流式拼接
     let synthId = null;
     let synthContent = '';
+    let clearedThinkingOnStream = false;
 
     try {
+      const chatCtx = buildProjectChatPayload(useStore.getState());
       await api.chatStream(text, ({ type, data }) => {
+        if (!clearedThinkingOnStream) {
+          clearedThinkingOnStream = true;
+          setAgentThinking(false);
+        }
         if (type === 'step') {
           if (data.streaming) {
             // synthesizer 开始流式输出，先创建空消息
@@ -1759,6 +1815,7 @@ const ChatPanel = () => {
             agentTrace: {
               traces: data.agent_traces ?? [],
               retrievedCards: data.retrieved_cards ?? [],
+              toolLogs: data.tool_logs ?? [],
               elapsedMs: data.elapsed_ms ?? null,
             },
           };
@@ -1766,6 +1823,18 @@ const ChatPanel = () => {
             patch.relatedNotes = sources.slice(0, 10);
           }
           updateLastMessage(patch);
+          const msgs = useStore.getState().messages;
+          const lm = msgs[msgs.length - 1];
+          if (
+            lm &&
+            lm.role === 'agent' &&
+            lm.agentType === 'synthesizer' &&
+            !(String(lm.content || '').trim())
+          ) {
+            updateLastMessage({
+              content: '未生成正文，请重试或检查 API 配置。',
+            });
+          }
         }
       }, {
         mode:
@@ -1774,6 +1843,8 @@ const ChatPanel = () => {
             : assistMode === 'writer'
               ? 'writer'
               : undefined,
+        project_context: chatCtx.project_context,
+        user_state: chatCtx.user_state,
       });
     } catch (e) {
       // 降级：直接调用搜索接口
@@ -1804,6 +1875,7 @@ const ChatPanel = () => {
       }
     } finally {
       setAgentThinking(false);
+      setAgentStreamActive(false);
     }
   };
 
@@ -2874,7 +2946,13 @@ const ReferencePanel = () => {
   const writeTabsOnly = viewMode === 'write';
   const [refTab, setRefTab] = useState(writeTabsOnly ? (writeRefTab || 'notes') : 'outline');
   useEffect(() => {
-    if (writeTabsOnly && !['notes', 'atomic', 'graph'].includes(refTab)) setRefTab('notes');
+    if (writeTabsOnly && writeRefTab === 'graph') {
+      setWriteRefTab('pdf');
+    }
+  }, [writeTabsOnly, writeRefTab, setWriteRefTab]);
+
+  useEffect(() => {
+    if (writeTabsOnly && !['notes', 'atomic', 'pdf'].includes(refTab)) setRefTab('notes');
   }, [writeTabsOnly, refTab]);
   useEffect(() => {
     if (writeTabsOnly) {
@@ -2885,7 +2963,7 @@ const ReferencePanel = () => {
     ? [
       { id: 'notes', label: '📝 基础卡片', icon: Tag },
       { id: 'atomic', label: '⚛️ 原子知识', icon: Sparkles },
-      { id: 'graph', label: '🕸️ 知识树', icon: GitBranch },
+      { id: 'pdf', label: 'PDF', icon: BookOpen },
     ]
     : [{ id: 'outline', label: '文献大纲', icon: ListTree }, { id: 'md-outline', label: '写作大纲', icon: FileText }, { id: 'cards', label: '卡片', icon: Tag }, { id: 'pdf', label: 'PDF', icon: BookOpen }];
   const [pdfLoading, setPdfLoading] = useState(true);
@@ -2896,7 +2974,6 @@ const ReferencePanel = () => {
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
   const [globalSearchError, setGlobalSearchError] = useState(null);
   const searchReqIdRef = useRef(0);
-  const [selectedGraphNote, setSelectedGraphNote] = useState(null);
   useEffect(() => {
     if (pdfFile && typeof pdfFile === 'object' && pdfFile instanceof File) {
       const url = URL.createObjectURL(pdfFile);
@@ -2929,7 +3006,24 @@ const ReferencePanel = () => {
   }, [markdownContent]);
 
   const pdfSrc = objectUrl || pdfUrl;
-  const PDF_VIEW_WIDTH = 280;
+  const writePdfPanelRef = useRef(null);
+  /** 参考面 PDF：随栏宽变化（与 Read 左栏一致思路），避免写死 280px */
+  const [writePdfBaseWidth, setWritePdfBaseWidth] = useState(420);
+  const [writePdfZoom, setWritePdfZoom] = useState(1);
+  useEffect(() => {
+    if (refTab !== 'pdf' || !writePdfPanelRef.current) return;
+    const el = writePdfPanelRef.current;
+    const apply = () => {
+      const w = el.getBoundingClientRect().width;
+      if (w > 0) setWritePdfBaseWidth(Math.max(280, Math.min(720, Math.floor(w - 12))));
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [refTab, pdfSrc, writeTabsOnly]);
+  const writePdfPageWidth = Math.round(writePdfBaseWidth * writePdfZoom);
+
   const onPdfLoadSuccess = useCallback((pdf) => {
     setPdfRuntime(pdf, pdf?.numPages ?? null);
     if (currentPage > (pdf?.numPages || 1)) {
@@ -2959,10 +3053,10 @@ const ReferencePanel = () => {
   }, [notes]);
 
   const usingGlobalSearch =
-    writeTabsOnly && refTab !== 'graph' && (writeSearch || '').trim().length > 0;
+    writeTabsOnly && refTab !== 'pdf' && (writeSearch || '').trim().length > 0;
 
   useEffect(() => {
-    if (!writeTabsOnly || refTab === 'graph') return;
+    if (!writeTabsOnly || refTab === 'pdf') return;
     const q = (writeSearch || '').trim();
     if (!q) {
       setGlobalSearchResults(null);
@@ -2975,7 +3069,7 @@ const ReferencePanel = () => {
       setGlobalSearchLoading(true);
       setGlobalSearchError(null);
       try {
-        const data = await api.searchGlobal(q, 24);
+        const data = await api.searchNotes(q, 12);
         if (req !== searchReqIdRef.current) return;
         setGlobalSearchResults(data.results || []);
       } catch (e) {
@@ -3029,10 +3123,6 @@ const ReferencePanel = () => {
     () => (notes || []).filter((n) => isAtomic(n) && matchesQuery(n)),
     [notes, isAtomic, matchesQuery]
   );
-  const graphNotes = useMemo(() => {
-    if (writeTabsOnly && refTab === 'graph') return notes || [];
-    return (notes || []).filter((n) => matchesQuery(n));
-  }, [notes, matchesQuery, writeTabsOnly, refTab]);
   const buildInjectText = useCallback((n) => {
     const blocks = [];
     if (n?.axiom) blocks.push(`**Axiom**: ${n.axiom}`);
@@ -3048,7 +3138,7 @@ const ReferencePanel = () => {
   return (
     <div className="h-full flex flex-col overflow-hidden min-h-0 bg-white border-l border-slate-200">
       <div className="shrink-0 bg-white border-b border-slate-200">
-        {writeTabsOnly && refTab !== 'graph' && (
+        {writeTabsOnly && refTab !== 'pdf' && (
           <div className="sticky top-0 z-10 px-3 pt-3 pb-2 border-b border-slate-100 bg-white">
             <div className="relative">
               <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -3327,40 +3417,11 @@ const ReferencePanel = () => {
             )}
           </div>
         )}
-        {writeTabsOnly && refTab === 'graph' && (
-          <div className="h-full min-h-[520px] flex flex-col gap-2">
-            <div className="h-[360px] min-h-[300px] border border-slate-200 rounded-lg overflow-hidden">
-              <StructureMapView
-                notes={graphNotes}
-                sections={parsedSections}
-                docName={pdfFileName}
-                onSelectNote={setSelectedGraphNote}
-              />
-            </div>
-            <p className="text-[10px] text-slate-500">可滚轮缩放页面与拖动滚动区域；点击脑图节点可在下方查看详情并一键注入正文。</p>
-            <div className="border border-slate-200 rounded-lg p-2 bg-white min-h-[140px]">
-              {selectedGraphNote ? (
-                <>
-                  <AtomicCardDetail note={selectedGraphNote} compact />
-                  <button
-                    type="button"
-                    onClick={() => setPendingInsert(buildInjectText(selectedGraphNote))}
-                    className="mt-2 w-full py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
-                  >
-                    [+ 插入正文]
-                  </button>
-                </>
-              ) : (
-                <p className="text-[10px] text-slate-400">点击上方知识树节点查看详情。</p>
-              )}
-            </div>
-          </div>
-        )}
         {refTab === 'pdf' && pdfSrc && (
-          <div className="flex flex-col items-center gap-2">
-            <div className="relative bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden flex justify-center min-h-[360px]">
+          <div ref={writePdfPanelRef} className="flex flex-col w-full min-w-0 gap-2">
+            <div className="relative w-full bg-white border border-slate-200 rounded-lg shadow-sm overflow-auto min-h-[320px] flex justify-center">
               {pdfLoading && (
-                <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm bg-white/90">Loading PDF…</div>
+                <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm bg-white/90 z-[1]">Loading PDF…</div>
               )}
               {pdfError && (
                 <div className="p-3 text-amber-600 text-xs">{pdfError}</div>
@@ -3370,23 +3431,58 @@ const ReferencePanel = () => {
                 file={pdfSrc}
                 onLoadSuccess={onPdfLoadSuccess}
                 onLoadError={onPdfLoadError}
+                className="flex flex-col items-center"
                 loading=""
               >
                 {!pdfLoading && !pdfError && (
                   <Page
                     pageNumber={Math.max(1, currentPage)}
-                    width={PDF_VIEW_WIDTH}
-                    renderTextLayer={false}
-                    renderAnnotationLayer={false}
+                    width={writePdfPageWidth}
+                    renderTextLayer
+                    renderAnnotationLayer
                   />
                 )}
               </Document>
             </div>
             {!pdfLoading && !pdfError && (
-              <div className="flex items-center gap-2 text-xs text-slate-600">
-                <button onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">上一页</button>
-                <span>p.{currentPage}{pdfNumPages != null ? ` / ${pdfNumPages}` : ''}</span>
-                <button onClick={() => setCurrentPage((p) => Math.min(pdfNumPages || 999, p + 1))} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">下一页</button>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
+                  disabled={currentPage <= 1}
+                >
+                  上一页
+                </button>
+                <span className="tabular-nums min-w-[5.5rem] text-center">
+                  第 {currentPage}{pdfNumPages != null ? ` / ${pdfNumPages}` : ''} 页
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.min(pdfNumPages || 999, p + 1))}
+                  className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
+                  disabled={pdfNumPages != null && currentPage >= pdfNumPages}
+                >
+                  下一页
+                </button>
+                <span className="w-px h-4 bg-slate-200 mx-0.5 hidden sm:inline" aria-hidden />
+                <button
+                  type="button"
+                  onClick={() => setWritePdfZoom((z) => Math.max(0.65, Math.round((z - 0.1) * 10) / 10))}
+                  className="inline-flex items-center gap-0.5 px-1.5 py-1 rounded border border-slate-200 hover:bg-slate-50"
+                  title="缩小"
+                >
+                  <ZoomOut size={12} />
+                </button>
+                <span className="text-[10px] text-slate-500 tabular-nums w-9 text-center">{Math.round(writePdfZoom * 100)}%</span>
+                <button
+                  type="button"
+                  onClick={() => setWritePdfZoom((z) => Math.min(1.75, Math.round((z + 0.1) * 10) / 10))}
+                  className="inline-flex items-center gap-0.5 px-1.5 py-1 rounded border border-slate-200 hover:bg-slate-50"
+                  title="放大"
+                >
+                  <ZoomIn size={12} />
+                </button>
               </div>
             )}
           </div>

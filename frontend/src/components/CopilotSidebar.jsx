@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import { X, Send, Loader2, FileText, Trash2 } from 'lucide-react';
 import * as api from '../api/client';
+import { buildProjectChatPayload } from '../lib/chatProjectPayload';
+import { ASSISTANT_HELP_MARKDOWN } from '../lib/assistantHelp';
 import { ChatMessage } from './MiddleColumn';
 
 /**
@@ -19,11 +21,17 @@ export function AssistantSidebar({ embedded = false }) {
     updateLastMessage,
     isAgentThinking,
     setAgentThinking,
+    setAgentStreamActive,
+    agentStreamActive,
     clearMessages,
     activeDocId,
     ensureProjectDeadlineReminder,
     pendingChatQuestion,
     setPendingChatQuestion,
+    projects,
+    activeProjectId,
+    setActiveProjectId,
+    addProject,
   } = useStore();
 
   const [input, setInput] = useState('');
@@ -44,12 +52,25 @@ export function AssistantSidebar({ embedded = false }) {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isAgentThinking]);
+  }, [messages, isAgentThinking, agentStreamActive]);
 
   const sendMessage = async () => {
     const userText = input.trim();
     const hasAttachment = contextAttachment?.text?.trim();
     if ((!userText && !hasAttachment) || isAgentThinking) return;
+
+    if (/^\/help$|^@help$/i.test(userText)) {
+      setInput('');
+      setContextAttachment(null);
+      addMessage({ id: Date.now(), role: 'user', content: userText });
+      addMessage({
+        id: Date.now() + 1,
+        role: 'agent',
+        agentType: 'system',
+        content: ASSISTANT_HELP_MARKDOWN,
+      });
+      return;
+    }
 
     const fullQuestion = hasAttachment
       ? `【以下为选中的原文】\n${contextAttachment.page != null ? `（页码：p.${contextAttachment.page}）\n` : ''}${contextAttachment.docName ? `（文献：${contextAttachment.docName}）\n` : ''}\n${contextAttachment.text}\n\n【用户问题】\n${userText || '请结合上文回答或解释。'}`
@@ -68,6 +89,7 @@ export function AssistantSidebar({ embedded = false }) {
         .filter((m) => m.role === 'user' || m.role === 'agent')
         .slice(-20)
         .map((m) => ({ role: m.role, content: typeof m.content === 'string' ? m.content : '' }));
+      const { project_context, user_state } = buildProjectChatPayload(useStore.getState());
       await api.chatStream(fullQuestion, ({ type, data }) => {
         if (type === 'step') {
           if (data.streaming) {
@@ -118,6 +140,7 @@ export function AssistantSidebar({ embedded = false }) {
             agentTrace: {
               traces: data.agent_traces ?? [],
               retrievedCards: data.retrieved_cards ?? [],
+              toolLogs: data.tool_logs ?? [],
               elapsedMs: data.elapsed_ms ?? null,
             },
           };
@@ -125,6 +148,18 @@ export function AssistantSidebar({ embedded = false }) {
             patch.relatedNotes = sources.slice(0, 10);
           }
           updateLastMessage(patch);
+          const msgs = useStore.getState().messages;
+          const lm = msgs[msgs.length - 1];
+          if (
+            lm &&
+            lm.role === 'agent' &&
+            lm.agentType === 'synthesizer' &&
+            !(String(lm.content || '').trim())
+          ) {
+            updateLastMessage({
+              content: '未生成正文，请重试或检查 API 配置。',
+            });
+          }
         }
       }, {
         history,
@@ -137,6 +172,8 @@ export function AssistantSidebar({ embedded = false }) {
               : undefined,
         document_id: activeDocId || undefined,
         note_ids: contextAttachment?.noteId ? [contextAttachment.noteId] : undefined,
+        project_context,
+        user_state,
       });
     } catch (e) {
       addMessage({
@@ -147,25 +184,57 @@ export function AssistantSidebar({ embedded = false }) {
       });
     } finally {
       setAgentThinking(false);
+      setAgentStreamActive(false);
     }
   };
 
   return (
     <div className="h-full w-full flex flex-col bg-white border-l border-slate-200 overflow-hidden min-w-0">
       {/* 标题栏 */}
-      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-slate-200 bg-slate-50">
-        <span className="text-xs font-semibold text-slate-800">原子助手</span>
+      <div className="shrink-0 border-b border-slate-200 bg-slate-50">
+        <div className="flex items-center justify-between px-3 py-2 gap-2">
+          <span className="text-xs font-semibold text-slate-800 shrink-0">原子助手</span>
           {!embedded && (
             <button
               type="button"
               onClick={() => setCopilotOpen(false)}
-              className="p-1.5 rounded hover:bg-gray-200 text-gray-600"
+              className="p-1.5 rounded hover:bg-gray-200 text-gray-600 shrink-0"
               aria-label="关闭"
             >
               <X size={16} />
             </button>
           )}
         </div>
+        <div className="px-3 pb-2 flex flex-wrap items-center gap-2">
+          <label htmlFor="copilot-project-select" className="text-[10px] font-bold text-slate-500 shrink-0">
+            课题
+          </label>
+          <select
+            id="copilot-project-select"
+            value={activeProjectId}
+            onChange={(e) => setActiveProjectId(e.target.value)}
+            className="flex-1 min-w-0 max-w-[14rem] rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-800"
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.title || '未命名'}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            title="新建课题（可在任务中心删除或改详情）"
+            onClick={() => {
+              const n = projects.length + 1;
+              const newId = addProject({ title: `新课题 ${n}`, status: 'Plan' });
+              setActiveProjectId(newId);
+            }}
+            className="text-[10px] font-bold px-2 py-0.5 rounded border border-slate-300 bg-white hover:bg-violet-50 text-slate-700"
+          >
+            + 新建
+          </button>
+        </div>
+      </div>
 
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto p-3 custom-scrollbar min-h-0">
@@ -236,6 +305,9 @@ export function AssistantSidebar({ embedded = false }) {
           </label>
           <span className="text-[9px] text-slate-400">审稿与写作互斥；写作将强制落左侧编辑器</span>
         </div>
+        <p className="shrink-0 px-3 text-[9px] text-slate-500 leading-snug border-t border-slate-100 bg-slate-50/80 py-1.5">
+          课题与写作草稿保存在本浏览器；笔记与检索索引在后端当前会话。输入 <span className="font-mono">/help</span> 查看能力说明。
+        </p>
 
         {/* 输入区 */}
         <div className="shrink-0 p-3 flex gap-2 bg-white">
@@ -250,7 +322,7 @@ export function AssistantSidebar({ embedded = false }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-            placeholder={contextAttachment?.text ? '补充问题（如：解释这段话）或直接发送' : '向 AI 提问…'}
+            placeholder={contextAttachment?.text ? '补充问题（如：解释这段话）或直接发送' : '向 AI 提问，或输入 /help'}
             className="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 min-w-0"
             disabled={isAgentThinking}
           />

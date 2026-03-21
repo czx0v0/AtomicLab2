@@ -10,7 +10,6 @@ import { SESSION_ID, useStore } from '../store/useStore';
 import { AnimatePresence, motion } from 'framer-motion';
 import * as api from '../api/client';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { LocalFirstBadge } from './LocalFirstBadge';
 import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
 import { loadLocalDocState, mergeNotesById, saveLocalDocState } from '../lib/localDocumentStore';
 
@@ -1170,9 +1169,6 @@ export const LeftColumn = () => {
                         <>🎁 体验官方架构白皮书 Demo</>
                     )}
                 </button>
-                <div className="flex justify-center sm:hidden">
-                    <LocalFirstBadge />
-                </div>
              </div>
              {/* 文献库折叠面板 */}
              <div className="border-b border-gray-200 bg-white shrink-0">

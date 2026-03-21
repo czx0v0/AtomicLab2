@@ -9,9 +9,10 @@ import React from 'react';
 export function AgentTraceThoughtChain({ agentTrace }) {
   const traces = Array.isArray(agentTrace?.traces) ? agentTrace.traces : [];
   const cards = Array.isArray(agentTrace?.retrievedCards) ? agentTrace.retrievedCards : [];
+  const toolLogs = Array.isArray(agentTrace?.toolLogs) ? agentTrace.toolLogs : [];
   const elapsedMs = agentTrace?.elapsedMs;
 
-  if (traces.length === 0 && cards.length === 0 && elapsedMs == null) return null;
+  if (traces.length === 0 && cards.length === 0 && toolLogs.length === 0 && elapsedMs == null) return null;
 
   const sec = elapsedMs != null ? (elapsedMs / 1000).toFixed(1) : null;
   const summary = sec != null
@@ -44,6 +45,17 @@ export function AgentTraceThoughtChain({ agentTrace }) {
         )}
       </summary>
       <div className="px-3 pb-3 pt-0 space-y-3 border-t border-slate-100">
+        {toolLogs.length > 0 && (
+          <div className="mt-2 rounded border border-violet-100 bg-violet-50/60 px-2 py-1.5">
+            <p className="text-[9px] font-bold text-violet-800 mb-1">Function calling / 工具日志</p>
+            <ul className="space-y-0.5 text-[9px] text-violet-900 font-mono leading-snug">
+              {toolLogs.map((line, i) => (
+                <li key={i} className="break-all">{line}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {traces.length > 0 && (
           <div className="relative pl-4 mt-2">
             <div className="absolute left-[7px] top-1 bottom-1 w-px bg-slate-200" aria-hidden />

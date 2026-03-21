@@ -14,16 +14,53 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from api.documents import _load_meta
 from api.search import IN_MODELSCOPE_SPACE, _search_pipeline
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger("aether")
+
+GLOBAL_DEMO_DOC_ID = "global_demo_official"
+
+
+def _valid_session_doc_ids(session_id: Optional[str]) -> set:
+    """当前会话可打开 PDF 的 doc_id + 全局 Demo 白皮书 id。"""
+    out = {GLOBAL_DEMO_DOC_ID}
+    try:
+        for item in _load_meta(session_id) or []:
+            did = (item.get("id") or "").strip()
+            if did:
+                out.add(did)
+    except Exception as e:
+        logger.warning("加载文献 id 列表失败: %s", e)
+    return out
+
+
+def _sanitize_evidence_sources(sources: List[dict], session_id: Optional[str]) -> List[dict]:
+    """剔除无法对应本会话文献的 doc_id，避免前端打开 404。"""
+    valid = _valid_session_doc_ids(session_id)
+    cleaned: List[dict] = []
+    for s in sources or []:
+        if not isinstance(s, dict):
+            cleaned.append(s)
+            continue
+        ns = dict(s)
+        src = str(ns.get("source") or "").lower()
+        if src in ("arxiv", "semantic_scholar", "zotero_library"):
+            cleaned.append(ns)
+            continue
+        did = (ns.get("doc_id") or "").strip()
+        if did and did not in valid:
+            ns["doc_id"] = ""
+            ns["session_doc_unlinked"] = True
+        cleaned.append(ns)
+    return cleaned
 
 
 class ChatRequest(BaseModel):
@@ -33,6 +70,11 @@ class ChatRequest(BaseModel):
     max_rounds: int = 2
     # peer_review：审稿；writer：强制写作工具落编辑器（与 peer_review 互斥，由前端保证）。
     mode: Optional[str] = None
+    # 课题与状态（Goal Map / 原子助手）
+    project_context: Optional[Dict[str, Any]] = None
+    user_state: Optional[Dict[str, Any]] = None
+    document_id: Optional[str] = None
+    note_ids: Optional[List[str]] = None
 
 
 class AgentStep(BaseModel):
@@ -80,10 +122,67 @@ _PEER_REVIEW_ACTION_SUFFIX = (
 )
 
 
-def _synthesis_system_prompt(peer_review: bool) -> str:
+def _synthesis_system_prompt(peer_review: bool, user_state: Optional[Dict[str, Any]] = None) -> str:
     if peer_review:
-        return _SYNTHESIS_SYSTEM_BASE + _PEER_REVIEW_ACTION_SUFFIX
-    return _SYNTHESIS_SYSTEM_BASE
+        base = _SYNTHESIS_SYSTEM_BASE + _PEER_REVIEW_ACTION_SUFFIX
+    else:
+        base = _SYNTHESIS_SYSTEM_BASE
+        base += (
+            "\n\n【课题与元问题】若用户询问当前课题名称、课题目标、与课题的关系，且用户消息中含 <project_context>，"
+            "请优先根据其中的课题标题与课题目标作答，不必强行引用检索片段。"
+            "若用户要求推荐与课题相关的论文，请先概括课题关键词，再给出可检索式建议；"
+            "若使用外网 arXiv 等信息，须在回答中明确说明来源。"
+        )
+    if user_state and isinstance(user_state, dict) and len(user_state) > 0:
+        base += (
+            "\n\n【对话风格】用户消息中可能含 <project_context> 与 <user_state>。"
+            "若截稿临近可适度提醒与拆解任务；若用户有近期完成事项可简短肯定。"
+            "不要编造用户未提供的事实。"
+        )
+    return base
+
+
+def _mentor_context_prefix(
+    project_context: Optional[Dict[str, Any]], user_state: Optional[Dict[str, Any]]
+) -> str:
+    parts: List[str] = []
+    if project_context and isinstance(project_context, dict):
+        pc = project_context
+        lines: List[str] = []
+        if pc.get("title"):
+            lines.append(f"课题标题：{pc['title']}")
+        if pc.get("target_journal"):
+            lines.append(f"投稿/毕业目标：{pc['target_journal']}")
+        if pc.get("research_goal"):
+            lines.append(f"课题目标：{pc['research_goal']}")
+        if pc.get("status"):
+            lines.append(f"当前阶段：{pc['status']}")
+        if lines:
+            parts.append("<project_context>\n" + "\n".join(lines) + "\n</project_context>")
+    if user_state and isinstance(user_state, dict):
+        us = user_state
+        lines = []
+        if us.get("days_to_deadline") is not None:
+            try:
+                lines.append(f"距截稿约 {int(us['days_to_deadline'])} 天")
+            except (TypeError, ValueError):
+                pass
+        if us.get("is_urgent"):
+            lines.append("截稿紧张（urgent）")
+        if us.get("timeline_stage"):
+            lines.append(f"Timeline：{us['timeline_stage']}")
+        if us.get("open_todos_count") is not None:
+            try:
+                lines.append(f"未完成任务约 {int(us['open_todos_count'])} 条")
+            except (TypeError, ValueError):
+                pass
+        if us.get("completed_recent"):
+            lines.append(f"近期进展：{us['completed_recent']}")
+        if lines:
+            parts.append("<user_state>\n" + "\n".join(lines) + "\n</user_state>")
+    if not parts:
+        return ""
+    return "\n\n".join(parts) + "\n\n"
 
 
 def _peer_review_user_suffix() -> str:
@@ -216,6 +315,33 @@ def _is_factual_question(q: str) -> bool:
         r"依据",
     ]
     return any(re.search(p, ql) for p in patterns)
+
+
+_RE_PAPERISH = re.compile(r"论文|文献|arxiv|检索|搜一篇|搜\s*论文|推荐.*篇|引用|citation|这篇|该文|related work", re.I)
+_RE_PROJECT_SCHEDULE = re.compile(
+    r"截稿|截止|deadline|还有\s*\d*\s*天|几天交|日程|待办|里程碑|进度|当前阶段|"
+    r"我的课题|课题进度|课题名|课题目标|课题.*(什么|叫)|目标期刊|毕业设计|timeline|距.*天",
+    re.I,
+)
+
+
+def _should_skip_retrieval_for_project_meta(
+    question: str,
+    project_context: Optional[Dict[str, Any]],
+    user_state: Optional[Dict[str, Any]],
+) -> bool:
+    """
+    课题日程/元问题：不调用文献检索（function calling 层不跑 search_*），
+    仅依赖 <project_context> / <user_state> 合成，避免「问截稿却在搜库」的错位。
+    """
+    if not (project_context or user_state):
+        return False
+    q = (question or "").strip()
+    if len(q) > 500:
+        return False
+    if _RE_PAPERISH.search(q):
+        return False
+    return bool(_RE_PROJECT_SCHEDULE.search(q))
 
 
 def _is_research_detail_question(q: str) -> bool:
@@ -936,15 +1062,24 @@ def _bucket_for_evidence(source: Optional[str]) -> str:
 
 
 def _build_synthesis_prompt(
-    question: str, sources: List[dict], local_context: str, detail_mode: bool
+    question: str,
+    sources: List[dict],
+    local_context: str,
+    detail_mode: bool,
+    mentor_prefix: str = "",
 ) -> str:
+    mp = mentor_prefix or ""
     if not sources:
         tail = (
             "（注：本地文献库暂无该特定细节，此为通用学术解释）"
             if detail_mode
             else ""
         )
-        return f"用户问题：{question}\n\n请直接给出清晰、自然的人类表达答案。{tail}"
+        no_ev = (
+            "【重要】当前无检索证据：禁止编造具体论文标题、页码、实验数值或虚构文献；"
+            "可给出方法论建议或基于课题上下文的说明，并明确说明局限。"
+        )
+        return f"{mp}用户问题：{question}\n\n{no_ev}\n\n请直接给出清晰、自然的人类表达答案。{tail}"
 
     order = (
         "document_chunks",
@@ -1005,10 +1140,11 @@ def _build_synthesis_prompt(
     if local_context and len(local_context) > 400 and not xml_parts:
         extra = "\n\n<fusion_context>\n" + local_context[:2000] + "\n</fusion_context>"
 
-    return f"用户问题：{question}\n\n{requirements}检索证据（分区 XML）：\n\n{body}{extra}"
+    return f"{mp}用户问题：{question}\n\n{requirements}检索证据（分区 XML）：\n\n{body}{extra}"
 
 
-def _general_fallback_answer(question: str) -> str:
+def _general_fallback_answer(question: str, mentor_prefix: str = "") -> str:
+    mp = mentor_prefix or ""
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if api_key:
         out = _call_deepseek(
@@ -1018,7 +1154,7 @@ def _general_fallback_answer(question: str) -> str:
                 "若问题涉及具体文献细节但无证据，可在结尾加注释。"
             ),
             user_prompt=(
-                f"用户问题：{question}\n"
+                f"{mp}用户问题：{question}\n"
                 "请给出可执行、清晰、不过度模板化的回答。"
             ),
             max_tokens=900,
@@ -1053,6 +1189,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
 
     t0 = time.perf_counter()
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    prefix = _mentor_context_prefix(body.project_context, body.user_state)
     steps: List[dict] = []
     mode_raw = (body.mode or "").strip().lower()
     peer_review = mode_raw == "peer_review"
@@ -1081,13 +1218,27 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         }
 
-    sources, tool_logs, local_context = _route_with_tools(
-        body.question,
-        top_k=body.top_k,
-        session_id=session_id,
-        max_rounds=body.max_rounds,
-        header_session_id=x_session_id,
+    skip_rag = _should_skip_retrieval_for_project_meta(
+        body.question, body.project_context, body.user_state
     )
+    if skip_rag:
+        sources, tool_logs, local_context = (
+            [],
+            [
+                "[routing] 课题/日程类问题：未调用 search_local_knowledge / search_arxiv 等检索工具（function calling 跳过），"
+                "仅使用 <project_context> / <user_state>。"
+            ],
+            "",
+        )
+    else:
+        sources, tool_logs, local_context = _route_with_tools(
+            body.question,
+            top_k=body.top_k,
+            session_id=session_id,
+            max_rounds=body.max_rounds,
+            header_session_id=x_session_id,
+        )
+    sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(body.question)
     router_txt = "已完成上下文准备。"
     if tool_logs:
@@ -1113,12 +1264,12 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         api_key_ns = _get_chat_llm_config().get("api_key", "")
         if peer_review and api_key_ns:
             answer = _call_chat_llm(
-                system_prompt=_synthesis_system_prompt(True),
-                user_prompt=body.question + _peer_review_user_suffix(),
+                system_prompt=_synthesis_system_prompt(True, body.user_state),
+                user_prompt=prefix + body.question + _peer_review_user_suffix(),
                 max_tokens=1400,
             )
         else:
-            answer = _general_fallback_answer(body.question)
+            answer = _general_fallback_answer(body.question, mentor_prefix=prefix)
             if detail_mode and "本地文献库暂无该特定细节" not in answer:
                 answer = answer.rstrip() + "\n\n（注：本地文献库暂无该特定细节，此为通用学术解释）"
         steps.append({"agent": "synthesizer", "content": answer})
@@ -1143,15 +1294,21 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
     api_key = _get_chat_llm_config().get("api_key", "")
     if api_key:
         user_prompt = _build_synthesis_prompt(
-            body.question, sources, local_context, detail_mode=detail_mode
+            body.question,
+            sources,
+            local_context,
+            detail_mode=detail_mode,
+            mentor_prefix=prefix,
         )
         if peer_review:
             user_prompt = user_prompt + _peer_review_user_suffix()
         answer = _call_chat_llm(
-            system_prompt=_synthesis_system_prompt(peer_review),
+            system_prompt=_synthesis_system_prompt(peer_review, body.user_state),
             user_prompt=user_prompt,
             max_tokens=1400,
         )
+        if not (answer or "").strip():
+            answer = _general_fallback_answer(body.question, mentor_prefix=prefix) or "模型未返回正文，请稍后重试。"
     else:
         answer = "未配置聊天模型 API KEY（DEEPSEEK_API_KEY 或 ALIYUN_API_KEY）。以下为检索结果摘要：\n\n" + "\n".join(
             f"- [{i+1}] {s.get('concept','')} {s.get('summary','')[:120]}" for i, s in enumerate(sources[:6])
@@ -1183,8 +1340,11 @@ def _chat_stream_generator(
     mode: Optional[str] = None,
     max_rounds: int = 2,
     header_session_id: str = "",
+    project_context: Optional[Dict[str, Any]] = None,
+    user_state: Optional[Dict[str, Any]] = None,
 ) -> Generator[str, None, None]:
     t0 = time.perf_counter()
+    prefix = _mentor_context_prefix(project_context, user_state)
     mode_raw = (mode or "").strip().lower()
     peer_review = mode_raw == "peer_review"
     writer_mode = mode_raw == "writer"
@@ -1214,20 +1374,40 @@ def _chat_stream_generator(
                 "sources": [],
                 "action": editor_action,
                 "agent_traces": traces,
+                "tool_logs": ["update_markdown_editor（写作工具 / function calling）"],
                 "retrieved_cards": [],
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
             },
         )
         return
 
-    yield _sse_event("step", {"agent": "router", "content": "正在理解你的意图并准备上下文..."})
-    sources, tool_logs, local_context = _route_with_tools(
-        question,
-        top_k=top_k,
-        session_id=session_id,
-        max_rounds=max_rounds,
-        header_session_id=header_session_id,
-    )
+    skip_rag = _should_skip_retrieval_for_project_meta(question, project_context, user_state)
+    if skip_rag:
+        yield _sse_event(
+            "step",
+            {
+                "agent": "router",
+                "content": "课题/日程问句：跳过文献检索（未调用 search_* 工具，仅使用课题上下文）。",
+            },
+        )
+        sources, tool_logs, local_context = (
+            [],
+            [
+                "[routing] 课题/日程类：未触发 function calling 检索工具；"
+                "回答仅依据 <project_context> / <user_state>。"
+            ],
+            "",
+        )
+    else:
+        yield _sse_event("step", {"agent": "router", "content": "正在理解你的意图并准备上下文（function calling 路由检索工具）…"})
+        sources, tool_logs, local_context = _route_with_tools(
+            question,
+            top_k=top_k,
+            session_id=session_id,
+            max_rounds=max_rounds,
+            header_session_id=header_session_id,
+        )
+    sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(question)
     router_detail = "上下文已准备完成。"
     if tool_logs:
@@ -1245,13 +1425,20 @@ def _chat_stream_generator(
         api_key_ns = _get_chat_llm_config().get("api_key", "")
         if peer_review and api_key_ns:
             yield _sse_event("step", {"agent": "synthesizer", "content": "", "streaming": True})
-            up_ns = question + _peer_review_user_suffix()
+            up_ns = prefix + question + _peer_review_user_suffix()
+            acc_pr: List[str] = []
             for tk in _stream_chat_llm(
-                system_prompt=_synthesis_system_prompt(True),
+                system_prompt=_synthesis_system_prompt(True, user_state),
                 user_prompt=up_ns,
                 max_tokens=1400,
             ):
+                acc_pr.append(tk)
                 yield _sse_event("delta", {"token": tk})
+            if not "".join(acc_pr).strip():
+                fb = _general_fallback_answer(question, mentor_prefix=prefix) or ""
+                if not fb.strip():
+                    fb = "模型未返回正文，请稍后重试或检查 API 配置。"
+                yield _sse_event("delta", {"token": "\n\n" + fb})
             traces = _build_agent_traces(
                 detail_mode,
                 tool_logs,
@@ -1265,12 +1452,13 @@ def _chat_stream_generator(
                 {
                     "sources": [],
                     "agent_traces": traces,
+                    "tool_logs": tool_logs,
                     "retrieved_cards": [],
                     "elapsed_ms": int((time.perf_counter() - t0) * 1000),
                 },
             )
             return
-        msg = _general_fallback_answer(question)
+        msg = _general_fallback_answer(question, mentor_prefix=prefix)
         if detail_mode and "本地文献库暂无该特定细节" not in msg:
             msg = msg.rstrip() + "\n\n（注：本地文献库暂无该特定细节，此为通用学术解释）"
         yield _sse_event("step", {"agent": "synthesizer", "content": msg})
@@ -1287,6 +1475,7 @@ def _chat_stream_generator(
             {
                 "sources": [],
                 "agent_traces": traces,
+                "tool_logs": tool_logs,
                 "retrieved_cards": [],
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
             },
@@ -1312,6 +1501,7 @@ def _chat_stream_generator(
             {
                 "sources": sources[:8],
                 "agent_traces": traces,
+                "tool_logs": tool_logs,
                 "retrieved_cards": _normalize_retrieved_cards(sources),
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
             },
@@ -1331,16 +1521,27 @@ def _chat_stream_generator(
 
     yield _sse_event("step", {"agent": "synthesizer", "content": "", "streaming": True})
     up = _build_synthesis_prompt(
-        question, sources, local_context, detail_mode=detail_mode
+        question,
+        sources,
+        local_context,
+        detail_mode=detail_mode,
+        mentor_prefix=prefix,
     )
     if peer_review:
         up = up + _peer_review_user_suffix()
+    acc_syn: List[str] = []
     for tk in _stream_chat_llm(
-        system_prompt=_synthesis_system_prompt(peer_review),
+        system_prompt=_synthesis_system_prompt(peer_review, user_state),
         user_prompt=up,
         max_tokens=1400,
     ):
+        acc_syn.append(tk)
         yield _sse_event("delta", {"token": tk})
+    if not "".join(acc_syn).strip():
+        fb = _general_fallback_answer(question, mentor_prefix=prefix) or ""
+        if not fb.strip():
+            fb = "模型未返回正文，请稍后重试或检查 DEEPSEEK_API_KEY / ALIYUN_API_KEY。"
+        yield _sse_event("delta", {"token": "\n\n" + fb})
     traces = _build_agent_traces(
         detail_mode,
         tool_logs,
@@ -1354,6 +1555,7 @@ def _chat_stream_generator(
         {
             "sources": sources[:8],
             "agent_traces": traces,
+            "tool_logs": tool_logs,
             "retrieved_cards": _normalize_retrieved_cards(sources),
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         },
@@ -1373,6 +1575,8 @@ def chat_stream(body: ChatRequest, x_session_id: str = Header(default="")):
             mode=body.mode,
             max_rounds=body.max_rounds,
             header_session_id=x_session_id,
+            project_context=body.project_context,
+            user_state=body.user_state,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

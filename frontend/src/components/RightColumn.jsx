@@ -3,7 +3,7 @@ import {
   Bold, Italic, List, Quote, Code, BookOpen, ChevronLeft, ChevronRight,
   Sparkles, FileText, Maximize2, Minimize2, Timer, TimerOff, Play, Pause,
   Square, Download, Upload, Trash2, PanelLeftOpen, Eye, EyeOff, AlignJustify, ListTree, X, Bot,
-  Package, Loader2
+  Package, Loader2, History,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { Document, Page, pdfjs } from 'react-pdf';
@@ -11,6 +11,7 @@ import clsx from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as api from '../api/client';
 import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
+import { listSnapshots } from '../lib/writingSnapshots';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -294,6 +295,122 @@ const MarkdownPreview = ({ content, references: refsProp }) => {
     </div>
   );
 };
+
+/** 写作区本地快照（localStorage，按课题） */
+function WritingSnapshotControls({ compact }) {
+  const activeProjectId = useStore((s) => s.activeProjectId);
+  const tick = useStore((s) => s.writingSnapshotTick);
+  const saveWritingSnapshot = useStore((s) => s.saveWritingSnapshot);
+  const restoreWritingSnapshot = useStore((s) => s.restoreWritingSnapshot);
+  const deleteWritingSnapshot = useStore((s) => s.deleteWritingSnapshot);
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+
+  const rows = useMemo(() => listSnapshots(activeProjectId), [activeProjectId, tick]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const fmtTime = (ts) => {
+    try {
+      return new Date(ts).toLocaleString('zh-CN', { hour12: false });
+    } catch {
+      return '';
+    }
+  };
+
+  return (
+    <div className={clsx('relative', compact && 'inline-flex')} ref={wrapRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={clsx(
+          compact
+            ? 'hover:text-stone-600 flex items-center gap-1'
+            : 'p-1.5 text-gray-400 hover:text-violet-600 hover:bg-violet-50 rounded',
+        )}
+        title="写作快照：本地版本历史"
+      >
+        <History size={compact ? 12 : 14} />
+        {compact ? <span>快照</span> : null}
+      </button>
+      {open && (
+        <div
+          className={clsx(
+            'absolute z-50 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-slate-200 bg-white shadow-lg',
+            compact ? 'bottom-full mb-1 left-0' : 'right-0 top-full mt-1',
+          )}
+        >
+          <div className="px-2 py-1.5 border-b border-slate-100 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-bold text-slate-600">本地快照</span>
+            <button
+              type="button"
+              className="text-[10px] px-2 py-0.5 rounded bg-violet-100 text-violet-800 hover:bg-violet-200 font-medium"
+              onClick={() => {
+                const v = window.prompt('可选备注（留空则仅用时间区分）', '');
+                if (v === null) return;
+                saveWritingSnapshot(v);
+              }}
+            >
+              保存当前
+            </button>
+          </div>
+          <div className="max-h-64 overflow-y-auto p-1.5 text-[10px]">
+            {rows.length === 0 ? (
+              <p className="text-slate-400 px-1 py-2">暂无快照，点「保存当前」保留版本。</p>
+            ) : (
+              <ul className="space-y-1">
+                {rows.map((s) => (
+                  <li key={s.id} className="flex items-start gap-1 rounded border border-slate-100 px-1.5 py-1 hover:bg-slate-50">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-slate-800 truncate">
+                        {s.label || fmtTime(s.createdAt)}
+                      </div>
+                      <div className="text-slate-400">
+                        {fmtTime(s.createdAt)} · {(s.content || '').length} 字
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="shrink-0 text-violet-700 hover:underline font-medium"
+                      onClick={() => {
+                        if (!window.confirm('用快照替换当前编辑器正文？')) return;
+                        restoreWritingSnapshot(s.id);
+                        setOpen(false);
+                      }}
+                    >
+                      恢复
+                    </button>
+                    <button
+                      type="button"
+                      className="shrink-0 text-slate-400 hover:text-rose-600 p-0.5"
+                      title="删除"
+                      onClick={() => {
+                        if (!window.confirm('删除该快照？')) return;
+                        deleteWritingSnapshot(s.id);
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <p className="px-2 py-1 text-[9px] text-slate-400 border-t border-slate-100 leading-snug">
+            仅本机浏览器；与课题草稿一样存于本地，换设备或清数据会丢失。
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── 主编辑器 ──────────────────────────────────────────────────────────────────
 export const RightColumn = () => {
@@ -1076,6 +1193,12 @@ export const RightColumn = () => {
           <PomodoroTimer onExit={toggleZenMode} />
         </div>
 
+        {(activeDocId || '') === GLOBAL_DEMO_DOC_ID && (
+          <div className="shrink-0 px-4 py-2 text-[11px] text-amber-950 bg-amber-50 border-b border-amber-200">
+            当前为官方白皮书示例数据，便于体验；上传自己的 PDF 后将以你的文献为准。
+          </div>
+        )}
+
         {/* 三栏内容区 */}
         <div className="flex-1 flex overflow-hidden min-h-0">
           {/* 左侧：原文参考（与阅读区 PDF 同款样式） */}
@@ -1308,6 +1431,7 @@ export const RightColumn = () => {
             <button onClick={exportMd} className="hover:text-stone-600 flex items-center gap-1">
               <Download size={12} /> 导出 MD
             </button>
+            <WritingSnapshotControls compact />
             <span className="text-[10px]">Ctrl+B 粗体 · Ctrl+I 斜体 · Esc 退出</span>
           </div>
           <div className="flex items-center gap-2">
@@ -1510,6 +1634,7 @@ export const RightColumn = () => {
             >
               <Download size={14} />
             </button>
+            <WritingSnapshotControls />
             <button
               onClick={toggleZenMode}
               className="p-1.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded"
@@ -1519,6 +1644,12 @@ export const RightColumn = () => {
             </button>
           </div>
         </div>
+
+        {(activeDocId || '') === GLOBAL_DEMO_DOC_ID && (
+          <div className="mx-2 mt-2 px-3 py-2 rounded-lg border border-amber-200 bg-amber-50/90 text-[11px] text-amber-950 shrink-0">
+            以下为官方白皮书示例数据，便于体验功能；上传自己的 PDF 后将以你的文献为准。
+          </div>
+        )}
 
         {/* 空状态：无 PDF / 无卡片时仍允许写作，仅作引导 */}
         {notes.length === 0 && !pdfUrl && !pdfFile && (

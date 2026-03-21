@@ -1,7 +1,7 @@
 import clsx from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import React, { useEffect, useMemo, useState } from 'react';
-import { X } from 'lucide-react';
+import { Loader2, Package, X } from 'lucide-react';
 import {
   PROJECT_STATUSES,
   PROJECT_STATUS_LABELS,
@@ -10,7 +10,13 @@ import {
   dateInputToDeadlineIso,
   useStore,
 } from '../store/useStore';
-import { getZoteroStatus, saveZoteroCredentials, syncZoteroLibrary } from '../api/client';
+import {
+  exportLatexZip,
+  getZoteroStatus,
+  planResearchTodos,
+  saveZoteroCredentials,
+  syncZoteroLibrary,
+} from '../api/client';
 
 /**
  * 全局右下角 🚩：投稿与进度「任务控制中心」浮层（Pastel Pixel）
@@ -20,16 +26,26 @@ export function MissionControlFab() {
   const {
     projects,
     activeProjectId,
+    setActiveProjectId,
+    addProject,
+    removeProject,
+    markdownContent,
     setViewMode,
     updateProject,
     setPendingOrganizeTab,
     setCopilotOpen,
     setPendingChatQuestion,
     setNotification,
+    appendProjectActivity,
   } = useStore();
   const [draftTitle, setDraftTitle] = useState('');
   const [draftTarget, setDraftTarget] = useState('');
   const [draftDate, setDraftDate] = useState('');
+  const [draftResearchGoal, setDraftResearchGoal] = useState('');
+  const [latexExporting, setLatexExporting] = useState(false);
+  const [plannerLoading, setPlannerLoading] = useState(false);
+  const [milestoneTitle, setMilestoneTitle] = useState('');
+  const [milestoneDate, setMilestoneDate] = useState('');
 
   const [zoteroUserId, setZoteroUserId] = useState('');
   const [zoteroApiKey, setZoteroApiKey] = useState('');
@@ -51,6 +67,38 @@ export function MissionControlFab() {
     const idx = PROJECT_STATUSES.indexOf(activeProject.status);
     return idx >= 0 ? idx : 0;
   }, [activeProject]);
+
+  /** 跨课题截稿 + 里程碑，按日期排序 */
+  const upcomingSchedule = useMemo(() => {
+    const rows = [];
+    for (const p of projects) {
+      if (p.deadline) {
+        const t = new Date(p.deadline).getTime();
+        if (!Number.isNaN(t)) {
+          rows.push({
+            sort: t,
+            line: `${p.title || '课题'} · 截稿`,
+            day: deadlineIsoToDateInput(p.deadline),
+          });
+        }
+      }
+      const ms = Array.isArray(p.milestones) ? p.milestones : [];
+      for (const m of ms) {
+        if (m?.dateIso && m?.title) {
+          const t = new Date(m.dateIso).getTime();
+          if (!Number.isNaN(t)) {
+            rows.push({
+              sort: t,
+              line: `${p.title || '课题'} · ${m.title}`,
+              day: deadlineIsoToDateInput(m.dateIso),
+            });
+          }
+        }
+      }
+    }
+    rows.sort((a, b) => a.sort - b.sort);
+    return rows.slice(0, 14);
+  }, [projects]);
 
   useEffect(() => {
     if (!open) return;
@@ -89,6 +137,7 @@ export function MissionControlFab() {
     setDraftTitle(ap.title ?? '');
     setDraftTarget(ap.target_journal ?? '');
     setDraftDate(deadlineIsoToDateInput(ap.deadline));
+    setDraftResearchGoal(ap.researchGoal ?? '');
   }, [open, activeProjectId]);
 
   const saveDraft = () => {
@@ -97,6 +146,108 @@ export function MissionControlFab() {
       title: (draftTitle || '').trim() || '我的课题',
       target_journal: (draftTarget || '').trim() || '毕业论文',
       deadline: dateInputToDeadlineIso(draftDate),
+      researchGoal: (draftResearchGoal || '').trim(),
+    });
+  };
+
+  const handleExportLatex = async () => {
+    const md = (markdownContent || '').trim();
+    if (!md) {
+      setNotification('请先在写作区撰写内容', 'warn');
+      return;
+    }
+    setLatexExporting(true);
+    try {
+      const blob = await exportLatexZip(md);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `atomiclab_latex_${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setNotification('LaTeX 项目已下载（main.tex + references.bib + README）', 'info');
+      setOpen(false);
+    } catch (e) {
+      setNotification(`导出失败: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      setLatexExporting(false);
+    }
+  };
+
+  const handleRunPlanner = async () => {
+    if (!activeProject) return;
+    setPlannerLoading(true);
+    try {
+      const r = await planResearchTodos({
+        title: draftTitle || activeProject.title,
+        target_journal: draftTarget || activeProject.target_journal,
+        goal: draftResearchGoal || activeProject.researchGoal || '',
+        status: activeProject.status,
+      });
+      const items = (r.items || []).map((it) => ({
+        id: it.id || crypto.randomUUID(),
+        text: it.text || '',
+        done: false,
+      }));
+      updateProject(activeProject.id, { plannerTodos: items });
+      appendProjectActivity(activeProject.id, {
+        type: 'planner',
+        message: `已生成 ${items.length} 条研究待办`,
+      });
+      setNotification('已生成研究待办', 'info');
+    } catch (e) {
+      setNotification(e?.message || '生成失败', 'error');
+    } finally {
+      setPlannerLoading(false);
+    }
+  };
+
+  const togglePlannerTodo = (todoId) => {
+    if (!activeProject) return;
+    const todos = [...(activeProject.plannerTodos || [])];
+    const i = todos.findIndex((t) => t.id === todoId);
+    if (i < 0) return;
+    const cur = todos[i];
+    const done = !cur.done;
+    const next = { ...cur, done };
+    if (done) next.completedAt = new Date().toISOString();
+    else delete next.completedAt;
+    todos[i] = next;
+    updateProject(activeProject.id, { plannerTodos: todos });
+    if (done) {
+      appendProjectActivity(activeProject.id, {
+        type: 'todo_done',
+        message: `完成待办：${cur.text}`,
+      });
+    }
+  };
+
+  const handleAddMilestone = () => {
+    if (!activeProject || !milestoneTitle.trim() || !milestoneDate) return;
+    const ms = [...(activeProject.milestones || [])];
+    const title = milestoneTitle.trim();
+    ms.push({
+      id: crypto.randomUUID(),
+      title,
+      dateIso: dateInputToDeadlineIso(milestoneDate),
+    });
+    updateProject(activeProject.id, { milestones: ms });
+    appendProjectActivity(activeProject.id, {
+      type: 'milestone',
+      message: `添加里程碑：${title}（${milestoneDate}）`,
+    });
+    setMilestoneTitle('');
+    setMilestoneDate('');
+    setNotification('已添加里程碑', 'info');
+  };
+
+  const setProjectStatus = (st) => {
+    if (!activeProject || !PROJECT_STATUSES.includes(st)) return;
+    if (st === activeProject.status) return;
+    updateProject(activeProject.id, { status: st });
+    appendProjectActivity(activeProject.id, {
+      type: 'status_change',
+      message: `阶段设为「${PROJECT_STATUS_LABELS[st] || st}」`,
     });
   };
 
@@ -230,10 +381,10 @@ export function MissionControlFab() {
               exit={{ opacity: 0, scale: 0.96, y: 10 }}
               transition={{ type: 'spring', damping: 26, stiffness: 320 }}
               className={clsx(
-                'fixed z-[10001] left-auto top-auto right-4 origin-bottom-right',
+                'fixed z-[10001] right-4 top-3',
                 'bottom-[calc(9rem+env(safe-area-inset-bottom,0px))]',
                 'w-[90vw] max-w-[400px] sm:w-[400px]',
-                'max-h-[80vh] min-h-0 overflow-y-auto overflow-x-hidden',
+                'min-h-0 max-h-none overflow-y-auto overflow-x-hidden',
                 'rounded-2xl border-[3px] border-black bg-[#fdf6ff] shadow-[8px_8px_0px_rgba(0,0,0,0.12)]',
                 'text-slate-800 flex flex-col'
               )}
@@ -256,6 +407,50 @@ export function MissionControlFab() {
                   <h2 id="mission-control-title" className="text-sm font-black text-slate-900">
                     课题设置
                   </h2>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="text-[10px] font-bold text-slate-500 shrink-0">当前课题</label>
+                    <select
+                      value={activeProjectId}
+                      onChange={(e) => {
+                        setActiveProjectId(e.target.value);
+                      }}
+                      className="flex-1 min-w-[8rem] rounded-lg border-2 border-black bg-white px-2 py-1 text-xs font-medium text-slate-900"
+                    >
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.title || '未命名'}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const n = projects.length + 1;
+                        const newId = addProject({ title: `新课题 ${n}`, status: 'Plan' });
+                        setActiveProjectId(newId);
+                        setNotification('已新建课题并切换', 'info');
+                      }}
+                      className="text-[10px] font-bold px-2 py-1 rounded-lg border-2 border-black bg-white hover:bg-violet-50"
+                    >
+                      + 新建
+                    </button>
+                    <button
+                      type="button"
+                      disabled={projects.length <= 1}
+                      onClick={() => {
+                        if (projects.length <= 1) return;
+                        if (!window.confirm('删除当前课题？该课题的写作草稿将从本机移除，不可恢复。')) return;
+                        removeProject(activeProjectId);
+                        setNotification('已删除课题', 'info');
+                      }}
+                      className={clsx(
+                        'text-[10px] font-bold px-2 py-1 rounded-lg border-2 border-black',
+                        projects.length <= 1 ? 'opacity-40 cursor-not-allowed bg-slate-100' : 'bg-white hover:bg-rose-50 text-rose-800'
+                      )}
+                    >
+                      删除
+                    </button>
+                  </div>
                   <label className="block">
                     <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">课题标题</span>
                     <input
@@ -286,6 +481,17 @@ export function MissionControlFab() {
                       onChange={(e) => setDraftDate(e.target.value)}
                       onBlur={saveDraft}
                       className="mt-0.5 w-full rounded-lg border-2 border-black bg-white px-2 py-1.5 text-xs font-medium text-slate-900"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">课题目标 / 研究计划</span>
+                    <textarea
+                      value={draftResearchGoal}
+                      onChange={(e) => setDraftResearchGoal(e.target.value)}
+                      onBlur={saveDraft}
+                      rows={3}
+                      placeholder="简述研究问题、预期贡献…"
+                      className="mt-0.5 w-full rounded-lg border-2 border-black bg-white px-2 py-1.5 text-xs font-medium text-slate-900 resize-y min-h-[4rem]"
                     />
                   </label>
                   <p className="text-[10px] text-slate-500">修改后自动保存到本机</p>
@@ -341,6 +547,118 @@ export function MissionControlFab() {
                   </div>
                 </div>
 
+                {activeProject && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">当前阶段（保存到课题）</p>
+                    <select
+                      value={activeProject.status}
+                      onChange={(e) => setProjectStatus(e.target.value)}
+                      className="w-full rounded-lg border-2 border-black bg-white px-2 py-1.5 text-xs font-medium text-slate-900"
+                    >
+                      {PROJECT_STATUSES.map((st) => (
+                        <option key={st} value={st}>
+                          {PROJECT_STATUS_LABELS[st]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">近期日程（跨课题）</p>
+                  {upcomingSchedule.length === 0 ? (
+                    <p className="text-[10px] text-slate-400">暂无截稿与里程碑</p>
+                  ) : (
+                    <ul className="text-[10px] text-slate-700 space-y-0.5 max-h-28 overflow-y-auto custom-scrollbar">
+                      {upcomingSchedule.map((row, idx) => (
+                        <li key={`${row.line}-${idx}`} className="flex justify-between gap-2 border-b border-black/5 pb-0.5">
+                          <span className="truncate">{row.line}</span>
+                          <span className="shrink-0 font-mono text-slate-500">{row.day}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {activeProject && (
+                    <div className="mt-2 flex flex-wrap gap-1 items-end">
+                      <input
+                        type="text"
+                        value={milestoneTitle}
+                        onChange={(e) => setMilestoneTitle(e.target.value)}
+                        placeholder="里程碑标题"
+                        className="flex-1 min-w-[6rem] rounded border-2 border-black/80 bg-white px-1.5 py-1 text-[10px]"
+                      />
+                      <input
+                        type="date"
+                        value={milestoneDate}
+                        onChange={(e) => setMilestoneDate(e.target.value)}
+                        className="rounded border-2 border-black/80 bg-white px-1 py-1 text-[10px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddMilestone}
+                        className="text-[10px] font-bold px-2 py-1 rounded-lg border-2 border-black bg-[#e0f2fe] hover:bg-sky-100"
+                      >
+                        添加
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {activeProject && (
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">研究待办</p>
+                      <button
+                        type="button"
+                        disabled={plannerLoading}
+                        onClick={handleRunPlanner}
+                        className={clsx(
+                          'text-[10px] font-bold px-2 py-1 rounded-lg border-2 border-black bg-violet-100 hover:bg-violet-200',
+                          plannerLoading && 'opacity-60 cursor-wait'
+                        )}
+                      >
+                        {plannerLoading ? '生成中…' : '✨ AI 生成待办'}
+                      </button>
+                    </div>
+                    {(activeProject.plannerTodos || []).length === 0 ? (
+                      <p className="text-[10px] text-slate-400">点击「AI 生成待办」或稍后手动添加（后续版本）</p>
+                    ) : (
+                      <ul className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar">
+                        {(activeProject.plannerTodos || []).map((t) => (
+                          <li key={t.id} className="flex items-start gap-2 text-[10px]">
+                            <input
+                              type="checkbox"
+                              checked={!!t.done}
+                              onChange={() => togglePlannerTodo(t.id)}
+                              className="mt-0.5 shrink-0"
+                            />
+                            <span className={clsx(t.done && 'line-through text-slate-400')}>{t.text}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                {activeProject && (activeProject.activityLog || []).length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">最近动态</p>
+                    <ul className="text-[9px] text-slate-600 space-y-0.5 max-h-24 overflow-y-auto custom-scrollbar">
+                      {[...(activeProject.activityLog || [])]
+                        .slice(-12)
+                        .reverse()
+                        .map((e, i) => (
+                          <li key={`${e.at}-${i}`} className="border-b border-black/5 pb-0.5">
+                            <span className="font-mono text-slate-400">
+                              {e.at ? String(e.at).slice(0, 10) : ''}
+                            </span>{' '}
+                            {e.message || e.type}
+                          </li>
+                        ))}
+                    </ul>
+                  </div>
+                )}
+
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">资产挂载</p>
                   <div className="flex flex-wrap gap-2">
@@ -376,14 +694,16 @@ export function MissionControlFab() {
                     </button>
                     <button
                       type="button"
-                      disabled
+                      disabled={latexExporting}
+                      onClick={handleExportLatex}
                       className={clsx(
-                        'inline-flex items-center gap-2 px-3 py-2 rounded-xl border-2 border-slate-300 bg-slate-100',
-                        'text-xs font-bold text-slate-400 cursor-not-allowed opacity-80'
+                        'inline-flex items-center gap-2 px-3 py-2 rounded-xl border-2 border-black bg-white',
+                        'text-xs font-bold shadow-[3px_3px_0px_rgba(0,0,0,0.15)] hover:bg-amber-50',
+                        latexExporting && 'opacity-60 cursor-wait'
                       )}
-                      title="预留：即将支持从写作区导出 LaTeX 压缩包"
+                      title="与写作区相同：导出 IEEEtran ZIP"
                     >
-                      <span>📥</span>
+                      {latexExporting ? <Loader2 size={14} className="animate-spin" /> : <span>📥</span>}
                       <span>生成 LaTeX 压缩包</span>
                     </button>
                   </div>

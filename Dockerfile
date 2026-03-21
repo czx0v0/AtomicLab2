@@ -36,6 +36,8 @@ RUN pip install --no-cache-dir cryptography pyzotero || true
 # Step 3: 大包（RAG功能，尝试安装）
 RUN pip install --no-cache-dir chromadb || echo "[Dockerfile] chromadb 跳过"
 RUN pip install --no-cache-dir sentence-transformers || echo "[Dockerfile] sentence-transformers 跳过"
+# 创空间 embedding 必须从 ModelScope 拉取模型，与 aether_engine/requirements.txt 对齐
+RUN pip install --no-cache-dir "modelscope>=1.10.0" || exit 1
 
 # 复制应用代码
 COPY aether_engine /home/user/app/aether_engine

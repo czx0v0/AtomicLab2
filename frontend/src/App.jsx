@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BookOpen, Info, Layers, Menu, PenLine, X } from 'lucide-react';
+import { BookOpen, Cpu, Info, Layers, Loader2, Menu, PenLine, X } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { healthCheck, resetSession } from './api/client';
@@ -52,6 +52,26 @@ const ResizeHandle = () => (
   <Separator className="w-1 bg-slate-200 hover:bg-slate-300 transition-colors flex flex-col justify-center items-center group relative" />
 );
 
+/** 顶栏下 Agent 状态条：连接等待 vs SSE 流式进行中（与侧栏气泡占位符配合，避免「空 SYNTHESIZER + 底部重复加载」） */
+const AgentPipelineHud = () => {
+  const isAgentThinking = useStore((s) => s.isAgentThinking);
+  const agentStreamActive = useStore((s) => s.agentStreamActive);
+  if (!isAgentThinking && !agentStreamActive) return null;
+  return (
+    <div
+      className="h-7 shrink-0 border-b border-violet-200/90 bg-gradient-to-r from-violet-50/95 to-indigo-50/90 flex items-center justify-center gap-2 px-3 text-[10px] text-violet-900 shadow-[0_1px_0_rgba(15,23,42,0.04)] z-10"
+      role="status"
+      aria-live="polite"
+    >
+      <Cpu size={12} className="shrink-0 text-violet-600" aria-hidden />
+      <Loader2 size={12} className="animate-spin shrink-0 text-violet-600" aria-hidden />
+      <span className="font-medium">
+        {isAgentThinking ? '正在连接并准备上下文…' : 'Agent 协同：路由 · 检索 · 合成（流式输出中）'}
+      </span>
+    </div>
+  );
+};
+
 const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const NavButton = ({ mode, icon: Icon, label }) => (
@@ -81,9 +101,6 @@ const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo 
                 <span>Atomic</span><span className="text-blue-600">Lab</span>
               </h1>
               <p className="text-[10px] text-slate-500 leading-none mt-0.5">Read · Organize · Write</p>
-              <div className="mt-1.5 hidden sm:block">
-                <LocalFirstBadge compact />
-              </div>
             </div>
         </div>
 
@@ -94,8 +111,9 @@ const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo 
             <NavButton mode="write" icon={PenLine} label="Write" />
         </nav>
 
-        {/* Right: 加载 Demo / 重新开始 + Backend Status */}
+        {/* Right: Local-First + 加载 Demo / 重新开始 + Backend Status */}
         <div className="hidden md:flex items-center gap-3">
+            <LocalFirstBadge variant="header" />
             {onLoadDemo && (
               <button
                 type="button"
@@ -318,7 +336,8 @@ function App() {
       <NotificationBar />
       {/* Global Header */}
       {!isZenMode && <Header viewMode={viewMode} setViewMode={setViewMode} backendOnline={backendOnline} onStartOver={handleStartOver} onLoadDemo={handleLoadDemo} />}
-      
+      {!isZenMode && <AgentPipelineHud />}
+
       {/* Resizable Layout：flex-col + min-h-0 保证移动端写作 Tab 获得可计算高度，避免 h-full 塌陷为空白 */}
       <div className="flex-1 w-full relative min-h-0 flex flex-col">
         {/* Desktop / iPad 大屏：三栏可变布局 */}
