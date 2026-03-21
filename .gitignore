@@ -29,3 +29,5 @@ aether_engine/service/__pycache__/parser.cpython-312.pyc
 aether_engine/service/__pycache__/qdrant_client.cpython-312.pyc
 aether_engine/service/__pycache__/*
 aether_engine/service/__pycache__/parser.cpython-312.pyc
+.vscode/*
+.cursor/*
