@@ -7,11 +7,13 @@ import { ChatMessage } from './MiddleColumn';
 /**
  * 原子助手侧栏：嵌入布局右侧，展开时主内容收缩。支持选段附件、AI 对话、点击卡片跳转原文。
  */
-export function AssistantSidebar() {
+export function AssistantSidebar({ embedded = false }) {
   const {
     setCopilotOpen,
     contextAttachment,
     setContextAttachment,
+    setPendingEditorAction,
+    setViewMode,
     messages,
     addMessage,
     updateLastMessage,
@@ -19,10 +21,15 @@ export function AssistantSidebar() {
     setAgentThinking,
     clearMessages,
     activeDocId,
+    ensureProjectDeadlineReminder,
   } = useStore();
 
   const [input, setInput] = useState('');
   const bottomRef = useRef(null);
+
+  useEffect(() => {
+    ensureProjectDeadlineReminder();
+  }, [ensureProjectDeadlineReminder]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -68,17 +75,42 @@ export function AssistantSidebar() {
               role: 'agent',
               agentType: data.agent || 'system',
               content: data.score != null ? `${data.content}\n📊 评分: ${data.score}/10` : data.content,
-              relatedNotes: data.related_notes?.slice(0, 3) ?? [],
+              relatedNotes: data.related_notes?.slice(0, 8) ?? [],
             });
           }
         } else if (type === 'delta' && synthId != null) {
           synthContent += data.token || '';
           updateLastMessage({ content: synthContent });
+        } else if (type === 'action' && data?.function === 'update_markdown_editor') {
+          const content = (data.content || '').trim();
+          const actionType = data.action_type || 'append';
+          if (content) {
+            setViewMode('write');
+            setPendingEditorAction({
+              function: 'update_markdown_editor',
+              action_type: actionType,
+              content,
+            });
+            addMessage({
+              id: Date.now() + Math.random() * 100000,
+              role: 'agent',
+              agentType: 'writer',
+              content: '✅ 已为您将内容生成至左侧编辑器。',
+            });
+          }
         } else if (type === 'done') {
           const sources = data.sources ?? [];
-          if (synthId != null && sources.length > 0) {
-            updateLastMessage({ relatedNotes: sources.slice(0, 3) });
+          const patch = {
+            agentTrace: {
+              traces: data.agent_traces ?? [],
+              retrievedCards: data.retrieved_cards ?? [],
+              elapsedMs: data.elapsed_ms ?? null,
+            },
+          };
+          if (sources.length > 0) {
+            patch.relatedNotes = sources.slice(0, 10);
           }
+          updateLastMessage(patch);
         }
       }, {
         history,
@@ -103,14 +135,16 @@ export function AssistantSidebar() {
       {/* 标题栏 */}
       <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-slate-200 bg-slate-50">
         <span className="text-xs font-semibold text-slate-800">原子助手</span>
-          <button
-            type="button"
-            onClick={() => setCopilotOpen(false)}
-            className="p-1.5 rounded hover:bg-gray-200 text-gray-600"
-            aria-label="关闭"
-          >
-            <X size={16} />
-          </button>
+          {!embedded && (
+            <button
+              type="button"
+              onClick={() => setCopilotOpen(false)}
+              className="p-1.5 rounded hover:bg-gray-200 text-gray-600"
+              aria-label="关闭"
+            >
+              <X size={16} />
+            </button>
+          )}
         </div>
 
         {/* 消息列表 */}

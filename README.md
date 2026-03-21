@@ -50,3 +50,49 @@ license: Apache License 2.0
 ```bash
  git clone https://www.modelscope.cn/studios/czx0v0/AtomicLab2.git
 ```
+
+---
+
+## 本地
+
+### 方式 A：Docker 一次运行（推荐，最接近创空间）
+
+在 `modelspace-deploy` 根目录执行：
+
+```bash
+docker build -t atomiclab .
+docker run --rm -p 7860:7860 --env-file .env atomiclab
+```
+
+访问：`http://localhost:7860`
+
+### 方式 B：本地开发（前后端分开跑）
+
+后端：
+
+```bash
+cd modelspace-deploy
+pip install -r aether_engine/requirements.txt
+python app.py
+```
+
+前端（新开终端）：
+
+```bash
+cd modelspace-deploy/frontend
+npm install
+npm run dev
+```
+
+访问：`http://localhost:5173`（已通过 Vite 代理到后端 7860）
+
+### 投稿与进度（Mission Control）
+
+- 右下角 **🚩** 打开「任务控制中心」：当前课题标题/目标会议、6 阶段像素时间线、草稿 Markdown 快捷入口。
+- 截稿 **不足 7 天** 时浮层顶部 **Urgent** 提示；展开 **原子助手** 时会在聊天最前插入一条截稿催更（每标签页一次）。
+- 详细说明见 [`docs/mission-control.md`](docs/mission-control.md)。
+
+### MinerU 云解析
+
+- 配置 `MINERU_API_TOKEN`（或 `MINERU_API_KEY`）后，解析走云 API。
+- 未配置时会回退本地 CLI（`mineru.exe` / `magic-pdf`）。

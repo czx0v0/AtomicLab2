@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+aether_engine/service/__pycache__/*
 *.py[cod]
 *.pyo
 *.pyd
@@ -18,3 +19,7 @@ frontend/dist/
 .env
 .env.*
 !.env.example
+
+# 项目文档（如 mission-control.md）纳入版本控制
+aether_engine/service/__pycache__/doc_rag.cpython-312.pyc
+aether_engine/service/__pycache__/note_rag.cpython-312.pyc

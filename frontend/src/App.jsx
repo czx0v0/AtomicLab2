@@ -1,15 +1,16 @@
-import React, { useRef, useEffect } from 'react';
-import { useStore } from './store/useStore';
-import { LeftColumn } from './components/LeftColumn';
-import { MiddleColumn, ReferencePanel } from './components/MiddleColumn';
-import { RightColumn } from './components/RightColumn';
-import { AssistantFab } from './components/CopilotFab';
-import { AssistantSidebar } from './components/CopilotSidebar';
-import { Panel, Group, Separator } from "react-resizable-panels";
-import { BookOpen, Layers, PenLine, X, Info } from 'lucide-react';
-import { healthCheck, resetSession, loadDemo } from './api/client';
 import clsx from 'clsx';
 import { AnimatePresence, motion } from 'framer-motion';
+import { BookOpen, Info, Layers, Menu, PenLine, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Group, Panel, Separator } from "react-resizable-panels";
+import { healthCheck, resetSession } from './api/client';
+import { AssistantFab } from './components/CopilotFab';
+import { MissionControlFab } from './components/MissionControlFab';
+import { AssistantSidebar } from './components/CopilotSidebar';
+import { LeftColumn } from './components/LeftColumn';
+import { MiddleColumn } from './components/MiddleColumn';
+import { WriteTab } from './components/WriteTab';
+import { useStore } from './store/useStore';
 
 /** 全局浮动通知条（替代 alert/Toast），中性灰 SaaS 风格 */
 const NotificationBar = () => {
@@ -49,6 +50,7 @@ const ResizeHandle = () => (
 );
 
 const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo }) => {
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const NavButton = ({ mode, icon: Icon, label }) => (
     <button 
       onClick={() => setViewMode(mode)}
@@ -65,7 +67,7 @@ const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo 
   );
 
   return (
-    <header className="h-12 border-b border-slate-200 flex items-center justify-between px-4 bg-white select-none relative z-20">
+    <header className="h-12 border-b border-slate-200 flex items-center justify-between px-3 md:px-4 bg-white select-none relative z-20">
         {/* Left: Brand */}
         <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center">
@@ -80,14 +82,14 @@ const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo 
         </div>
 
         {/* Center: 三 Tab — Read / Organize / Write（ArXiv、对话嵌入 Organize） */}
-        <nav className="flex h-full items-end gap-0.5">
+        <nav className="hidden md:flex h-full items-end gap-0.5">
             <NavButton mode="read" icon={BookOpen} label="Read" />
             <NavButton mode="organize" icon={Layers} label="Organize" />
             <NavButton mode="write" icon={PenLine} label="Write" />
         </nav>
 
         {/* Right: 加载 Demo / 重新开始 + Backend Status */}
-        <div className="flex items-center gap-3">
+        <div className="hidden md:flex items-center gap-3">
             {onLoadDemo && (
               <button
                 type="button"
@@ -111,23 +113,98 @@ const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo 
                 <span className={backendOnline ? 'text-emerald-600' : 'text-slate-400'}>{backendOnline ? 'Online' : 'Offline'}</span>
             </div>
         </div>
+        {/* Mobile: 状态 + 汉堡菜单 */}
+        <div className="md:hidden flex items-center gap-2">
+          <span className={clsx('w-2 h-2 rounded-full', backendOnline ? 'bg-emerald-500 animate-pulse' : 'bg-red-400')} />
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen((v) => !v)}
+            className="p-2 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+            aria-label="打开菜单"
+          >
+            <Menu size={16} />
+          </button>
+        </div>
+        {/* Mobile: 下拉菜单 */}
+        <AnimatePresence>
+          {mobileMenuOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              className="md:hidden absolute top-12 left-0 right-0 bg-white border-b border-slate-200 shadow-sm z-30 p-2 space-y-2"
+            >
+              <div className="grid grid-cols-3 gap-1">
+                <button
+                  type="button"
+                  onClick={() => { setViewMode('read'); setMobileMenuOpen(false); }}
+                  className={clsx('px-2 py-2 rounded text-xs', viewMode === 'read' ? 'bg-blue-50 text-blue-700' : 'bg-slate-50 text-slate-600')}
+                >
+                  Read
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setViewMode('organize'); setMobileMenuOpen(false); }}
+                  className={clsx('px-2 py-2 rounded text-xs', viewMode === 'organize' ? 'bg-blue-50 text-blue-700' : 'bg-slate-50 text-slate-600')}
+                >
+                  Organize
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setViewMode('write'); setMobileMenuOpen(false); }}
+                  className={clsx('px-2 py-2 rounded text-xs', viewMode === 'write' ? 'bg-blue-50 text-blue-700' : 'bg-slate-50 text-slate-600')}
+                >
+                  Write
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                {onLoadDemo && (
+                  <button
+                    type="button"
+                    onClick={() => { onLoadDemo(); setMobileMenuOpen(false); }}
+                    className="flex-1 text-[11px] px-2 py-1.5 rounded border border-amber-300 bg-amber-50 text-amber-700"
+                  >
+                    加载 Demo
+                  </button>
+                )}
+                {onStartOver && (
+                  <button
+                    type="button"
+                    onClick={() => { onStartOver(); setMobileMenuOpen(false); }}
+                    className="flex-1 text-[11px] px-2 py-1.5 rounded border border-slate-300 text-slate-600"
+                  >
+                    重新开始
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
     </header>
   );
 };
 
 function App() {
-  const { isZenMode, viewMode, setViewMode, backendOnline, setBackendOnline, startOver, setNotification, copilotOpen, setStartDemoLoad } = useStore();
+  const {
+    isZenMode,
+    viewMode,
+    setViewMode,
+    backendOnline,
+    setBackendOnline,
+    startOver,
+    setNotification,
+    copilotOpen,
+    setCopilotOpen,
+    setStartDemoLoad,
+    mobileReferenceOpen,
+    setMobileReferenceOpen,
+  } = useStore();
   const handleStartOver = () => {
     resetSession().then(() => startOver()).catch(() => startOver());
   };
   const handleLoadDemo = () => {
-    resetSession()
-      .then(() => loadDemo())
-      .then(() => {
-        setViewMode('read');
-        setStartDemoLoad(true);
-      })
-      .catch((e) => setNotification(e?.message || '加载白皮书失败', 'error'));
+    setViewMode('read');
+    setStartDemoLoad(true);
   };
   const panelGroupRef = useRef(null);
 
@@ -155,6 +232,31 @@ function App() {
     return () => clearTimeout(t);
   }, [viewMode, copilotOpen]);
 
+  useEffect(() => {
+    if (viewMode !== 'write' && mobileReferenceOpen) {
+      setMobileReferenceOpen(false);
+    }
+  }, [viewMode, mobileReferenceOpen, setMobileReferenceOpen]);
+
+  // #region agent log
+  useEffect(() => {
+    if (viewMode !== 'write') return;
+    fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '360e80' },
+      body: JSON.stringify({
+        sessionId: '360e80',
+        runId: 'write-tab',
+        hypothesisId: 'H-header',
+        location: 'App.jsx:viewMode-write',
+        message: 'switched to write tab',
+        data: { isZenMode, headerRendered: !isZenMode, copilotOpen },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }, [viewMode, isZenMode, copilotOpen]);
+  // #endregion
+
   return (
     <div className="h-screen w-full flex flex-col font-sans antialiased overflow-hidden bg-slate-50 text-slate-900">
       {/* 全局浮动通知（替代 alert） */}
@@ -164,36 +266,105 @@ function App() {
       
       {/* Resizable Layout */}
       <div className="flex-1 w-full relative min-h-0">
-        <Group ref={panelGroupRef} direction="horizontal" className="h-full w-full min-h-0">
-            {/* 左栏：Read = PDF+章节，Write = 写作区，Organize = 可选原文 PDF（复用阅读界面） */}
-            <Panel defaultSize={viewMode === 'organize' ? 25 : 30} minSize={viewMode === 'organize' ? 0 : 15} collapsible={true} order={1} className="bg-white min-h-0">
-                {viewMode === 'write' ? <RightColumn /> : (viewMode === 'read' || viewMode === 'organize') ? <LeftColumn /> : <div className="h-full bg-slate-50" />}
-            </Panel>
+        {/* Desktop / iPad 大屏：三栏可变布局 */}
+        <div className="hidden md:block h-full w-full">
+          {/* viewMode 作为 key：避免从 Read 切换 Write 时沿用已折叠的左栏宽度导致写作区/顶栏视觉异常 */}
+          <Group key={viewMode} ref={panelGroupRef} direction="horizontal" className="h-full w-full min-h-0">
+              {/* 左栏：Read = PDF+章节，Write = 写作区，Organize = 可选原文 PDF（复用阅读界面） */}
+              <Panel defaultSize={viewMode === 'organize' ? 25 : 30} minSize={viewMode === 'organize' ? 0 : 15} collapsible={true} order={1} className="bg-white min-h-0">
+                  {viewMode === 'write' ? <RightColumn /> : (viewMode === 'read' || viewMode === 'organize') ? <LeftColumn /> : <div className="h-full bg-slate-50" />}
+              </Panel>
 
-            <ResizeHandle />
+              <ResizeHandle />
 
-            {/* 中栏：Read = 章节与笔记，Write = 参考面板，Organize = 多视图（卡片/树/脑图/图谱/ArXiv/对话） */}
-            <Panel defaultSize={40} minSize={0} collapsible={true} order={2} className="bg-slate-50 min-h-0">
-                <MiddleColumn />
-            </Panel>
+              {/* 中栏：Read = 章节与笔记，Write = 参考面板，Organize = 多视图（卡片/树/脑图/图谱/ArXiv/对话） */}
+              <Panel defaultSize={40} minSize={0} collapsible={true} order={2} className="bg-slate-50 min-h-0">
+                  <MiddleColumn />
+              </Panel>
 
-            <ResizeHandle />
+              <ResizeHandle />
 
-            {/* 右栏：仅 AI 助手展开时占位（Organize 不放大纲栏，留出宽度给助手） */}
-            <Panel key={`right-${viewMode}-${copilotOpen}`} defaultSize={copilotOpen ? 30 : 0} minSize={copilotOpen ? 25 : 0} collapsible={true} order={3} className="bg-white min-h-0">
-                {copilotOpen ? <AssistantSidebar /> : <div className="h-full bg-slate-50" />}
-            </Panel>
-        </Group>
+              {/* 右栏：仅 AI 助手展开时占位（Organize 不放大纲栏，留出宽度给助手） */}
+              <Panel key={`right-${viewMode}-${copilotOpen}`} defaultSize={copilotOpen ? 30 : 0} minSize={copilotOpen ? 25 : 0} collapsible={true} order={3} className="bg-white min-h-0">
+                  {copilotOpen ? <AssistantSidebar /> : <div className="h-full bg-slate-50" />}
+              </Panel>
+          </Group>
+        </div>
+
+        {/* Mobile：单栏堆叠（按 viewMode 展示核心工作区） */}
+        <div className="md:hidden h-full w-full bg-white">
+          {viewMode === 'write' ? <WriteTab /> : viewMode === 'read' ? <LeftColumn /> : <MiddleColumn />}
+        </div>
       </div>
-      {/* 专注模式下助手以悬浮层显示在编辑器之上，不破坏全屏布局 */}
+
+      {/* Mobile：Write 参考资料半屏抽屉（覆盖编辑器） */}
+      <AnimatePresence>
+        {viewMode === 'write' && mobileReferenceOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="md:hidden fixed inset-0 bg-black/30 z-[9991]"
+              onClick={() => setMobileReferenceOpen(false)}
+            />
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 24, stiffness: 260 }}
+              className="md:hidden fixed left-0 right-0 bottom-0 h-[68vh] bg-white border-t border-slate-200 rounded-t-2xl z-[9992] overflow-hidden"
+            >
+              <div className="h-11 px-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+                <span className="text-sm font-medium text-slate-700">参考资料</span>
+                <button
+                  type="button"
+                  className="p-1.5 rounded hover:bg-slate-200 text-slate-600"
+                  onClick={() => setMobileReferenceOpen(false)}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="h-[calc(68vh-44px)]">
+                <MiddleColumn />
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+      {/* 移动端：全局 AI 助手 BottomSheet */}
+      <AnimatePresence>
+        {copilotOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="md:hidden fixed inset-0 bg-black/35 z-[9996]"
+              onClick={() => setCopilotOpen(false)}
+            />
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 24, stiffness: 260 }}
+              className="md:hidden fixed left-0 right-0 bottom-0 h-[82vh] bg-white rounded-t-2xl border-t border-slate-200 z-[9997] overflow-hidden"
+            >
+              <AssistantSidebar embedded />
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+      {/* 专注模式下助手：桌面侧滑 */}
       {isZenMode && copilotOpen && (
-        <div className="fixed inset-0 z-[9998] pointer-events-none">
+        <div className="hidden md:block fixed inset-0 z-[9998] pointer-events-none">
           <div className="pointer-events-auto absolute right-0 top-0 bottom-0 w-full max-w-md bg-white border-l border-slate-200 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <AssistantSidebar />
           </div>
         </div>
       )}
-      {/* 原子助手入口：点击展开/收起右侧栏，主内容动态收缩（z 高于专注层以保可点） */}
+      {/* 投稿进度 🚩 + 原子助手入口（z 高于专注层以保可点） */}
+      <MissionControlFab />
       <AssistantFab />
     </div>
   );

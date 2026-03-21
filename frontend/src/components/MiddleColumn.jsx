@@ -1,21 +1,45 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { useStore } from '../store/useStore';
-import { useScreenshot } from '../hooks/useScreenshot';
 import clsx from 'clsx';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Search, Brain, Layers, MessageSquare, User, Bot, Sparkles, BookOpen,
-  ArrowRight, MousePointer2, Download, ExternalLink, Loader2, AlertCircle,
-  Network, FileSearch, Send, X, Plus, GitBranch, Tag, Trash2, Languages, Highlighter, ListTree, ChevronRight, FileText, Link2
+    AlertCircle,
+    ArrowRight,
+    BookOpen,
+    Bot,
+    Brain,
+    ChevronRight,
+    Download, ExternalLink,
+    FileSearch,
+    FileText,
+    GitBranch,
+    Inbox,
+    Highlighter,
+    Languages,
+    Layers,
+    Link2,
+    ListTree,
+    Loader2,
+    Plus,
+    Network,
+    Search,
+    Send,
+    Sparkles,
+    Tag, Trash2,
+    ThumbsDown,
+    ThumbsUp,
+    User,
+    Waypoints,
+    X,
+    Flag
 } from 'lucide-react';
-import { Document, Page } from 'react-pdf';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import rehypeHighlight from 'rehype-highlight';
+import { Document, Page } from 'react-pdf';
 import * as api from '../api/client';
+import { AgentTraceThoughtChain } from './AgentTraceThoughtChain';
+import { MarkdownRenderer } from './MarkdownRenderer';
+import { AssistantSidebar } from './CopilotSidebar';
+import { useScreenshot } from '../hooks/useScreenshot';
+import { SESSION_ID, useStore } from '../store/useStore';
 
 // ─── 笔记连接面板（连接至其他卡片，在图谱中显示）────────────────────────────────
 const NoteLinkPanel = ({ note, otherNotes = [] }) => {
@@ -63,7 +87,7 @@ const NoteLinkPanel = ({ note, otherNotes = [] }) => {
   );
 };
 
-// ─── 结构化原子卡片（公理 / 方法 / 边界，含 KaTeX 公式 + 带颜色 Tag）────────────
+// ─── 结构化原子卡片（公理 / 方法 / 边界，含 KaTeX 公式 + 醒目徽标）────────────
 const AtomicCardDetail = ({ note, compact = false }) => {
   const hasStructured = note.axiom || note.method || note.boundary;
   if (!hasStructured) {
@@ -74,43 +98,43 @@ const AtomicCardDetail = ({ note, compact = false }) => {
   const blockCls = compact ? 'text-[11px] leading-relaxed' : 'text-xs leading-relaxed';
   return (
     <div className="space-y-2.5">
-      <div className="flex flex-wrap gap-1 mb-1">
+      <div className="flex flex-wrap gap-1.5 mb-1">
         {note.axiom && (
-          <span className="px-1.5 py-0.5 text-[9px] font-sans font-bold uppercase tracking-wider rounded bg-cyan-100 text-cyan-800 border border-cyan-300">
-            核心公理
+          <span className="px-2 py-0.5 text-[9px] font-bold rounded-md bg-white text-red-800 border-2 border-red-300 shadow-sm">
+            🔴 Axiom 公理
           </span>
         )}
         {note.method && (
-          <span className="px-1.5 py-0.5 text-[9px] font-sans font-bold uppercase tracking-wider rounded bg-purple-100 text-purple-800 border border-purple-300">
-            方法公式
+          <span className="px-2 py-0.5 text-[9px] font-bold rounded-md bg-white text-blue-800 border-2 border-blue-300 shadow-sm">
+            🔵 Method 方法
           </span>
         )}
         {note.boundary && (
-          <span className="px-1.5 py-0.5 text-[9px] font-sans font-bold uppercase tracking-wider rounded bg-amber-100 text-amber-800 border border-amber-300">
-            场景边界
+          <span className="px-2 py-0.5 text-[9px] font-bold rounded-md bg-white text-emerald-800 border-2 border-emerald-300 shadow-sm">
+            🟢 Boundary 边界
           </span>
         )}
       </div>
       {note.axiom && (
-        <div>
-          <p className="text-[9px] font-sans text-cyan-700 uppercase tracking-wider mb-0.5">公理 (Axiom)</p>
-          <p className={clsx('text-gray-800', blockCls)}>{note.axiom}</p>
+        <div className="rounded-md border border-red-100 bg-red-50/40 px-2 py-1.5">
+          <p className="text-[9px] font-sans text-red-700 font-semibold mb-0.5">Axiom</p>
+          <p className={clsx('text-gray-900', blockCls)}>{note.axiom}</p>
         </div>
       )}
       {note.method && (
-        <div>
-          <p className="text-[9px] font-sans text-purple-700 uppercase tracking-wider mb-0.5">方法 (Method)</p>
-          <div className={clsx('bg-slate-50 border border-slate-200 rounded-md px-2 py-1.5 overflow-x-auto [&_.katex]:text-sm', blockCls)}>
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeHighlight]}>
+        <div className="rounded-md border border-blue-100 bg-blue-50/40 px-2 py-1.5">
+          <p className="text-[9px] font-sans text-blue-800 font-semibold mb-0.5">Method</p>
+          <div className={clsx('bg-white border border-slate-200 rounded-md px-2 py-1.5 overflow-x-auto [&_.katex]:text-sm', blockCls)}>
+            <MarkdownRenderer>
               {note.method}
-            </ReactMarkdown>
+            </MarkdownRenderer>
           </div>
         </div>
       )}
       {note.boundary && (
-        <div>
-          <p className="text-[9px] font-sans text-amber-700 uppercase tracking-wider mb-0.5">边界 (Boundary)</p>
-          <p className={clsx('text-gray-700', blockCls)}>{note.boundary}</p>
+        <div className="rounded-md border border-emerald-100 bg-emerald-50/40 px-2 py-1.5">
+          <p className="text-[9px] font-sans text-emerald-800 font-semibold mb-0.5">Boundary</p>
+          <p className={clsx('text-gray-800', blockCls)}>{note.boundary}</p>
         </div>
       )}
       {note.content && !note.axiom && !note.method && !note.boundary && (
@@ -168,7 +192,7 @@ const SearchVisualizer = ({ status, query }) => {
   );
 };
 
-// ─── 原子笔记卡片 ──────────────────────────────────────────────────────────────
+// ─── 笔记卡片：普通笔记（原文摘录）与原子知识（结构化 + 白底阴影）严格区分 ───────
 const NoteCard = ({ note, onDelete }) => {
   const { pdfFile, setActiveReference, addHighlight } = useStore();
   const { imageSrc: hookSrc, loading: hookLoading } = useScreenshot(
@@ -177,6 +201,8 @@ const NoteCard = ({ note, onDelete }) => {
   const imageSrc = note.screenshot || hookSrc;
   const loading = !note.screenshot && hookLoading;
   const [actionLoading, setActionLoading] = useState(null);
+
+  const isAtomicKnowledge = !!(note.axiom || note.method || note.boundary);
 
   const typeColor = {
     method:     'bg-cyan-100 text-cyan-900 border-cyan-800',
@@ -227,12 +253,19 @@ const NoteCard = ({ note, onDelete }) => {
 
   const handleCrush = async () => {
     if (!note.content || actionLoading) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H2',location:'MiddleColumn.jsx:handleCrush:start',message:'crush clicked',data:{noteId:note.id||'',contentLen:(note.content||'').length,hasAtomic:!!(note.axiom||note.method||note.boundary)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     setActionLoading('crush');
     try {
       const resp = await api.decomposeNote(note.content, note.id, useStore.getState().activeDocId || '');
-      const axiom = resp.axiom ?? '';
-      const method = resp.method ?? '';
-      const boundary = resp.boundary ?? '';
+      const firstAtom = Array.isArray(resp?.atoms) && resp.atoms.length > 0 ? resp.atoms[0] : {};
+      const axiom = (resp.axiom ?? firstAtom?.axiom ?? '').trim();
+      const method = (resp.method ?? firstAtom?.methodology ?? '').trim();
+      const boundary = (resp.boundary ?? firstAtom?.boundary ?? '').trim();
+      // #region agent log
+      fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H2',location:'MiddleColumn.jsx:handleCrush:resp',message:'decompose response',data:{noteId:note.id||'',axiomLen:axiom.length,methodLen:method.length,boundaryLen:boundary.length,hasMessage:!!resp.message},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       if (axiom || method || boundary) {
         try {
           await api.updateNote(note.id, { axiom, method, boundary });
@@ -241,6 +274,9 @@ const NoteCard = ({ note, onDelete }) => {
         useStore.getState().setNotes(notes.map(n =>
           n.id === note.id ? { ...n, axiom, method, boundary } : n
         ));
+        // #region agent log
+        fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H2',location:'MiddleColumn.jsx:handleCrush:setNotes',message:'set atomic fields to store note',data:{noteId:note.id||'',storeAtomicCount:(useStore.getState().notes||[]).filter(x=>x.axiom||x.method||x.boundary).length},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
       }
       if (!(axiom || method || boundary) && resp.message) {
         const notes = useStore.getState().notes;
@@ -269,13 +305,32 @@ const NoteCard = ({ note, onDelete }) => {
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="bg-white border-2 border-black shadow-[4px_4px_0px_#000] p-3 flex flex-col gap-2 group hover:-translate-y-0.5 hover:shadow-[6px_6px_0px_#000] transition-all relative"
+      className={clsx(
+        'p-3 flex flex-col gap-2 group transition-all relative',
+        isAtomicKnowledge
+          ? 'bg-white border border-slate-200 rounded-xl shadow-[0_4px_14px_rgba(15,23,42,0.08)] hover:shadow-[0_6px_20px_rgba(15,23,42,0.12)] border-t-[3px] border-t-emerald-500'
+          : 'bg-slate-100/95 border-l-4 border-slate-600 rounded-r-lg shadow-sm ring-1 ring-slate-200/80'
+      )}
     >
-      <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+      <div className={clsx('flex items-center justify-between pb-2', isAtomicKnowledge ? 'border-b border-slate-100' : 'border-b border-slate-300/40')}>
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={clsx('px-2 py-0.5 text-[9px] uppercase font-bold border-2 font-sans', typeColor[note.type] ?? 'bg-gray-100 text-gray-900 border-gray-800')}>
-            {note.type}
-          </span>
+          {isAtomicKnowledge ? (
+            <>
+              <span className="text-[9px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">⚛️ 原子知识</span>
+              {note.type && (
+                <span className={clsx('px-2 py-0.5 text-[9px] uppercase font-bold border font-sans rounded', typeColor[note.type] ?? 'bg-slate-100 text-slate-800 border-slate-300')}>
+                  {note.type}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="text-[9px] font-semibold text-slate-600 tracking-wide">原文摘录</span>
+              <span className={clsx('px-1.5 py-0.5 text-[9px] font-bold border-l-2 border-slate-400 pl-2 text-slate-700', typeColor[note.type] ?? 'bg-slate-200/80 text-slate-800')}>
+                {note.type || 'note'}
+              </span>
+            </>
+          )}
           {(note.content === '[截图高亮]' || (note.screenshot && !note.content?.trim())) && (
             <span className="px-1.5 py-0.5 text-[8px] font-sans text-amber-700 bg-amber-100 border border-amber-300 rounded" title="文字未识别，切页或解析完成后将自动补全">待识别</span>
           )}
@@ -284,7 +339,12 @@ const NoteCard = ({ note, onDelete }) => {
           {note.page && (
             <button
               onClick={() => setActiveReference({ page: note.page, bbox: note.bbox ?? [0,0,0,0] })}
-              className="text-[9px] bg-gray-50 border border-gray-300 px-2 py-0.5 hover:bg-black hover:text-white flex items-center gap-1 cursor-pointer font-mono transition-colors"
+              className={clsx(
+                'text-[9px] px-2 py-0.5 flex items-center gap-1 cursor-pointer font-mono transition-colors border rounded',
+                isAtomicKnowledge
+                  ? 'bg-slate-50 border-slate-300 hover:bg-slate-900 hover:text-white'
+                  : 'bg-white/80 border-slate-400 hover:bg-slate-800 hover:text-white'
+              )}
             >
               <BookOpen size={9} />p.{note.page}
             </button>
@@ -297,8 +357,14 @@ const NoteCard = ({ note, onDelete }) => {
         </div>
       </div>
 
-      {/* 截图卡片显示预览图；文字卡片显示文字占位（与截图区分） */}
-      <div className="w-full h-28 bg-gray-50 border border-dashed border-gray-200 relative overflow-hidden flex items-center justify-center">
+      <div
+        className={clsx(
+          'w-full h-28 relative overflow-hidden flex items-center justify-center rounded-md',
+          isAtomicKnowledge
+            ? 'bg-slate-50 border border-dashed border-slate-200'
+            : 'bg-white/70 border border-slate-300/60 border-dashed'
+        )}
+      >
         {loading ? (
           <div className="flex flex-col items-center gap-2">
             <Loader2 size={16} className="animate-spin text-gray-400" />
@@ -311,13 +377,18 @@ const NoteCard = ({ note, onDelete }) => {
         ) : (
           <div className="text-center text-gray-400 px-2 w-full">
             <FileText size={18} className="mx-auto mb-1 opacity-60" />
-            <span className="text-[9px] font-sans block truncate">文字片段</span>
+            <span className="text-[9px] font-sans block truncate">{isAtomicKnowledge ? '关联片段' : '原文摘录预览'}</span>
           </div>
         )}
       </div>
 
-      {/* 内容：优先结构化公理/方法/边界，否则原文 */}
-      <AtomicCardDetail note={note} />
+      {isAtomicKnowledge ? (
+        <AtomicCardDetail note={note} />
+      ) : (
+        <blockquote className="text-[11px] text-slate-800 leading-relaxed whitespace-pre-wrap border-l-4 border-slate-400 pl-3 py-2 bg-white/50 rounded-r-md">
+          {note.content || '（无内容）'}
+        </blockquote>
+      )}
       {note.translation && (
         <p className="text-xs text-gray-500 bg-gray-50 p-2 border-l-4 border-gray-300 italic leading-relaxed line-clamp-3">
           {note.translation}
@@ -469,14 +540,40 @@ const TreeMapView = ({ notes, sections = [], docName = '', onSelectNote }) => {
 };
 
 // ─── 知识图谱视图（力导向：文档→章节→普通卡片→原子知识为下一层级）────────────
-const LEVEL_COLORS = { document: '#3b82f6', section: '#10b981', method: '#06b6d4', formula: '#a855f7', idea: '#f59e0b', definition: '#22c55e', data: '#ef4444', other: '#6b7280', tag: '#c084fc', atomic_note: '#059669' };
+const LEVEL_COLORS = { document: '#3b82f6', section: '#10b981', method: '#06b6d4', formula: '#a855f7', idea: '#f59e0b', definition: '#22c55e', data: '#ef4444', other: '#6b7280', tag: '#c084fc', atomic_note: '#059669', atomic: '#059669' };
+
+/** 与画布节点 type/level 对齐的中文图例（动态图例用 key 索引） */
+const GRAPH_TYPE_LABELS = {
+  document: '文献',
+  section: '章节',
+  note: '笔记',
+  atomic_note: '原子知识',
+  atomic: '原子知识',
+  tag: '标签',
+  entity: '概念实体',
+  other: '其他',
+  unknown: '未知',
+};
 
 const isAtomicNoteNode = (n) => !!(n.axiom || n.method || n.boundary);
 
-const GraphView = ({ notes, sections = [], docName = '' }) => {
-  const { setActiveReference, noteLinks } = useStore();
+/** 图谱节点是否视为「原子」类（兼容 API 的 atomic / atomic_note） */
+const isGraphAtomicType = (n) => {
+  const t = String(n?.type || n?.level || n?.category || '');
+  return t === 'atomic' || t === 'atomic_note';
+};
+
+/** 从节点解析用于分组与统计的类型键（与后端 nodes[].type 一致） */
+const graphNodeTypeKey = (n) => String(n?.type || n?.level || n?.category || 'unknown');
+
+const GraphView = ({ scope = 'global', docId = '', docName = '' }) => {
+  const { setActiveReference } = useStore();
   const containerRef = useRef(null);
   const [dims, setDims] = useState({ w: 500, h: 400 });
+  const [graphData, setGraphData] = useState({ nodes: [], links: [] });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [meta, setMeta] = useState({ truncated: false, message: '' });
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -487,94 +584,90 @@ const GraphView = ({ notes, sections = [], docName = '' }) => {
     return () => ro.disconnect();
   }, []);
 
-  const graphData = React.useMemo(() => {
-    const nodes = [];
-    const links = [];
-    const nodesById = {};
-
-    // ── 文档根节点 ────────────────────────────────────────────────────────
-    const docId = 'doc_root';
-    const docNode = { id: docId, label: docName || '文档', level: 'document', color: LEVEL_COLORS.document, sz: 14 };
-    nodes.push(docNode);
-    nodesById[docId] = docNode;
-
-    // ── 章节节点 ──────────────────────────────────────────────────────────
-    const secMap = assignNotesToSections(notes, sections);
-    const sectionNodes = [];
-    sections.forEach((sec, idx) => {
-      const secId = `sec_${idx}`;
-      const secNode = { id: secId, label: sec.title?.substring(0, 24), level: 'section', color: LEVEL_COLORS.section, sz: 10 };
-      nodes.push(secNode);
-      nodesById[secId] = secNode;
-      sectionNodes.push(secNode);
-      links.push({ source: docNode, target: secNode, type: 'contains' });
-    });
-
-    // ── 笔记节点：普通卡片一层，粉碎后的原子知识为下一层级（更小、绿色）────
-    const tagSet = {};
-    notes.forEach(n => {
-      const isAtomic = isAtomicNoteNode(n);
-      const level = isAtomic ? 'atomic_note' : (n.type || 'other');
-      const color = isAtomic ? LEVEL_COLORS.atomic_note : (LEVEL_COLORS[n.type] || LEVEL_COLORS.other);
-      const sz = isAtomic ? 4 : 6;
-      const label = (n.axiom || n.content || n.id)?.toString().substring(0, 18) + '…';
-      const noteNode = { id: n.id, label, level, page: n.page, bbox: n.bbox, color, sz, isAtomic };
-      nodes.push(noteNode);
-      nodesById[n.id] = noteNode;
-
-      if (sections.length > 0) {
-        let linked = false;
-        for (let idx = 0; idx < sections.length; idx++) {
-          const list = secMap[idx] || [];
-          if (list.some((nn) => nn.id === n.id)) {
-            const secNode = sectionNodes[idx];
-            if (secNode) { links.push({ source: secNode, target: noteNode, type: 'contains' }); linked = true; }
-            break;
-          }
-        }
-        if (!linked && sectionNodes[0]) links.push({ source: sectionNodes[0], target: noteNode, type: 'contains' });
-      } else {
-        links.push({ source: docNode, target: noteNode, type: 'contains' });
-      }
-
-      (n.keywords || []).forEach(kw => {
-        const tagId = `tag_${kw}`;
-        if (!tagSet[kw]) {
-          tagSet[kw] = true;
-          const tagNode = { id: tagId, label: `#${kw}`, level: 'tag', color: LEVEL_COLORS.tag, sz: 4 };
-          nodes.push(tagNode);
-          nodesById[tagId] = tagNode;
-        }
-        links.push({ source: noteNode, target: nodesById[tagId], type: 'tagged_with' });
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    api.getOrganizeGraph(scope === 'current' ? (docId || '') : 'global', 200)
+      .then((resp) => {
+        if (cancelled) return;
+        const nodes = Array.isArray(resp?.nodes) ? resp.nodes.map((n) => {
+          const t = n.type;
+          let level = 'other';
+          if (t === 'document') level = 'document';
+          else if (t === 'section') level = 'section';
+          else if (t === 'note') level = 'note';
+          else if (t === 'atomic_note' || t === 'atomic') level = 'atomic_note';
+          else if (t === 'tag') level = 'tag';
+          else if (t === 'entity') level = 'entity';
+          const color = n.color || LEVEL_COLORS[level] || LEVEL_COLORS.other;
+          const sz = n.size || (t === 'document' ? 12 : t === 'section' ? 9 : t === 'note' ? 7 : t === 'atomic_note' || t === 'atomic' ? 6 : t === 'tag' || t === 'entity' ? 5 : 5);
+          return { ...n, level, color, sz };
+        }) : [];
+        const links = Array.isArray(resp?.edges) ? resp.edges.map((e) => {
+          const rel = (e.relation || '').toLowerCase();
+          let type = 'assoc';
+          if (rel === 'contains') type = 'contains';
+          else if (rel === 'tagged') type = 'tagged';
+          else if (rel === 'mentions') type = 'mentions';
+          return { source: e.source, target: e.target, type, relation: e.relation || '' };
+        }) : [];
+        setGraphData({ nodes, links });
+        setMeta({
+          truncated: !!resp?.truncated,
+          message: resp?.message || '',
+        });
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e?.message || '图谱加载失败');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
+    return () => { cancelled = true; };
+  }, [scope, docId]);
+
+  /** 图例与统计完全来自当前画布 nodes，与节点颜色一致 */
+  const graphLegendAndStats = useMemo(() => {
+    const nodes = graphData.nodes;
+    const keys = [...new Set(nodes.map(graphNodeTypeKey))].sort();
+    const entries = keys.map((key) => {
+      const sample = nodes.find((n) => graphNodeTypeKey(n) === key);
+      const color = sample?.color || LEVEL_COLORS[key] || LEVEL_COLORS.other;
+      const count = nodes.filter((n) => graphNodeTypeKey(n) === key).length;
+      return { key, color, count, label: GRAPH_TYPE_LABELS[key] || key };
     });
-
-    const kwMap = {};
-    notes.forEach(n => { (n.keywords || []).forEach(kw => { (kwMap[kw] ??= []).push(n.id); }); });
-    Object.values(kwMap).forEach(ids => {
-      for (let i = 0; i < ids.length - 1; i++) {
-        const a = nodesById[ids[i]];
-        const b = nodesById[ids[i + 1]];
-        if (a && b) links.push({ source: a, target: b, type: 'references' });
-      }
-    });
-
-    (noteLinks || []).forEach((l) => {
-      const a = nodesById[l.sourceId];
-      const b = nodesById[l.targetId];
-      if (a && b) links.push({ source: a, target: b, type: 'manual' });
-    });
-
-    return { nodes, links };
-  }, [notes, sections, docName, noteLinks]);
-
-  const totalNodes = graphData.nodes.length;
+    const atomicCount = nodes.filter(isGraphAtomicType).length;
+    const noteCount = nodes.filter((n) => graphNodeTypeKey(n) === 'note').length;
+    return {
+      entries,
+      atomicCount,
+      noteCount,
+      total: nodes.length,
+    };
+  }, [graphData.nodes]);
 
   const handleNodeClick = useCallback((node) => {
-    if (node.page) setActiveReference({ page: node.page, bbox: node.bbox ?? [0, 0, 0, 0] });
+    if (node.page_num) setActiveReference({ page: node.page_num, bbox: node.bbox ?? [0, 0, 0, 0] });
   }, [setActiveReference]);
 
-  if (notes.length === 0 && sections.length === 0) {
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-gray-400 flex-col gap-2 p-6">
+        <Loader2 size={20} className="animate-spin opacity-70" />
+        <p className="text-xs">加载图谱中…</p>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-rose-500 flex-col gap-2 p-6">
+        <AlertCircle size={20} />
+        <p className="text-xs">{error}</p>
+      </div>
+    );
+  }
+  if (graphData.nodes.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-400 flex-col gap-3">
         <Network size={32} className="opacity-30" />
@@ -584,10 +677,22 @@ const GraphView = ({ notes, sections = [], docName = '' }) => {
     );
   }
 
-  const linkTypeColor = { contains: 'rgba(99,102,241,0.5)', tagged_with: 'rgba(192,132,252,0.35)', references: 'rgba(251,191,36,0.4)', manual: 'rgba(34,197,94,0.7)' };
+  const linkTypeColor = {
+    contains: 'rgba(99,102,241,0.55)',
+    tagged: 'rgba(251,146,60,0.45)',
+    mentions: 'rgba(168,85,247,0.4)',
+    assoc: 'rgba(148,163,184,0.35)',
+    references: 'rgba(251,191,36,0.4)',
+    manual: 'rgba(34,197,94,0.7)',
+  };
 
   return (
     <div ref={containerRef} className="flex-1 bg-gray-900 relative overflow-hidden">
+      {meta.truncated && (
+        <div className="absolute top-2 left-2 right-2 z-20 text-[10px] px-2 py-1 rounded bg-amber-100 text-amber-800 border border-amber-300">
+          {meta.message || '全局图谱节点过多，已为您提取展示 Top-200 核心知识网络'}
+        </div>
+      )}
       <ForceGraph2D
         graphData={graphData}
         width={dims.w}
@@ -597,8 +702,8 @@ const GraphView = ({ notes, sections = [], docName = '' }) => {
         nodeColor={n => n.color}
         nodeRelSize={5}
         linkColor={l => linkTypeColor[l.type] || 'rgba(99,102,241,0.3)'}
-        linkWidth={l => l.type === 'contains' ? 1.8 : l.type === 'manual' ? 2 : 1}
-        linkLineDash={l => l.type === 'references' ? [4, 2] : null}
+        linkWidth={(l) => (l.type === 'contains' ? 1.8 : l.type === 'manual' ? 2 : l.type === 'tagged' ? 1.4 : 1)}
+        linkLineDash={(l) => (l.type === 'references' ? [4, 2] : l.type === 'mentions' ? [2, 3] : null)}
         onNodeClick={handleNodeClick}
         nodeCanvasObject={(node, ctx, globalScale) => {
           const sz = node.sz || 6;
@@ -607,18 +712,22 @@ const GraphView = ({ notes, sections = [], docName = '' }) => {
             ctx.moveTo(node.x, node.y - sz); ctx.lineTo(node.x + sz, node.y); ctx.lineTo(node.x, node.y + sz); ctx.lineTo(node.x - sz, node.y); ctx.closePath();
           } else if (node.level === 'section') {
             ctx.rect(node.x - sz / 2, node.y - sz / 2, sz, sz);
+          } else if (node.level === 'note') {
+            ctx.rect(node.x - sz / 2, node.y - sz / 2, sz, sz);
           } else if (node.level === 'tag') {
             ctx.moveTo(node.x, node.y - sz); ctx.lineTo(node.x + sz * 0.87, node.y + sz / 2); ctx.lineTo(node.x - sz * 0.87, node.y + sz / 2); ctx.closePath();
+          } else if (node.level === 'entity') {
+            ctx.moveTo(node.x, node.y - sz * 0.9); ctx.lineTo(node.x + sz * 0.75, node.y + sz * 0.45); ctx.lineTo(node.x - sz * 0.75, node.y + sz * 0.45); ctx.closePath();
           } else {
             ctx.arc(node.x, node.y, sz / 2, 0, 2 * Math.PI);
           }
           ctx.fillStyle = node.color;
           ctx.fill();
-          ctx.strokeStyle = node.level === 'document' ? '#fff' : node.level === 'section' ? '#6ee7b7' : node.level === 'tag' ? '#c4b5fd' : node.level === 'atomic_note' ? '#34d399' : '#6366f1';
+          ctx.strokeStyle = node.level === 'document' ? '#fff' : node.level === 'section' ? '#6ee7b7' : node.level === 'note' ? '#fcd34d' : node.level === 'tag' ? '#fdba74' : node.level === 'entity' ? '#c4b5fd' : node.level === 'atomic_note' ? '#34d399' : '#6366f1';
           ctx.lineWidth = node.level === 'document' ? 2 : node.level === 'atomic_note' ? 0.8 : 1.2;
           ctx.stroke();
-          if (globalScale > 1.2 || node.level === 'document' || node.level === 'section' || node.level === 'atomic_note') {
-            const fontSize = node.level === 'document' ? 11 : node.level === 'section' ? 9 : node.level === 'atomic_note' ? 6 : 7;
+          if (globalScale > 1.2 || ['document', 'section', 'note', 'atomic_note'].includes(node.level)) {
+            const fontSize = node.level === 'document' ? 11 : node.level === 'section' ? 9 : node.level === 'note' ? 8 : node.level === 'atomic_note' ? 6 : 7;
             ctx.font = `${fontSize}px sans-serif`;
             ctx.textAlign = 'center';
             ctx.fillStyle = '#d1d5db';
@@ -626,81 +735,108 @@ const GraphView = ({ notes, sections = [], docName = '' }) => {
           }
         }}
       />
-      {/* 图例：文档 / 章节 / 普通卡片 / 原子知识(下一层级) / 标签 */}
-      <div className="absolute top-2 left-2 font-sans text-[8px] text-white/50 pointer-events-none space-y-0.5">
-        <p>KNOWLEDGE GRAPH · {totalNodes} NODES</p>
-        <p><span className="inline-block w-2 h-2 bg-blue-500 mr-1" />DOC <span className="inline-block w-2 h-2 bg-emerald-500 mx-1" />SEC <span className="inline-block w-2 h-2 rounded-full bg-cyan-500 mx-1" />NOTE <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mx-1" />原子 <span className="inline-block w-0 h-0 border-l-[3px] border-r-[3px] border-b-[5px] border-transparent border-b-purple-400 mx-1" />TAG</p>
+      {/* 动态图例：类型集合来自 nodes，色块与 node.color / LEVEL_COLORS 一致 */}
+      <div className={clsx('absolute left-2 z-10 font-sans text-[9px] text-white/90 pointer-events-none max-w-[min(100%,320px)] space-y-1.5', meta.truncated ? 'top-12' : 'top-2')}>
+        <p className="text-white/70 font-semibold tracking-wide">
+          KNOWLEDGE GRAPH · {scope === 'global' ? 'GLOBAL' : (docName || 'LOCAL')}
+        </p>
+        <div className="rounded-md bg-black/45 backdrop-blur-sm px-2 py-1.5 border border-white/10">
+          <p className="text-[8px] text-white/85 leading-relaxed flex flex-wrap gap-x-2 gap-y-0.5">
+            <span>全部 <strong className="text-white">{graphLegendAndStats.total}</strong></span>
+            <span>·</span>
+            <span>原子知识 <strong className="text-emerald-300">{graphLegendAndStats.atomicCount}</strong></span>
+            <span>·</span>
+            <span>笔记 <strong className="text-amber-200">{graphLegendAndStats.noteCount}</strong></span>
+          </p>
+          <p className="text-[7px] text-white/55 mt-1">统计来自当前渲染节点，非后端冗余字段</p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {graphLegendAndStats.entries.map(({ key, color, count, label }) => (
+            <span
+              key={key}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 bg-black/35 border border-white/10"
+              title={key}
+            >
+              <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0 border border-white/30" style={{ backgroundColor: color }} />
+              <span className="text-white/90">{label}</span>
+              <span className="text-white/50">({count})</span>
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );
 };
 
 // ─── GraphRAG 三元组列表（与图谱同源：文档→章节→笔记、标签、笔记间概念、手动连线）────
-const GraphRAGTriplesView = ({ notes, sections = [], docName = '', noteLinks = [] }) => {
-  const triples = React.useMemo(() => {
-    const out = [];
-    const docId = docName || '文档';
-    const noteById = Object.fromEntries((notes || []).map((n) => [n.id, n]));
-    const labelOf = (n) => (n?.content || n?.axiom || n?.id || '').toString().substring(0, 24) || n?.id;
-    const secMap = assignNotesToSections(notes, sections);
-    if (sections?.length) {
-      sections.forEach((sec, idx) => {
-        out.push({ subject: docId, predicate: 'Contains', object: sec.title?.substring(0, 32) || `章节${idx + 1}` });
-        (secMap[idx] || []).forEach((n) => {
-          const label = n.content?.substring(0, 20) || n.axiom?.substring(0, 20) || n.id;
-          out.push({ subject: sec.title?.substring(0, 24) || `章节${idx}`, predicate: 'Contains', object: label });
-        });
+const GraphRAGTriplesView = ({ scope = 'global', docId = '', docName = '' }) => {
+  const { setPdfUrl, setViewMode } = useStore();
+  const [triples, setTriples] = useState([]);
+  const [showSourceColumn, setShowSourceColumn] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    api.getOrganizeTriples(scope === 'current' ? (docId || '') : 'global', 200)
+      .then((resp) => {
+        if (cancelled) return;
+        setTriples(Array.isArray(resp?.triples) ? resp.triples : []);
+        setShowSourceColumn(!!resp?.show_source_column);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e?.message || '三元组加载失败');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
-    } else if (notes.length > 0) {
-      out.push({ subject: docId, predicate: 'Contains', object: '未分章节' });
-      notes.forEach((n) => {
-        const label = n.content?.substring(0, 20) || n.axiom?.substring(0, 20) || n.id;
-        out.push({ subject: '未分章节', predicate: 'Contains', object: label });
-      });
-    }
-    notes.forEach((n) => {
-      (n.keywords || []).forEach((kw) => {
-        out.push({ subject: n.content?.substring(0, 18) || n.id, predicate: 'TaggedWith', object: `#${kw}` });
-      });
-    });
-    const kwMap = {};
-    notes.forEach((n) => { (n.keywords || []).forEach((kw) => { (kwMap[kw] ??= []).push(n); }); });
-    Object.entries(kwMap).forEach(([kw, list]) => {
-      for (let i = 0; i < list.length - 1; i++) {
-        const a = list[i].content?.substring(0, 14) || list[i].id;
-        const b = list[i + 1].content?.substring(0, 14) || list[i + 1].id;
-        out.push({ subject: a, predicate: 'Shares_Concept', object: b });
-      }
-    });
-    (noteLinks || []).forEach((link) => {
-      const src = noteById[link.sourceId];
-      const tgt = noteById[link.targetId];
-      const subj = src ? labelOf(src) : link.sourceId;
-      const obj = tgt ? labelOf(tgt) : link.targetId;
-      out.push({ subject: subj, predicate: '手动关联', object: obj });
-    });
-    return out;
-  }, [notes, sections, docName, noteLinks]);
+    return () => { cancelled = true; };
+  }, [scope, docId]);
 
   if (triples.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-400 flex-col gap-2 p-6">
         <Network size={28} className="opacity-40" />
-        <p className="text-xs font-sans">暂无 GraphRAG 三元组</p>
-        <p className="text-[10px]">解析文档并生成笔记后自动构建</p>
+        <p className="text-xs font-sans">{loading ? 'GraphRAG 三元组加载中…' : '暂无 GraphRAG 三元组'}</p>
+        <p className="text-[10px]">{error || '解析文档并生成笔记后自动构建'}</p>
       </div>
     );
   }
 
   return (
     <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-      <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-3">三元组 (主体 — 关系 — 客体)</div>
+      <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-3">
+        三元组 ({scope === 'global' ? '全局' : (docName || '当前文献')}) (主体 — 关系 — 客体)
+      </div>
       <ul className="space-y-2">
         {triples.map((t, i) => (
           <li key={i} className="flex items-center gap-2 flex-wrap text-xs font-sans border-b border-slate-100 pb-2 last:border-0">
             <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 max-w-[140px] truncate" title={t.subject}>{t.subject}</span>
             <span className="text-amber-600 shrink-0">{t.predicate}</span>
             <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 max-w-[140px] truncate" title={t.object}>{t.object}</span>
+            {showSourceColumn && Array.isArray(t.source_documents) && t.source_documents.length > 0 && (
+              <span className="flex items-center gap-1 ml-auto">
+                <span className="text-[10px] text-slate-400">来源文献:</span>
+                {t.source_documents.slice(0, 2).map((d, idx) => (
+                  <button
+                    key={`${d}-${idx}`}
+                    type="button"
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100"
+                    onClick={() => {
+                      const srcDocId = t.source_doc_ids?.[idx];
+                      if (!srcDocId) return;
+                      const url = srcDocId === 'global_demo_official' ? '/api/demo/pdf' : api.getDocumentFileUrl(srcDocId);
+                      setPdfUrl(url, d, srcDocId);
+                      setViewMode('read');
+                    }}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </span>
+            )}
           </li>
         ))}
       </ul>
@@ -904,12 +1040,211 @@ const ArxivPanel = () => {
   );
 };
 
+// ─── ArXiv 学术秘书 · 收件箱（LLM 预读过滤后的推荐）────────────────────────────
+const SecretaryInboxPanel = () => {
+  const { setNotes } = useStore();
+  const [keyword, setKeyword] = useState('');
+  const [researchGoal, setResearchGoal] = useState('');
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(null);
+  const [error, setError] = useState('');
+
+  const loadInbox = async () => {
+    try {
+      const data = await api.secretaryInbox();
+      setItems(Array.isArray(data.items) ? data.items : []);
+      return data;
+    } catch (e) {
+      console.warn('加载收件箱失败', e);
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    (async () => {
+      const data = await loadInbox();
+      if (data?.last_keyword) setKeyword((k) => k || data.last_keyword);
+      if (data?.last_research_goal) setResearchGoal((g) => g || data.last_research_goal);
+    })();
+  }, []);
+
+  const runFetch = async () => {
+    const k = keyword.trim();
+    if (!k) return;
+    setLoading(true);
+    setError('');
+    try {
+      await api.secretaryFetch(k, researchGoal.trim());
+      await loadInbox();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const importOne = async (itemId) => {
+    setImporting(itemId);
+    setError('');
+    try {
+      const data = await api.secretaryImport(itemId);
+      const note = data?.note;
+      if (note?.id) {
+        const prev = useStore.getState().notes || [];
+        setNotes([note, ...prev]);
+      }
+      await loadInbox();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImporting(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="p-3 border-b border-gray-200 space-y-2 bg-slate-50/80">
+        <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wide">追踪关键词</p>
+        <input
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="设置我的研究方向（英文检索词效果更好）..."
+          className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-300"
+        />
+        <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wide">研究课题 / 过滤目标</p>
+        <textarea
+          value={researchGoal}
+          onChange={(e) => setResearchGoal(e.target.value)}
+          placeholder="描述你当前的研究目标，秘书将据此过滤摘要相关性…"
+          rows={2}
+          className="w-full border border-gray-300 rounded px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-violet-300 resize-none"
+        />
+        <button
+          type="button"
+          onClick={runFetch}
+          disabled={loading || !keyword.trim()}
+          className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 disabled:opacity-50"
+        >
+          {loading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+          拉取最新 arXiv 并 AI 预读
+        </button>
+        <p className="text-[9px] text-slate-500 leading-relaxed">
+          每次拉取最多 5 篇按提交时间排序的最新论文，经 LLM 过滤后写入本收件箱；可一键纳入本地原子笔记。
+        </p>
+      </div>
+      {error && (
+        <div className="mx-3 mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-600 flex items-center gap-2">
+          <AlertCircle size={12} />
+          {error}
+        </div>
+      )}
+      <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
+        {items.length === 0 && !loading && (
+          <div className="text-center text-gray-400 text-xs mt-10">
+            <Inbox size={28} className="mx-auto mb-2 opacity-30" />
+            <p>暂无推荐。设置关键词后点击上方拉取。</p>
+          </div>
+        )}
+        {items.map((it) => (
+          <div
+            key={it.id || it.arxiv_id}
+            className="bg-white border border-violet-200 rounded-lg p-3 shadow-sm space-y-2"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <h3 className="text-sm font-bold text-slate-900 leading-snug line-clamp-3">{it.title}</h3>
+              <span className="text-[9px] shrink-0 px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 border border-violet-200">
+                {it.type === 'arxiv_recommendation' ? '秘书推荐' : '推荐'}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-500">{it.published} · {it.arxiv_id}</p>
+            <div className="text-[11px] space-y-1">
+              <p>
+                <span className="font-semibold text-blue-800">Method：</span>
+                <span className="text-slate-700">{it.method || '—'}</span>
+              </p>
+              <p>
+                <span className="font-semibold text-emerald-800">Boundary：</span>
+                <span className="text-slate-700">{it.boundary || '—'}</span>
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <a
+                href={it.abs_url || `https://arxiv.org/abs/${it.arxiv_id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[10px] bg-slate-100 border border-slate-300 text-slate-700 px-2 py-1 rounded hover:bg-slate-200"
+              >
+                <ExternalLink size={10} /> 原文 arXiv
+              </a>
+              <button
+                type="button"
+                disabled={importing === it.id}
+                onClick={() => importOne(it.id)}
+                className="inline-flex items-center gap-1 text-[10px] bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {importing === it.id ? <Loader2 size={10} className="animate-spin" /> : <Plus size={10} />}
+                纳入我的知识库
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const _normalizeBbox = (bbox) => {
+  if (Array.isArray(bbox) && bbox.length === 4) return bbox;
+  if (bbox && typeof bbox === 'object') {
+    const arr = [bbox.x, bbox.y, bbox.width, bbox.height];
+    if (arr.every((v) => Number.isFinite(v))) return arr;
+  }
+  return [0, 0, 0, 0];
+};
+
+const jumpToKnowledgeSource = async (src, nav) => {
+  if (!src) return;
+  const isExternal = src.source === 'arxiv' || src.source === 'semantic_scholar';
+  if (isExternal && src.url) {
+    window.open(src.url, '_blank', 'noopener');
+    return;
+  }
+
+  const page = Math.max(1, Number(src.page_num || src.page || 1));
+  const bbox = _normalizeBbox(src.bbox);
+  const nextDocId = (src.doc_id || '').trim();
+
+  nav.setViewMode?.('read');
+
+  if (nextDocId && nextDocId !== (nav.activeDocId || '')) {
+    const title = src.doc_title || nextDocId;
+    nav.setPdfUrl?.(api.getDocumentFileUrl(nextDocId), title, nextDocId);
+  }
+
+  nav.setCurrentPage?.(page);
+  nav.setActiveReference?.({ page, bbox });
+};
+
+const renderInlineHighlight = (text, query) => {
+  const q = (query || '').trim();
+  if (!q) return text;
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const parts = String(text || '').split(new RegExp(`(${escaped})`, 'ig'));
+  return parts.map((p, idx) => (
+    idx % 2 === 1
+      ? <mark key={`${p}-${idx}`} className="bg-yellow-200 px-0.5 rounded">{p}</mark>
+      : <span key={`${p}-${idx}`}>{p}</span>
+  ));
+};
+
 // ─── 聊天消息 ──────────────────────────────────────────────────────────────────
 
 // 将内容中的 [1] [2] 等引用替换为可点击按钮，其余用 Markdown+Math 渲染
-const renderCitedContent = (content, sources, setActiveReference) => {
+const renderCitedContent = (content, sources, onJumpSource) => {
   if (!content) return null;
-  const parts = content.split(/(\[\d+\])/g);
+  const normalized = String(content).replace(/【\s*(\d+)\s*】/g, '[$1]');
+  const parts = normalized.split(/(\[\d+\])/g);
   return parts.map((part, i) => {
     const m = part.match(/^\[(\d+)\]$/);
     if (m) {
@@ -920,13 +1255,7 @@ const renderCitedContent = (content, sources, setActiveReference) => {
       return (
         <sup
           key={i}
-          onClick={() => {
-            if (isExternal && src.url) {
-              window.open(src.url, '_blank', 'noopener');
-            } else if (src.page_num > 0) {
-              setActiveReference({ page: src.page_num, bbox: src.bbox?.length === 4 ? src.bbox : [0,0,0,0] });
-            }
-          }}
+          onClick={() => onJumpSource?.(src)}
           className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 mx-0.5 text-[9px] font-bold bg-blue-100 text-blue-700 rounded cursor-pointer hover:bg-blue-200 transition-colors"
           title={src.concept || src.summary?.substring(0, 60)}
         >
@@ -935,30 +1264,65 @@ const renderCitedContent = (content, sources, setActiveReference) => {
       );
     }
     if (!part.trim()) return <span key={i}>{part}</span>;
+    /* 使用块级容器，避免 <p> 包裹 table / 列表等非法嵌套导致表格不显示 */
     return (
-      <span key={i} className="inline [&_.katex]:text-sm [&_p]:inline [&_p]:after:content-['\00a0']">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[rehypeKatex, rehypeHighlight]}
-          components={{ p: ({ children }) => <span>{children}</span> }}
-        >
-          {part}
-        </ReactMarkdown>
-      </span>
+      <div key={i} className="cited-md-part [&_.katex]:text-sm [&_.katex-display]:my-2">
+        <MarkdownRenderer>{part}</MarkdownRenderer>
+      </div>
     );
   });
 };
 
 const ChatMessage = ({ msg }) => {
   const isUser = msg.role === 'user';
-  const { setActiveReference, setViewMode } = useStore();
+  const { setActiveReference, setViewMode, setPdfUrl, setCurrentPage, activeDocId } = useStore();
+  const [feedback, setFeedback] = useState(0);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
   const agentMeta = {
+    router:     { label: 'ROUTER', color: 'bg-indigo-100 text-indigo-800', icon: <Waypoints size={16} /> },
     seeker:     { label: 'SEEKER', color: 'bg-cyan-100 text-cyan-800', icon: <Search size={16} /> },
     reviewer:   { label: 'REVIEWER', color: 'bg-rose-100 text-rose-800', icon: <Bot size={16} /> },
     synthesizer:{ label: 'SYNTHESIZER', color: 'bg-purple-100 text-purple-800', icon: <Brain size={16} /> },
+    writer:     { label: 'WRITER', color: 'bg-amber-100 text-amber-900', icon: <FileText size={16} /> },
     system:     { label: 'SYSTEM', color: 'bg-gray-200 text-gray-700', icon: <Sparkles size={16} /> },
   };
   const meta = agentMeta[msg.agentType] ?? agentMeta.system;
+
+  const submitFeedback = async (rating) => {
+    if (isUser || feedbackLoading) return;
+    let comment = '';
+    if (rating < 0) {
+      const v = window.prompt('可选：简单描述问题（如 幻觉/啰嗦/不相关）', '');
+      if (v == null) return;
+      comment = v.trim();
+    }
+    setFeedbackLoading(true);
+    try {
+      await api.submitChatFeedback({
+        message_id: String(msg.id),
+        session_id: SESSION_ID,
+        rating,
+        user_comment: comment,
+        answer_text: typeof msg.content === 'string' ? msg.content : '',
+        retrieved_contexts: Array.isArray(msg.relatedNotes) ? msg.relatedNotes : [],
+      });
+      setFeedback(rating);
+    } catch (e) {
+      console.warn('反馈提交失败:', e);
+    } finally {
+      setFeedbackLoading(false);
+    }
+  };
+
+  const onJumpSource = useCallback((src) => {
+    jumpToKnowledgeSource(src, {
+      setViewMode,
+      setPdfUrl,
+      setCurrentPage,
+      setActiveReference,
+      activeDocId,
+    });
+  }, [setViewMode, setPdfUrl, setCurrentPage, setActiveReference, activeDocId]);
 
   return (
     <div className={clsx('flex gap-2 mb-4 w-full', isUser ? 'flex-row-reverse' : 'flex-row')}>
@@ -969,17 +1333,21 @@ const ChatMessage = ({ msg }) => {
       <div className={clsx('relative p-3 max-w-[85%] text-xs border-2 border-black shadow-[3px_3px_0px_rgba(0,0,0,0.1)]',
         isUser
           ? 'bg-gray-900 text-white rounded-tr-none rounded-bl-xl rounded-tl-xl rounded-br-xl'
-          : 'bg-white text-gray-800 rounded-tl-none rounded-tr-xl rounded-br-xl rounded-bl-xl')}>
+          : 'bg-white text-gray-800 rounded-tl-none rounded-tr-xl rounded-br-xl rounded-bl-xl',
+        !isUser && msg.projectReminder && 'ring-2 ring-red-500/80 bg-rose-50/90')}>
         {!isUser && (
           <div className="text-[9px] font-sans mb-1.5 opacity-70 uppercase tracking-wider border-b border-current pb-1 inline-block">
             {meta.label}_BOT
           </div>
         )}
-        <p className="leading-relaxed whitespace-pre-wrap">
-          {msg.agentType === 'synthesizer'
-            ? renderCitedContent(msg.content, msg.relatedNotes, setActiveReference)
-            : msg.content}
-        </p>
+        {msg.agentTrace && <AgentTraceThoughtChain agentTrace={msg.agentTrace} />}
+        {msg.agentType === 'synthesizer' ? (
+          <div className="leading-relaxed break-words text-gray-800 chat-synth-md">
+            {renderCitedContent(msg.content, msg.relatedNotes, onJumpSource)}
+          </div>
+        ) : (
+          <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+        )}
         {/* 参考文献卡片（synthesizer 消息末尾） */}
         {msg.agentType === 'synthesizer' && msg.relatedNotes?.length > 0 && (
           <div className="mt-3 pt-2 border-t border-gray-200">
@@ -992,11 +1360,8 @@ const ChatMessage = ({ msg }) => {
                   <div
                     key={n.note_id ?? idx}
                     onClick={() => {
-                      if (isExternal && n.url) window.open(n.url, '_blank', 'noopener');
-                      else if (hasPage) {
-                        setViewMode('read');
-                        setActiveReference({ page: n.page_num, bbox: n.bbox?.length === 4 ? n.bbox : [0,0,0,0] });
-                      }
+                      if (!isExternal && !hasPage) return;
+                      onJumpSource(n);
                     }}
                     className={clsx(
                       'flex items-start gap-2 p-2 rounded border cursor-pointer transition-colors',
@@ -1027,12 +1392,8 @@ const ChatMessage = ({ msg }) => {
                 <button
                   key={n.note_id ?? n}
                   onClick={() => {
-                    if (isExternal && n.url) {
-                      window.open(n.url, '_blank', 'noopener');
-                    } else if (hasPage) {
-                      setViewMode('read');
-                      setActiveReference({ page: n.page_num, bbox: n.bbox && n.bbox.length === 4 ? n.bbox : [0, 0, 0, 0] });
-                    }
+                    if (!isExternal && !hasPage) return;
+                    onJumpSource(n);
                   }}
                   className={clsx(
                     'text-[9px] border px-1.5 py-0.5 flex items-center gap-1 cursor-pointer',
@@ -1048,6 +1409,34 @@ const ChatMessage = ({ msg }) => {
                 </button>
               );
             })}
+          </div>
+        )}
+        {!isUser && (
+          <div className="mt-2 pt-1.5 border-t border-dashed border-gray-200 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => submitFeedback(1)}
+              disabled={feedbackLoading}
+              className={clsx(
+                'h-8 min-w-8 px-2 rounded border text-[10px] flex items-center gap-1',
+                feedback === 1 ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+              )}
+              title="赞同"
+            >
+              <ThumbsUp size={12} /> 赞同
+            </button>
+            <button
+              type="button"
+              onClick={() => submitFeedback(-1)}
+              disabled={feedbackLoading}
+              className={clsx(
+                'h-8 min-w-8 px-2 rounded border text-[10px] flex items-center gap-1',
+                feedback === -1 ? 'bg-rose-50 border-rose-300 text-rose-700' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+              )}
+              title="踩（幻觉/啰嗦）"
+            >
+              <ThumbsDown size={12} /> 踩
+            </button>
           </div>
         )}
       </div>
@@ -1106,18 +1495,25 @@ const ChatPanel = () => {
               content: data.score != null
                 ? `${data.content}\n📊 评分: ${data.score}/10`
                 : data.content,
-              relatedNotes: data.related_notes?.slice(0, 3) ?? [],
+              relatedNotes: data.related_notes?.slice(0, 8) ?? [],
             });
           }
         } else if (type === 'delta' && synthId != null) {
           synthContent += data.token || '';
           updateLastMessage({ content: synthContent });
         } else if (type === 'done') {
-          // 将 sources 附加到 synthesizer 消息
           const sources = data.sources ?? [];
-          if (synthId != null && sources.length > 0) {
-            updateLastMessage({ relatedNotes: sources.slice(0, 3) });
+          const patch = {
+            agentTrace: {
+              traces: data.agent_traces ?? [],
+              retrievedCards: data.retrieved_cards ?? [],
+              elapsedMs: data.elapsed_ms ?? null,
+            },
+          };
+          if (sources.length > 0) {
+            patch.relatedNotes = sources.slice(0, 10);
           }
+          updateLastMessage(patch);
         }
       });
     } catch (e) {
@@ -1350,20 +1746,30 @@ const RecommendedCards = ({ notes }) => {
 
 // ─── 原子卡片面板（带 API 查询） ────────────────────────────────────────────────
 const NexusPanel = () => {
+  const DEMO_DOC_ID = 'global_demo_official';
   const {
     notes, removeNote, setNotes,
     searchQuery, setSearchQuery,
     searchStatus, setSearchStatus,
     searchResults, setSearchResults,
     parsedSections, pdfFileName,
+    activeDocId,
     noteLinks,
     setParsedSections, setParsedMarkdown, setNotification,
     setViewMode, setStartDemoLoad,
+    setPdfUrl, setCurrentPage, setActiveReference,
   } = useStore();
   const [demoLoading, setDemoLoading] = useState(false);
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false);
+  const searchDebounceRef = useRef(null);
+  const searchFlowTimerRef = useRef([]);
 
   const [activeTab, setActiveTab] = useState('deck'); // 'deck' | 'tree' | 'map' | 'graph' | 'arxiv' | 'chat'
+  const [graphScope, setGraphScope] = useState('global'); // global | current
   const [selectedNote, setSelectedNote] = useState(null); // 脑图/树点击的笔记，用于展示公理/方法/边界
+  const [showDistillModal, setShowDistillModal] = useState(false);
+  const [distillText, setDistillText] = useState('');
+  const [distilling, setDistilling] = useState(false);
 
   // 进入整理视图时以服务端为准同步笔记，避免旧会话/幽灵卡片残留
   useEffect(() => {
@@ -1375,24 +1781,70 @@ const NexusPanel = () => {
       .catch(() => {});
   }, [setNotes]);
 
-  const handleSearch = async (e) => {
-    if (e.key !== 'Enter' || !searchQuery.trim()) return;
+  const clearSearchFlowTimers = useCallback(() => {
+    searchFlowTimerRef.current.forEach((t) => clearTimeout(t));
+    searchFlowTimerRef.current = [];
+  }, []);
+
+  const runSearch = useCallback(async (rawQ) => {
+    const q = (rawQ || '').trim();
+    if (!q) {
+      setSearchResults([]);
+      setSearchStatus('idle');
+      return;
+    }
+    clearSearchFlowTimers();
     setSearchStatus('tokenizing');
-    setTimeout(() => setSearchStatus('vector'), 600);
-    setTimeout(() => setSearchStatus('fusion'), 1300);
+    searchFlowTimerRef.current.push(setTimeout(() => setSearchStatus('vector'), 220));
+    searchFlowTimerRef.current.push(setTimeout(() => setSearchStatus('fusion'), 520));
 
     try {
-      const data = await api.searchNotes(searchQuery);
+      const data = await api.searchNotes(q, 12);
       setSearchResults(data.results ?? []);
       setSearchStatus('done');
     } catch {
       const localResults = notes.filter((n) =>
-        n.content?.toLowerCase().includes(searchQuery.toLowerCase())
+        n.content?.toLowerCase().includes(q.toLowerCase())
       );
       setSearchResults(localResults.map((n) => ({ ...n, note_id: n.id, summary: n.content, concept: n.type, page_num: n.page })));
       setSearchStatus('done');
     }
-    setTimeout(() => setSearchStatus('idle'), 3000);
+    searchFlowTimerRef.current.push(setTimeout(() => setSearchStatus('idle'), 1800));
+  }, [notes, setSearchResults, setSearchStatus, clearSearchFlowTimers]);
+
+  useEffect(() => {
+    const q = (searchQuery || '').trim();
+    if (!q) {
+      setSearchPanelOpen(false);
+      setSearchResults([]);
+      setSearchStatus('idle');
+      clearSearchFlowTimers();
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+      return;
+    }
+    setSearchPanelOpen(true);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => runSearch(q), 500);
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [searchQuery, runSearch, setSearchResults, setSearchStatus, clearSearchFlowTimers]);
+
+  const handleSearchKeyDown = (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    runSearch(searchQuery);
+  };
+
+  const handleResultJump = async (item) => {
+    await jumpToKnowledgeSource(item, {
+      setViewMode,
+      setPdfUrl,
+      setCurrentPage,
+      setActiveReference,
+      activeDocId,
+    });
+    setSearchPanelOpen(false);
   };
 
   const handleDelete = async (id) => {
@@ -1400,14 +1852,43 @@ const NexusPanel = () => {
     removeNote(id);
   };
 
+  const handleDistillUGC = async () => {
+    const input = (distillText || '').trim();
+    if (!input || distilling) return;
+    setDistilling(true);
+    try {
+      const resp = await api.distillNote(input, activeDocId || '', 'ugc');
+      const newNote = resp?.note;
+      if (newNote?.id) {
+        setNotes([newNote, ...(notes || [])]);
+      }
+      setShowDistillModal(false);
+      setDistillText('');
+      setNotification(resp?.is_mock ? '已创建碎片（当前为降级蒸馏）' : '已蒸馏并写入个人知识库');
+      setActiveTab('atomic');
+    } catch (e) {
+      setNotification(e?.message || '蒸馏失败', 'error');
+    } finally {
+      setDistilling(false);
+    }
+  };
+
   const displayNotes = searchStatus === 'done' && searchResults.length > 0
     ? searchResults.map((r) => notes.find((n) => n.id === r.note_id) ?? { id: r.note_id, content: r.summary, type: 'idea', page: r.page_num, keywords: r.keywords })
     : notes;
 
+  const scopedNotes = React.useMemo(() => {
+    // 仅在 Demo 文档激活时展示 Demo 种子卡片；离开 Demo 自动隐藏该批卡片
+    if ((activeDocId || '') === DEMO_DOC_ID) {
+      return displayNotes.filter((n) => (n.doc_id || '') === DEMO_DOC_ID || n.source === 'demo_seed');
+    }
+    return displayNotes.filter((n) => (n.doc_id || '') !== DEMO_DOC_ID && n.source !== 'demo_seed');
+  }, [displayNotes, activeDocId]);
+
   // 仅当存在公理/方法/边界三层解构时为「原子知识」；其余（含高亮、截图、未粉碎）均在原始卡片
   const isAtomicNote = (n) => !!(n.axiom || n.method || n.boundary);
-  const rawDisplayNotes = displayNotes.filter((n) => !isAtomicNote(n));
-  const atomicDisplayNotes = displayNotes.filter(isAtomicNote);
+  const rawDisplayNotes = scopedNotes.filter((n) => !isAtomicNote(n));
+  const atomicDisplayNotes = scopedNotes.filter(isAtomicNote);
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -1418,10 +1899,53 @@ const NexusPanel = () => {
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={handleSearch}
+            onFocus={() => setSearchPanelOpen(!!searchQuery.trim())}
+            onKeyDown={handleSearchKeyDown}
             placeholder="语义检索知识库 (Enter)..."
             className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
           />
+          {searchPanelOpen && searchQuery.trim() && (
+            <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-lg max-h-80 overflow-y-auto">
+              {searchResults.length === 0 ? (
+                <div className="px-3 py-4 text-xs text-slate-500">未命中相关片段，试试换个关键词。</div>
+              ) : (
+                <div className="p-2 space-y-1.5">
+                  {searchResults.map((r, idx) => {
+                    const snippet = (r.summary || '').slice(0, 140) || '（无摘要）';
+                    const channels = Array.isArray(r.sources) ? r.sources : [r.source].filter(Boolean);
+                    const hasGraph = channels.includes('graph_1hop') || r.source === 'graph_1hop';
+                    const hasVector = channels.includes('doc_vector') || channels.includes('note_vector') || r.source === 'document';
+                    const hasBM25 = channels.includes('doc_bm25') || channels.includes('note_bm25') || r.source === 'doc_bm25' || r.source === 'note_bm25';
+                    return (
+                      <button
+                        key={`${r.note_id || 'r'}-${idx}`}
+                        type="button"
+                        onClick={() => handleResultJump(r)}
+                        className="w-full text-left p-2.5 rounded-md border border-slate-200 hover:border-blue-300 hover:bg-blue-50/40 transition-colors"
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
+                            {r.doc_title || r.doc_id || '未命名文档'}
+                          </span>
+                          {Number(r.page_num) > 0 && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                              p.{r.page_num}
+                            </span>
+                          )}
+                          {hasVector && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">向量命中</span>}
+                          {hasGraph && <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200">图谱拓展</span>}
+                          {hasBM25 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">关键词命中</span>}
+                        </div>
+                        <div className="text-xs text-slate-700 leading-relaxed max-h-32 overflow-y-auto max-w-none chat-snippet-md">
+                          <MarkdownRenderer>{r.summary || '（无摘要）'}</MarkdownRenderer>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1436,12 +1960,13 @@ const NexusPanel = () => {
       {/* 多视图：卡片 | 原子知识 | 知识树 | 图谱 | GraphRAG | 结构图 | ArXiv */}
       <div className="flex border-b border-slate-200 px-3 pt-2 gap-1 overflow-x-auto">
         {[
-          { id: 'deck', label: `卡片 (${displayNotes.length})`, icon: Layers },
+          { id: 'deck', label: `卡片 (${scopedNotes.length})`, icon: Layers },
           { id: 'atomic', label: `原子知识 (${atomicDisplayNotes.length})`, icon: Sparkles },
           { id: 'tree', label: '知识树', icon: ListTree },
           { id: 'graph', label: '图谱', icon: Network },
           { id: 'graphrag', label: 'GraphRAG', icon: Tag },
           { id: 'map', label: '结构图', icon: GitBranch },
+          { id: 'inbox', label: '📥 发现', icon: Inbox },
           { id: 'arxiv', label: 'ArXiv', icon: FileSearch },
         ].map(({ id, label, icon: Icon }) => (
           <button
@@ -1459,6 +1984,34 @@ const NexusPanel = () => {
 
       {/* 内容区 */}
       <div className="flex-1 overflow-hidden flex flex-col">
+        {(activeTab === 'graph' || activeTab === 'graphrag') && (
+          <div className="px-3 py-2 border-b border-slate-200 bg-white flex items-center gap-2 text-[11px]">
+            <span className="text-slate-500">视角:</span>
+            <button
+              type="button"
+              onClick={() => setGraphScope('global')}
+              className={clsx(
+                'px-2 py-1 rounded border',
+                graphScope === 'global' ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-slate-50 text-slate-600 border-slate-200'
+              )}
+            >
+              🌐 全局知识库视角 (默认)
+            </button>
+            <button
+              type="button"
+              onClick={() => setGraphScope('current')}
+              className={clsx(
+                'px-2 py-1 rounded border',
+                graphScope === 'current' ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-slate-50 text-slate-600 border-slate-200'
+              )}
+            >
+              📄 当前文献视角
+            </button>
+            {graphScope === 'current' && !activeDocId && (
+              <span className="text-amber-600 ml-2">当前未锁定文献，将显示空结果。</span>
+            )}
+          </div>
+        )}
         {activeTab === 'deck' && (
           <div className="flex-1 overflow-y-auto p-3 space-y-4 custom-scrollbar">
             {displayNotes.length === 0 && (
@@ -1472,8 +2025,7 @@ const NexusPanel = () => {
                   type="button"
                   onClick={() => {
                     setDemoLoading(true);
-                    api.resetSession()
-                      .then(() => api.loadDemo())
+                    Promise.resolve()
                       .then(() => {
                         setViewMode('read');
                         setStartDemoLoad(true);
@@ -1548,9 +2100,47 @@ const NexusPanel = () => {
         )}
         {/* 知识树 = 树形脑图（文档→章节→笔记） */}
         {activeTab === 'tree' && (
-          <div className="flex-1 flex overflow-hidden min-h-0">
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+            <div className="px-3 py-2 border-b border-gray-200 bg-white flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setShowDistillModal(true)}
+                className="text-[11px] px-2.5 py-1.5 rounded border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors"
+              >
+                + 新建独立原子碎片
+              </button>
+            </div>
+            {showDistillModal && (
+              <div className="p-3 border-b border-gray-200 bg-slate-50">
+                <p className="text-xs text-slate-700 mb-2">粘贴微信聊天记录、网页摘录或口语化想法，秘书 Agent 将自动蒸馏为原子知识。</p>
+                <textarea
+                  value={distillText}
+                  onChange={(e) => setDistillText(e.target.value)}
+                  placeholder="例如：我们讨论后觉得这个方法在小样本上更稳，但高噪声场景会失效..."
+                  className="w-full min-h-[96px] text-xs border border-slate-300 rounded px-2 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                />
+                <div className="mt-2 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { if (!distilling) { setShowDistillModal(false); setDistillText(''); } }}
+                    className="text-[11px] px-2.5 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDistillUGC}
+                    disabled={distilling || !distillText.trim()}
+                    className="text-[11px] px-2.5 py-1.5 rounded border border-emerald-500 bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                  >
+                    {distilling ? '蒸馏中...' : '蒸馏并入库'}
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="flex-1 flex overflow-hidden min-h-0">
             <div className={clsx('flex-1 min-w-0', selectedNote ? 'max-w-[55%]' : '')}>
-              <TreeMapView notes={notes} sections={parsedSections} docName={pdfFileName} onSelectNote={setSelectedNote} />
+              <TreeMapView notes={scopedNotes} sections={parsedSections} docName={pdfFileName} onSelectNote={setSelectedNote} />
             </div>
             {selectedNote && (
               <div className="w-[45%] min-w-[200px] border-l border-gray-200 bg-white overflow-y-auto p-3 flex flex-col gap-2">
@@ -1561,15 +2151,28 @@ const NexusPanel = () => {
                 <AtomicCardDetail note={selectedNote} />
               </div>
             )}
+            </div>
           </div>
         )}
-        {activeTab === 'graph' && <GraphView notes={notes} sections={parsedSections} docName={pdfFileName} />}
-        {activeTab === 'graphrag' && <GraphRAGTriplesView notes={notes} sections={parsedSections} docName={pdfFileName} noteLinks={noteLinks || []} />}
+        {activeTab === 'graph' && (
+          <GraphView
+            scope={graphScope}
+            docId={graphScope === 'current' ? (activeDocId || '') : ''}
+            docName={pdfFileName}
+          />
+        )}
+        {activeTab === 'graphrag' && (
+          <GraphRAGTriplesView
+            scope={graphScope}
+            docId={graphScope === 'current' ? (activeDocId || '') : ''}
+            docName={pdfFileName}
+          />
+        )}
         {/* 结构图：脑图风格（中心+分支），与知识树、图谱区分 */}
         {activeTab === 'map' && (
           <div className="flex-1 flex overflow-hidden min-h-0">
             <div className={clsx('flex-1 min-w-0', selectedNote ? 'max-w-[55%]' : '')}>
-              <StructureMapView notes={notes} sections={parsedSections} docName={pdfFileName} onSelectNote={setSelectedNote} />
+              <StructureMapView notes={scopedNotes} sections={parsedSections} docName={pdfFileName} onSelectNote={setSelectedNote} />
             </div>
             {selectedNote && (
               <div className="w-[45%] min-w-[200px] border-l border-gray-200 bg-white overflow-y-auto p-3 flex flex-col gap-2">
@@ -1578,11 +2181,12 @@ const NexusPanel = () => {
                   <button type="button" onClick={() => setSelectedNote(null)} className="p-1 hover:bg-gray-100 rounded"><X size={14} /></button>
                 </div>
                 <AtomicCardDetail note={selectedNote} />
-                <NoteLinkPanel note={selectedNote} otherNotes={notes.filter((n) => n.id !== selectedNote.id)} />
+                <NoteLinkPanel note={selectedNote} otherNotes={scopedNotes.filter((n) => n.id !== selectedNote.id)} />
               </div>
             )}
           </div>
         )}
+        {activeTab === 'inbox' && <SecretaryInboxPanel />}
         {activeTab === 'arxiv' && <ArxivPanel />}
       </div>
     </div>
@@ -1613,27 +2217,42 @@ const ReferencePanel = () => {
     parsedSections,
     pdfUrl,
     pdfFile,
+    pdfNumPages,
     currentPage,
     setCurrentPage,
+    setPdfRuntime,
+    resetPdfRuntime,
     setActiveReference,
     pdfFileName,
     markdownContent,
     setPendingInsert,
     setContextAttachment,
     setCopilotOpen,
+    writeRefTab,
+    setWriteRefTab,
   } = useStore();
   const writeTabsOnly = viewMode === 'write';
-  const [refTab, setRefTab] = useState(writeTabsOnly ? 'cards' : 'outline');
+  const [refTab, setRefTab] = useState(writeTabsOnly ? (writeRefTab || 'notes') : 'outline');
   useEffect(() => {
-    if (writeTabsOnly && refTab !== 'cards' && refTab !== 'pdf') setRefTab('cards');
+    if (writeTabsOnly && !['notes', 'atomic', 'graph'].includes(refTab)) setRefTab('notes');
   }, [writeTabsOnly, refTab]);
+  useEffect(() => {
+    if (writeTabsOnly) {
+      setRefTab(writeRefTab || 'notes');
+    }
+  }, [writeTabsOnly, writeRefTab]);
   const tabs = viewMode === 'write'
-    ? [{ id: 'cards', label: '卡片', icon: Tag }, { id: 'pdf', label: 'PDF', icon: BookOpen }]
+    ? [
+      { id: 'notes', label: '📝 基础卡片', icon: Tag },
+      { id: 'atomic', label: '⚛️ 原子知识', icon: Sparkles },
+      { id: 'graph', label: '🕸️ 知识树', icon: GitBranch },
+    ]
     : [{ id: 'outline', label: '文献大纲', icon: ListTree }, { id: 'md-outline', label: '写作大纲', icon: FileText }, { id: 'cards', label: '卡片', icon: Tag }, { id: 'pdf', label: 'PDF', icon: BookOpen }];
-  const [numPages, setNumPages] = useState(null);
   const [pdfLoading, setPdfLoading] = useState(true);
   const [pdfError, setPdfError] = useState(null);
   const [objectUrl, setObjectUrl] = useState(null);
+  const [writeSearch, setWriteSearch] = useState('');
+  const [selectedGraphNote, setSelectedGraphNote] = useState(null);
   useEffect(() => {
     if (pdfFile && typeof pdfFile === 'object' && pdfFile instanceof File) {
       const url = URL.createObjectURL(pdfFile);
@@ -1667,15 +2286,19 @@ const ReferencePanel = () => {
 
   const pdfSrc = objectUrl || pdfUrl;
   const PDF_VIEW_WIDTH = 280;
-  const onPdfLoadSuccess = useCallback(({ numPages: n }) => {
-    setNumPages(n);
+  const onPdfLoadSuccess = useCallback((pdf) => {
+    setPdfRuntime(pdf, pdf?.numPages ?? null);
+    if (currentPage > (pdf?.numPages || 1)) {
+      setCurrentPage(1);
+    }
     setPdfLoading(false);
     setPdfError(null);
-  }, []);
+  }, [setPdfRuntime, currentPage, setCurrentPage]);
   const onPdfLoadError = useCallback((e) => {
+    resetPdfRuntime();
     setPdfLoading(false);
     setPdfError(e?.message || 'PDF 加载失败');
-  }, []);
+  }, [resetPdfRuntime]);
   useEffect(() => {
     if (pdfSrc) {
       setPdfLoading(true);
@@ -1683,21 +2306,82 @@ const ReferencePanel = () => {
     }
   }, [pdfSrc]);
 
+  const isAtomic = useCallback((n) => !!(n?.axiom || n?.method || n?.boundary), []);
+  const queryLower = (writeSearch || '').trim().toLowerCase();
+  const matchesQuery = useCallback((n) => {
+    if (!queryLower) return true;
+    const text = [
+      n?.content,
+      n?.axiom,
+      n?.method,
+      n?.boundary,
+      n?.type,
+      n?.source_name,
+      ...(Array.isArray(n?.tags) ? n.tags : []),
+      ...(Array.isArray(n?.keywords) ? n.keywords : []),
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return text.includes(queryLower);
+  }, [queryLower]);
+  const baseNotes = useMemo(
+    () => (notes || []).filter((n) => !isAtomic(n) && matchesQuery(n)),
+    [notes, isAtomic, matchesQuery]
+  );
+  const atomicNotes = useMemo(
+    () => (notes || []).filter((n) => isAtomic(n) && matchesQuery(n)),
+    [notes, isAtomic, matchesQuery]
+  );
+  const graphNotes = useMemo(
+    () => (notes || []).filter((n) => matchesQuery(n)),
+    [notes, matchesQuery]
+  );
+  const buildInjectText = useCallback((n) => {
+    const blocks = [];
+    if (n?.axiom) blocks.push(`**Axiom**: ${n.axiom}`);
+    if (n?.method) blocks.push(`**Method**: ${n.method}`);
+    if (n?.boundary) blocks.push(`**Boundary**: ${n.boundary}`);
+    if (blocks.length === 0) blocks.push((n?.content || '').trim() || `[${n?.type || 'note'}]`);
+    const noteId = String(n?.id || n?.note_id || 'note');
+    const shortId = noteId.slice(0, 8) || 'note';
+    const anchor = `[@card-${shortId}](card://${noteId} "${n?.type || 'note'}")`;
+    return `${blocks.join('\n\n')}\n\n${anchor}\n`;
+  }, []);
+
   return (
     <div className="h-full flex flex-col overflow-hidden min-h-0 bg-white border-l border-slate-200">
-      <div className="flex border-b border-slate-200 shrink-0">
-        {tabs.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            onClick={() => setRefTab(id)}
-            className={clsx(
-              'flex-1 flex items-center justify-center gap-1 py-2 text-xs font-medium border-b-2 transition-colors',
-              refTab === id ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50' : 'border-transparent text-slate-500 hover:bg-slate-50'
-            )}
-          >
-            <Icon size={12} /> {label}
-          </button>
-        ))}
+      <div className="shrink-0 bg-white border-b border-slate-200">
+        {writeTabsOnly && (
+          <div className="sticky top-0 z-10 px-3 pt-3 pb-2 border-b border-slate-100 bg-white">
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                value={writeSearch}
+                onChange={(e) => setWriteSearch(e.target.value)}
+                placeholder="在当前视图中检索..."
+                className="w-full pl-8 pr-3 py-2 text-xs border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-300"
+              />
+            </div>
+          </div>
+        )}
+        <div className="flex">
+          {tabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => {
+                setRefTab(id);
+                if (writeTabsOnly) setWriteRefTab(id);
+              }}
+              className={clsx(
+                'flex-1 flex items-center justify-center gap-1 py-2 text-xs font-medium border-b-2 transition-colors',
+                refTab === id ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50' : 'border-transparent text-slate-500 hover:bg-slate-50'
+              )}
+            >
+              <Icon size={12} /> {label}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
         {refTab === 'outline' && (
@@ -1790,6 +2474,120 @@ const ReferencePanel = () => {
             )}
           </div>
         )}
+        {writeTabsOnly && refTab === 'notes' && (
+          <div className="space-y-2">
+            {baseNotes.length === 0 ? (
+              <p className="text-[10px] text-slate-400">当前关键词下无基础卡片。</p>
+            ) : (
+              baseNotes.slice(0, 80).map((n) => {
+                const summary = (n.content || '').trim();
+                const injectText = buildInjectText(n);
+                return (
+                  <div
+                    key={`note_${n.id}`}
+                    className="p-2.5 rounded-r-lg border-l-4 border-slate-500 bg-slate-100/95 border border-slate-200/90 shadow-sm text-[11px] text-slate-800 hover:bg-slate-100 transition-colors"
+                  >
+                    <p className="text-[9px] font-semibold text-slate-500 mb-1 tracking-wide">原文摘录</p>
+                    <div
+                      className="cursor-pointer"
+                      onClick={() => {
+                        if (n.page != null) {
+                          setCurrentPage(n.page);
+                          setActiveReference({ page: n.page, bbox: n.bbox ?? [0, 0, 0, 0] });
+                        }
+                      }}
+                    >
+                      <p className="line-clamp-3 whitespace-pre-wrap">{summary || '[空卡片]'}</p>
+                      <p className="text-[9px] text-slate-500 mt-1">#{n.type || 'note'}{n.page ? ` · p.${n.page}` : ''}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPendingInsert(injectText)}
+                      className="mt-2 w-full py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
+                      title="插入正文（含引文来源锚点）"
+                    >
+                      [+ 插入正文]
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+        {writeTabsOnly && refTab === 'atomic' && (
+          <div className="space-y-2">
+            {atomicNotes.length === 0 ? (
+              <p className="text-[10px] text-slate-400">当前关键词下无原子知识卡片。</p>
+            ) : (
+              atomicNotes.slice(0, 80).map((n) => {
+                const injectText = buildInjectText(n);
+                return (
+                  <div
+                    key={`atomic_${n.id}`}
+                    className="p-2.5 rounded-xl bg-white border border-slate-200 shadow-[0_4px_14px_rgba(15,23,42,0.07)] border-t-[3px] border-t-emerald-500"
+                  >
+                    <p className="text-[9px] font-bold text-emerald-800 mb-2">⚛️ 原子知识</p>
+                    <AtomicCardDetail note={n} compact />
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPendingInsert(injectText)}
+                        className="flex-1 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
+                      >
+                        [+ 插入正文]
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setContextAttachment({
+                            text: (n.axiom || n.content || '').trim(),
+                            page: n.page,
+                            docName: pdfFileName,
+                            noteId: n.id,
+                          });
+                          setCopilotOpen(true);
+                        }}
+                        className="px-2 py-1.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-800 text-[10px] font-semibold"
+                        title="以该原子知识为上下文问 AI"
+                      >
+                        问AI
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+        {writeTabsOnly && refTab === 'graph' && (
+          <div className="h-full min-h-[520px] flex flex-col gap-2">
+            <div className="h-[360px] min-h-[300px] border border-slate-200 rounded-lg overflow-hidden">
+              <StructureMapView
+                notes={graphNotes}
+                sections={parsedSections}
+                docName={pdfFileName}
+                onSelectNote={setSelectedGraphNote}
+              />
+            </div>
+            <p className="text-[10px] text-slate-500">可滚轮缩放页面与拖动滚动区域；点击脑图节点可在下方查看详情并一键注入正文。</p>
+            <div className="border border-slate-200 rounded-lg p-2 bg-white min-h-[140px]">
+              {selectedGraphNote ? (
+                <>
+                  <AtomicCardDetail note={selectedGraphNote} compact />
+                  <button
+                    type="button"
+                    onClick={() => setPendingInsert(buildInjectText(selectedGraphNote))}
+                    className="mt-2 w-full py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold"
+                  >
+                    [+ 插入正文]
+                  </button>
+                </>
+              ) : (
+                <p className="text-[10px] text-slate-400">点击上方知识树节点查看详情。</p>
+              )}
+            </div>
+          </div>
+        )}
         {refTab === 'pdf' && pdfSrc && (
           <div className="flex flex-col items-center gap-2">
             <div className="relative bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden flex justify-center min-h-[360px]">
@@ -1819,14 +2617,19 @@ const ReferencePanel = () => {
             {!pdfLoading && !pdfError && (
               <div className="flex items-center gap-2 text-xs text-slate-600">
                 <button onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">上一页</button>
-                <span>p.{currentPage}{numPages != null ? ` / ${numPages}` : ''}</span>
-                <button onClick={() => setCurrentPage((p) => Math.min(numPages || 999, p + 1))} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">下一页</button>
+                <span>p.{currentPage}{pdfNumPages != null ? ` / ${pdfNumPages}` : ''}</span>
+                <button onClick={() => setCurrentPage((p) => Math.min(pdfNumPages || 999, p + 1))} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">下一页</button>
               </div>
             )}
           </div>
         )}
         {refTab === 'pdf' && !pdfSrc && (
           <p className="text-[10px] text-slate-400">当前无 PDF，请在 Read 中打开文献。</p>
+        )}
+        {!writeTabsOnly && refTab === 'ai' && (
+          <div className="h-full min-h-[420px] -m-3">
+            <AssistantSidebar embedded />
+          </div>
         )}
       </div>
     </div>

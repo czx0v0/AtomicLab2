@@ -12,6 +12,63 @@ function getOrCreateSessionId() {
 }
 
 export const SESSION_ID = getOrCreateSessionId();
+const MARKDOWN_CACHE_KEY = 'atomiclab_markdown_cache';
+
+// ── 学术课题 / 投稿进度（Project & Submission）────────────────────────────
+/** @typedef {'Plan'|'Reading'|'Drafting'|'Reviewing'|'Submitted'|'Rebuttal'} ProjectStatus */
+export const PROJECT_STATUSES = ['Plan', 'Reading', 'Drafting', 'Reviewing', 'Submitted', 'Rebuttal'];
+
+export const PROJECT_STATUS_LABELS = {
+  Plan: '选题',
+  Reading: '文献储备',
+  Drafting: '草稿中',
+  Reviewing: '同行评审',
+  Submitted: '已投递',
+  Rebuttal: '返修',
+};
+
+/** sessionStorage：本标签页内仅注入一次截稿催更消息 */
+export const PROJECT_REMINDER_SESSION_KEY = 'atomiclab_project_deadline_reminder';
+
+/** @param {string} iso ISO 8601 截止日期 */
+export function daysUntilDeadline(iso) {
+  if (!iso) return Infinity;
+  const end = new Date(iso);
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+  return Math.ceil((end.getTime() - start.getTime()) / 86400000);
+}
+
+function makeDeadlineIsoDaysFromNow(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  d.setHours(23, 59, 59, 999);
+  return d.toISOString();
+}
+
+export const MOCK_PROJECT = {
+  id: 'proj-mock-kdd',
+  title: '大模型图检索综述',
+  target_journal: 'KDD 2026',
+  deadline: makeDeadlineIsoDaysFromNow(5),
+  status: 'Drafting',
+};
+
+function buildProjectDeadlineReminder(project) {
+  const days = daysUntilDeadline(project.deadline);
+  const d = Math.max(0, days);
+  const stage = PROJECT_STATUS_LABELS[project.status] || project.status;
+  return `⚠️ 侦测到您的课题《${project.title}》距离 ${project.target_journal} 截稿仅剩 ${d} 天！当前处于 [${stage}] 阶段。需要我帮您检查格式，或者模拟同行评审 (Peer Review) 吗？`;
+}
+
+function getInitialMarkdown() {
+  try {
+    const cached = sessionStorage.getItem(MARKDOWN_CACHE_KEY);
+    if (cached && cached.trim()) return cached;
+  } catch {}
+  return '# 研究笔记\n\n在此开始写作...\n\n## 研究问题\n\n';
+}
 
 export const useStore = create((set, get) => ({
       // ── 布局与视图 ─────────────────────────────────────────────────────────
@@ -19,17 +76,62 @@ export const useStore = create((set, get) => ({
       toggleZenMode: () => set((s) => ({ isZenMode: !s.isZenMode })),
 
       viewMode: 'read', // 'read' | 'organize' | 'write'（ArXiv/对话在 Organize 子视图）
-      setViewMode: (mode) => set({ viewMode: mode }),
+      setViewMode: (mode) =>
+        set((s) => {
+          // #region agent log
+          fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'useStore.js:setViewMode',message:'view mode transition',data:{from:s.viewMode,to:mode,markdownLen:(s.markdownContent||'').length},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          const patch = { viewMode: mode };
+          // 进入写作页前：保证 markdown 为字符串，避免 RightColumn 对非 string 调用 slice 崩溃
+          if (mode === 'write' && typeof s.markdownContent !== 'string') {
+            patch.markdownContent = getInitialMarkdown();
+          }
+          return patch;
+        }),
+      writeRefTab: 'notes', // write 右侧固定栏 tab: notes | atomic | graph
+      setWriteRefTab: (tab) => set({ writeRefTab: tab }),
+      mobileReferenceOpen: false, // 移动端写作参考资料半屏抽屉
+      setMobileReferenceOpen: (v) => set({ mobileReferenceOpen: v }),
 
       // ── PDF 状态 ────────────────────────────────────────────────────────────
       pdfFile: null,          // File 对象（不持久化）
       pdfUrl: null,           // 支持Arxiv链接
       pdfFileName: '',
       activeDocId: '',
-      setPdfFile: (file) => set({ pdfFile: file, pdfUrl: null, pdfFileName: file?.name ?? '' }),
-      setPdfUrl: (url, name, docId = '') => set({ pdfFile: null, pdfUrl: url, pdfFileName: name, activeDocId: docId }),
+      pdfDocument: null,      // react-pdf Document onLoadSuccess 返回对象（运行态）
+      pdfNumPages: null,
+      setPdfRuntime: (pdfDocument, numPages) =>
+        set({ pdfDocument: pdfDocument ?? null, pdfNumPages: Number.isFinite(numPages) ? numPages : null }),
+      resetPdfRuntime: () => set({ pdfDocument: null, pdfNumPages: null }),
+      setPdfFile: (file) =>
+        set({
+          pdfFile: file,
+          pdfUrl: null,
+          pdfFileName: file?.name ?? '',
+          currentPage: 1,
+          pdfDocument: null,
+          pdfNumPages: null,
+        }),
+      setPdfUrl: (url, name, docId = '') =>
+        set({
+          pdfFile: null,
+          pdfUrl: url,
+          pdfFileName: name,
+          activeDocId: docId,
+          currentPage: 1,
+          pdfDocument: null,
+          pdfNumPages: null,
+        }),
       currentPage: 1,
-      setCurrentPage: (page) => set({ currentPage: page }),
+      setCurrentPage: (pageOrUpdater) =>
+        set((s) => {
+          const next =
+            typeof pageOrUpdater === 'function'
+              ? pageOrUpdater(s.currentPage)
+              : pageOrUpdater;
+          const n = Number(next);
+          return { currentPage: Number.isFinite(n) ? Math.max(1, Math.floor(n)) : s.currentPage };
+        }),
       highlights: [],
       addHighlight: (highlight) =>
         set((s) => {
@@ -56,8 +158,16 @@ export const useStore = create((set, get) => ({
         set({ activeReference: ref, currentPage: ref?.page ?? get().currentPage }),
 
       // ── 编辑器状态（会话态） ────────────────────────────────────────────────
-      markdownContent: '# 研究笔记\n\n在此开始写作...\n\n## 研究问题\n\n',
-      setMarkdownContent: (content) => set({ markdownContent: content }),
+      markdownContent: getInitialMarkdown(),
+      setMarkdownContent: (content) =>
+        set((s) => {
+          const next = typeof content === 'string' ? content : content == null ? '' : String(content);
+          try { sessionStorage.setItem(MARKDOWN_CACHE_KEY, next); } catch {}
+          // #region agent log
+          fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'useStore.js:setMarkdownContent',message:'markdown content mutation',data:{prevLen:(s.markdownContent||'').length,nextLen:next.length,viewMode:s.viewMode},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          return { markdownContent: next };
+        }),
       citations: [],
       // 参考文献列表（写作区引用）[{ id, key, title, authors, year, doi, url, journal, source }]
       references: [],
@@ -150,6 +260,51 @@ export const useStore = create((set, get) => ({
       // ── 写作区「插入到光标」：参考面板点击 [+] 时写入，RightColumn 消费后清空 ─────
       pendingInsert: null,
       setPendingInsert: (text) => set({ pendingInsert: text }),
+      // Agent Tool Calling：后端下发编辑器动作，RightColumn 消费执行
+      pendingEditorAction: null, // { function:'update_markdown_editor', action_type:'append|replace|insert', content:string }
+      setPendingEditorAction: (action) => set({ pendingEditorAction: action || null }),
+
+      // ── 学术课题（投稿与进度）────────────────────────────────────────────────
+      /** @type {{ id: string, title: string, target_journal: string, deadline: string, status: ProjectStatus }[]} */
+      projects: [{ ...MOCK_PROJECT, deadline: makeDeadlineIsoDaysFromNow(5) }],
+      activeProjectId: MOCK_PROJECT.id,
+      setProjects: (projects) => set({ projects: Array.isArray(projects) ? projects : [] }),
+      setActiveProjectId: (id) => set({ activeProjectId: id }),
+      updateProject: (id, patch) =>
+        set((s) => ({
+          projects: s.projects.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+        })),
+
+      /** 助手展开时调用：截稿不足 7 天则在消息列表最前插入一条 Agent 催更（每会话一次） */
+      ensureProjectDeadlineReminder: () => {
+        let blocked = false;
+        try {
+          blocked = sessionStorage.getItem(PROJECT_REMINDER_SESSION_KEY) === '1';
+        } catch {}
+        if (blocked) return;
+        const s = get();
+        const ap = s.projects.find((p) => p.id === s.activeProjectId);
+        if (!ap) return;
+        const daysLeft = daysUntilDeadline(ap.deadline);
+        if (daysLeft >= 7) return;
+        if (s.messages.some((m) => m.projectReminder)) {
+          try {
+            sessionStorage.setItem(PROJECT_REMINDER_SESSION_KEY, '1');
+          } catch {}
+          return;
+        }
+        const msg = {
+          id: `proj-reminder-${Date.now()}`,
+          role: 'agent',
+          agentType: 'system',
+          content: buildProjectDeadlineReminder(ap),
+          projectReminder: true,
+        };
+        set({ messages: [msg, ...s.messages].slice(-80) });
+        try {
+          sessionStorage.setItem(PROJECT_REMINDER_SESSION_KEY, '1');
+        } catch {}
+      },
 
       // ── RPG 多智能体聊天 ────────────────────────────────────────────────────
       messages: [
@@ -224,7 +379,14 @@ export const useStore = create((set, get) => ({
 
       // ── 重新开始（清空会话态：笔记、对话、解析结果、图谱等；需配合 api resetSession 使用）──
       startOver: () =>
-        set({
+        set((s) => {
+          try {
+            sessionStorage.removeItem(PROJECT_REMINDER_SESSION_KEY);
+          } catch {}
+          // #region agent log
+          fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'useStore.js:startOver',message:'startOver called',data:{viewMode:s.viewMode,markdownLen:(s.markdownContent||'').length,activeDocId:s.activeDocId||''},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          return {
           notes: [],
           messages: [
             {
@@ -234,16 +396,22 @@ export const useStore = create((set, get) => ({
               content: '欢迎来到 AtomicLab！上传 PDF 开始原子化解析，或直接提问让 Seeker 为你检索知识库。',
             },
           ],
+          projects: [{ ...MOCK_PROJECT, deadline: makeDeadlineIsoDaysFromNow(5) }],
+          activeProjectId: MOCK_PROJECT.id,
           parseStatus: 'idle',
           parseProgress: [],
           parsedMarkdown: '',
           parsedSections: [],
           parsedDocName: '',
+          currentPage: 1,
+          pdfDocument: null,
+          pdfNumPages: null,
           graphData: { nodes: [], links: [] },
           noteLinks: [],
           searchResults: [],
           searchQuery: '',
           references: [],
+          };
         }),
 
       // ── 后端连接状态 ────────────────────────────────────────────────────────
