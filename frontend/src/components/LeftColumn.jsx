@@ -5,11 +5,14 @@ import { createPortal } from 'react-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
-import { useStore } from '../store/useStore';
+import { SESSION_ID, useStore } from '../store/useStore';
 
 import { AnimatePresence, motion } from 'framer-motion';
 import * as api from '../api/client';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { LocalFirstBadge } from './LocalFirstBadge';
+import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
+import { loadLocalDocState, mergeNotesById, saveLocalDocState } from '../lib/localDocumentStore';
 
 // Load PDF worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -21,12 +24,14 @@ export const LeftColumn = () => {
         addHighlight, highlights, activeReference, addNote, library, addToLibrary,
         removeFromLibrary, pdfFileName, parseStatus, parseProgress, parsedMarkdown,
         parsedSections, parsedDocName, setParseStatus, addParseLog, setParsedMarkdown,
-        addParsedSection, updateParsedSectionSummary, clearParseState,
+        addParsedSection, updateParsedSectionSummary, resetParseUiState,
         notes, setNotes, setParsedSections, setActiveReference, setViewMode, setCopilotOpen, setContextAttachment,
         activeDocId,
         pendingScreenshotQueue, addPendingScreenshot, removePendingScreenshot, updateNoteContent,
         startOver, setNotification,
         startDemoLoad, setStartDemoLoad,
+        clearHighlights, setHighlights, clearPendingScreenshotQueue,
+        bumpParseInflight,
     } = useStore();
     const accumulatedMarkdownRef = useRef('');
     const [pdfLoadError, setPdfLoadError] = useState(null);
@@ -48,6 +53,8 @@ export const LeftColumn = () => {
     const actionInFlightRef = useRef(false);
     const isScrollingRef = useRef(false);
     const scrollUnlockTimerRef = useRef(null);
+    /** 用于文献切换时保存上一篇的 Local-First 快照 */
+    const prevDocIdRef = useRef('');
 
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -101,6 +108,7 @@ export const LeftColumn = () => {
                 text: '[截图高亮]',
                 color: highlightColor,
                 bbox: normBbox,
+                doc_id: activeDocId || '',
             });
 
             // 截取选区图像并自动创建原子笔记
@@ -167,20 +175,14 @@ export const LeftColumn = () => {
                 bbox: normBbox,
                 screenshot: screenshotUrl,
                 timestamp: new Date().toISOString(),
+                doc_id: activeDocId || '',
             };
             addNote(shotNote);
             if (!extractedText || extractedText === '[截图高亮]') {
                 addPendingScreenshot({ noteId: shotNote.id, page: currentPage, bbox: bbox });
             }
-            api.createNote({
-                content: shotNote.content,
-                type: shotNote.type,
-                page: shotNote.page,
-                bbox: shotNote.bbox,
-                screenshot: shotNote.screenshot,
-                doc_id: activeDocId || '',
-            }).catch((e) => console.warn('截图笔记后端同步失败:', e))
-            .finally(() => { actionInFlightRef.current = false; });
+            // Local-First：截图与 Base64 仅存 IndexedDB，不上传后端
+            actionInFlightRef.current = false;
         }
         setShotDraft(null);
     };
@@ -240,6 +242,65 @@ export const LeftColumn = () => {
         })();
         return () => { cancelled = true; };
     }, [pdfDocument, currentPage, pageWidth, pageScale, pendingScreenshotQueue, updateNoteContent, removePendingScreenshot]);
+
+    // ── Local-First：文献 doc_id 切换时保存上一篇、清理高亮与截图队列，并从 IndexedDB 恢复非 Demo 文献 ──
+    useEffect(() => {
+        let cancelled = false;
+        const docId = activeDocId || '';
+
+        (async () => {
+            const prev = prevDocIdRef.current;
+            if (prev && prev !== docId) {
+                const st = useStore.getState();
+                const h = st.highlights.filter((x) => (x.doc_id || '') === prev);
+                const n = st.notes.filter((x) => (x.doc_id || '') === prev);
+                await saveLocalDocState(prev, { highlights: h, notes: n });
+            }
+            if (cancelled) return;
+
+            prevDocIdRef.current = docId;
+
+            if (docId && docId !== GLOBAL_DEMO_DOC_ID) {
+                clearHighlights();
+                setActiveReference(null);
+                clearPendingScreenshotQueue();
+                resetPdfRuntime();
+            } else if (docId === GLOBAL_DEMO_DOC_ID) {
+                clearHighlights();
+                setActiveReference(null);
+                clearPendingScreenshotQueue();
+            } else {
+                clearHighlights();
+                setActiveReference(null);
+                clearPendingScreenshotQueue();
+            }
+
+            if (!docId) return;
+            if (docId === GLOBAL_DEMO_DOC_ID) return;
+
+            const local = await loadLocalDocState(docId);
+            if (cancelled) return;
+            setHighlights((local.highlights || []).map((h) => ({ ...h, doc_id: docId })));
+            setNotes(local.notes || []);
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [activeDocId, clearHighlights, setActiveReference, clearPendingScreenshotQueue, resetPdfRuntime, setHighlights, setNotes]);
+
+    // 防抖：当前文献的高亮/笔记写入 IndexedDB
+    useEffect(() => {
+        const docId = activeDocId || '';
+        if (!docId) return;
+        const t = setTimeout(() => {
+            const st = useStore.getState();
+            const h = st.highlights.filter((x) => (x.doc_id || '') === docId);
+            const n = st.notes.filter((x) => (x.doc_id || '') === docId);
+            saveLocalDocState(docId, { highlights: h, notes: n });
+        }, 400);
+        return () => clearTimeout(t);
+    }, [highlights, notes, activeDocId]);
 
     const isNormalizedBbox = (bbox) => {
         if (!bbox) return false;
@@ -318,9 +379,9 @@ export const LeftColumn = () => {
 
     const applyFileAsUpload = useCallback((file) => {
         setNotes([]);
-        setParsedSections([]);
+        resetParseUiState();
         setPdfFile(file);
-        clearParseState();
+        accumulatedMarkdownRef.current = '';
         api.uploadDocument(file).then((doc) => {
             const fileUrl = api.getDocumentFileUrl(doc.id);
             setPdfUrl(fileUrl, doc.name, doc.id);
@@ -333,51 +394,55 @@ export const LeftColumn = () => {
                 source: 'local',
                 noteCount: 0,
             });
-        }).catch(() => {});
-
-        accumulatedMarkdownRef.current = '';
-        setParseStatus('parsing');
-        addParseLog(`开始解析: ${file.name}`);
-        api.parsePDF(file, 'auto', (evt) => {
-            if (evt.message) addParseLog(evt.message);
-            if (evt.status === 'chunk') {
-                const part = (evt.section_title ? '## ' + evt.section_title + '\n\n' : '') + (evt.markdown_chunk || '');
-                if (part) accumulatedMarkdownRef.current += (accumulatedMarkdownRef.current ? '\n\n' : '') + part;
-                addParsedSection({
-                    title: evt.section_title || 'Untitled',
-                    summary: evt.section_summary || '',
-                    content: evt.markdown_chunk || '',
-                    imageRefs: evt.image_refs || [],
-                });
-            }
-            if (evt.status === 'summary') {
-                updateParsedSectionSummary(evt.section_title || '', evt.section_summary || '');
-            }
-            if (evt.markdown) {
-                setParsedMarkdown(evt.markdown, file.name);
-            }
-            if (evt.status === 'success') {
-                const fullMd = evt.markdown || accumulatedMarkdownRef.current || '';
-                if (fullMd) {
-                    setParsedMarkdown(fullMd, file.name);
-                    api.indexDocument(`doc_${file.name}`, file.name, fullMd)
-                        .then(() => addParseLog('知识库已索引，可检索。'))
-                        .catch((e) => {
-                            setNotification('知识库索引失败: ' + (e?.message || String(e)), 'error');
-                            addParseLog('知识库索引失败');
-                        });
+            accumulatedMarkdownRef.current = '';
+            const runId = bumpParseInflight();
+            setParseStatus('parsing');
+            addParseLog(`开始解析: ${file.name}`);
+            api.parsePDF(file, 'auto', (evt) => {
+                const st = useStore.getState();
+                if (st.parseInflightId !== runId || st.activeDocId !== doc.id) return;
+                if (evt.message) addParseLog(evt.message);
+                if (evt.status === 'chunk') {
+                    const part = (evt.section_title ? '## ' + evt.section_title + '\n\n' : '') + (evt.markdown_chunk || '');
+                    if (part) accumulatedMarkdownRef.current += (accumulatedMarkdownRef.current ? '\n\n' : '') + part;
+                    addParsedSection({
+                        title: evt.section_title || 'Untitled',
+                        summary: evt.section_summary || '',
+                        content: evt.markdown_chunk || '',
+                        imageRefs: evt.image_refs || [],
+                    });
                 }
-                setParseStatus('done');
-                addParseLog('解析完成。');
-            }
-            if (evt.status === 'error') {
+                if (evt.status === 'summary') {
+                    updateParsedSectionSummary(evt.section_title || '', evt.section_summary || '');
+                }
+                if (evt.markdown) {
+                    setParsedMarkdown(evt.markdown, file.name);
+                }
+                if (evt.status === 'success') {
+                    const fullMd = evt.markdown || accumulatedMarkdownRef.current || '';
+                    if (fullMd) {
+                        setParsedMarkdown(fullMd, file.name);
+                        api.indexDocument(`doc_${file.name}`, file.name, fullMd)
+                            .then(() => addParseLog('知识库已索引，可检索。'))
+                            .catch((e) => {
+                                setNotification('知识库索引失败: ' + (e?.message || String(e)), 'error');
+                                addParseLog('知识库索引失败');
+                            });
+                    }
+                    setParseStatus('done');
+                    addParseLog('解析完成。');
+                }
+                if (evt.status === 'error') {
+                    setParseStatus('error');
+                }
+            }).catch((e) => {
+                const st = useStore.getState();
+                if (st.parseInflightId !== runId || st.activeDocId !== doc.id) return;
                 setParseStatus('error');
-            }
-        }).catch((e) => {
-            setParseStatus('error');
-            addParseLog(`解析失败: ${e instanceof Error ? e.message : String(e)}`);
-        });
-    }, [setNotes, setParsedSections, setPdfFile, clearParseState, setPdfUrl, addToLibrary, setParseStatus, addParseLog, addParsedSection, updateParsedSectionSummary, setParsedMarkdown, setNotification]);
+                addParseLog(`解析失败: ${e instanceof Error ? e.message : String(e)}`);
+            });
+        }).catch(() => {});
+    }, [setNotes, resetParseUiState, setPdfFile, setPdfUrl, addToLibrary, setParseStatus, addParseLog, addParsedSection, updateParsedSectionSummary, setParsedMarkdown, setNotification, bumpParseInflight]);
 
     const onFileChange = (event) => {
         const file = event.target.files[0];
@@ -387,23 +452,17 @@ export const LeftColumn = () => {
     const loadSharedDemo = useCallback(() => {
         setDemoLoading(true);
         setNotification('正在加载白皮书…');
-        // #region agent log
-        fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'LeftColumn.jsx:loadSharedDemo:start',message:'load demo triggers startOver',data:{viewMode:useStore.getState().viewMode,markdownLen:(useStore.getState().markdownContent||'').length},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         startOver();
         api.loadDemo()
-            .then((resp) => {
+            .then(async (resp) => {
                 const fileUrl = resp?.file_url || '/api/demo/pdf';
                 const title = resp?.title || 'demo_paper.pdf';
-                const docId = resp?.doc_id || 'global_demo_official';
-                setPdfUrl(fileUrl, title, docId);
+                const docId = resp?.doc_id || GLOBAL_DEMO_DOC_ID;
+                const local = await loadLocalDocState(docId);
+                const seeded = (resp?.demo_notes || []).map((n) => ({ ...n, doc_id: n.doc_id || docId }));
+                const mergedNotes = mergeNotesById(seeded, local.notes || []);
                 addToLibrary({ id: docId, name: title, addedAt: new Date().toISOString(), source: 'demo' });
-                clearParseState();
-                if (Array.isArray(resp?.demo_notes)) {
-                    setNotes(resp.demo_notes);
-                } else {
-                    setNotes([]);
-                }
+                setPdfUrl(fileUrl, title, docId);
                 if (resp?.markdown) {
                     setParsedMarkdown(resp.markdown, title);
                 }
@@ -417,9 +476,10 @@ export const LeftColumn = () => {
                 }
                 setParseStatus('done');
                 setViewMode('read');
-                // #region agent log
-                fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'LeftColumn.jsx:loadSharedDemo:done',message:'demo load completed',data:{cached:!!resp?.cached,docId:resp?.doc_id||'',markdownLen:(resp?.markdown||'').length},timestamp:Date.now()})}).catch(()=>{});
-                // #endregion
+                requestAnimationFrame(() => {
+                    setNotes(mergedNotes);
+                    setHighlights((local.highlights || []).map((h) => ({ ...h, doc_id: docId })));
+                });
                 setNotification(resp?.cached ? 'Demo 已复用缓存，秒开完成。' : 'Demo 首次解析完成，后续将复用缓存。');
             })
             .catch((e) => setNotification(e?.message || '加载白皮书失败', 'error'))
@@ -429,8 +489,8 @@ export const LeftColumn = () => {
         startOver,
         setPdfUrl,
         addToLibrary,
-        clearParseState,
         setNotes,
+        setHighlights,
         setParsedMarkdown,
         setParsedSections,
         setParseStatus,
@@ -444,6 +504,102 @@ export const LeftColumn = () => {
         loadSharedDemo();
     }, [startDemoLoad, setStartDemoLoad, loadSharedDemo]);
 
+    // 从文献库切换等：仅有 pdfUrl + doc_id 且内存缓存无大纲时，拉取 PDF Blob 并走流式解析（cleanup 不删缓存，仅取消本次异步）
+    useEffect(() => {
+        const docId = activeDocId || '';
+        const url = pdfUrl || '';
+        if (!docId || !url || pdfFile) return;
+        if (docId === GLOBAL_DEMO_DOC_ID) return;
+
+        const cache = useStore.getState().parseCacheByDocId[docId];
+        if (Array.isArray(cache?.sections) && cache.sections.length > 0) return;
+
+        const st0 = useStore.getState();
+        if (st0.activeDocId === docId && st0.parsedSections.length > 0) return;
+        if (st0.parseStatus === 'parsing' && st0.activeDocId === docId) return;
+
+        let cancelled = false;
+        const runId = bumpParseInflight();
+
+        (async () => {
+            try {
+                const res = await fetch(url, { headers: { 'X-Session-ID': SESSION_ID } });
+                if (!res.ok) return;
+                const blob = await res.blob();
+                const name = pdfFileName || 'document.pdf';
+                const file = new File([blob], name, { type: 'application/pdf' });
+                if (cancelled) return;
+                const st = useStore.getState();
+                if (st.parseInflightId !== runId || st.activeDocId !== docId) return;
+
+                accumulatedMarkdownRef.current = '';
+                setParseStatus('parsing');
+                addParseLog(`开始解析: ${name}`);
+                await api.parsePDF(file, 'auto', (evt) => {
+                    if (cancelled) return;
+                    const s = useStore.getState();
+                    if (s.parseInflightId !== runId || s.activeDocId !== docId) return;
+                    if (evt.message) addParseLog(evt.message);
+                    if (evt.status === 'chunk') {
+                        const part = (evt.section_title ? '## ' + evt.section_title + '\n\n' : '') + (evt.markdown_chunk || '');
+                        if (part) accumulatedMarkdownRef.current += (accumulatedMarkdownRef.current ? '\n\n' : '') + part;
+                        addParsedSection({
+                            title: evt.section_title || 'Untitled',
+                            summary: evt.section_summary || '',
+                            content: evt.markdown_chunk || '',
+                            imageRefs: evt.image_refs || [],
+                        });
+                    }
+                    if (evt.status === 'summary') {
+                        updateParsedSectionSummary(evt.section_title || '', evt.section_summary || '');
+                    }
+                    if (evt.markdown) {
+                        setParsedMarkdown(evt.markdown, name);
+                    }
+                    if (evt.status === 'success') {
+                        const fullMd = evt.markdown || accumulatedMarkdownRef.current || '';
+                        if (fullMd) {
+                            setParsedMarkdown(fullMd, name);
+                            api.indexDocument(`doc_${name}`, name, fullMd)
+                                .then(() => addParseLog('知识库已索引，可检索。'))
+                                .catch((e) => {
+                                    setNotification('知识库索引失败: ' + (e?.message || String(e)), 'error');
+                                    addParseLog('知识库索引失败');
+                                });
+                        }
+                        setParseStatus('done');
+                        addParseLog('解析完成。');
+                    }
+                    if (evt.status === 'error') {
+                        setParseStatus('error');
+                    }
+                });
+            } catch (e) {
+                if (cancelled) return;
+                const s = useStore.getState();
+                if (s.parseInflightId !== runId || s.activeDocId !== docId) return;
+                setParseStatus('error');
+                addParseLog(`解析失败: ${e instanceof Error ? e.message : String(e)}`);
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        activeDocId,
+        pdfUrl,
+        pdfFile,
+        pdfFileName,
+        bumpParseInflight,
+        setParseStatus,
+        addParseLog,
+        addParsedSection,
+        updateParsedSectionSummary,
+        setParsedMarkdown,
+        setNotification,
+    ]);
+
     const outline = parsedSections.length > 0
         ? parsedSections.map((s, idx) => ({
             level: 2,
@@ -455,7 +611,11 @@ export const LeftColumn = () => {
         }))
         : [];
 
-    const textHighlights = highlights.map((h) => h.text).filter(Boolean);
+    const docScopedHighlights = useMemo(
+        () => highlights.filter((h) => (h.doc_id || '') === (activeDocId || '')),
+        [highlights, activeDocId]
+    );
+    const textHighlights = docScopedHighlights.map((h) => h.text).filter(Boolean);
     const renderTextWithHighlights = (text) => {
         if (!text || textHighlights.length === 0) return <span>{text}</span>;
         const escaped = textHighlights
@@ -648,7 +808,8 @@ export const LeftColumn = () => {
                     ? toNormalizedBbox(selection.bbox)
                     : [selection.bbox.x, selection.bbox.y, selection.bbox.width, selection.bbox.height],
                 screenshot: screenshotUrl,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                doc_id: activeDocId || '',
             };
             
             // 本地先加：快速反馈
@@ -656,73 +817,20 @@ export const LeftColumn = () => {
             setSelection(null);
             actionInFlightRef.current = false;
 
-            // 后端同步 + Crusher 自动分类
+            // Local-First：原子笔记与截图仅存 IndexedDB；可选调用分类接口（不落库）
             try {
-                // #region agent log
-                fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
-                    body: JSON.stringify({
-                        sessionId: '1d3683',
-                        runId: 'post-fix',
-                        hypothesisId: 'H4',
-                        location: 'LeftColumn.jsx:createNote:request',
-                        message: 'create note payload before api call',
-                        data: {
-                            noteId: payload.id,
-                            hasScreenshot: !!payload.screenshot,
-                            screenshotLen: (payload.screenshot || '').length,
-                            page: payload.page || 0,
-                        },
-                        timestamp: Date.now(),
-                    }),
-                }).catch(() => {});
-                // #endregion
-                const created = await api.createNote({
-                    content: payload.content,
-                    type: payload.type,
-                    page: payload.page,
-                    bbox: payload.bbox,
-                    screenshot: payload.screenshot,
-                    doc_id: activeDocId || '',
-                });
-                // #region agent log
-                fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
-                    body: JSON.stringify({
-                        sessionId: '1d3683',
-                        runId: 'post-fix',
-                        hypothesisId: 'H4',
-                        location: 'LeftColumn.jsx:createNote:response',
-                        message: 'create note response',
-                        data: {
-                            noteId: created?.id || '',
-                            hasScreenshot: !!created?.screenshot,
-                            screenshotLen: (created?.screenshot || '').length,
-                        },
-                        timestamp: Date.now(),
-                    }),
-                }).catch(() => {});
-                // #endregion
-                // 尝试通过翻译接口做 Crusher 分类（利用 DeepSeek 做简单分类）
-                try {
-                    const classifyResp = await api.translateText(
-                        `请对以下学术文本片段进行知识类型分类，只返回一个词：方法/公式/定义/观点/数据/其他\n\n"${payload.content.substring(0, 200)}"`,
-                        'zh'
-                    );
-                    const typeMap = { '方法': 'method', '公式': 'formula', '定义': 'definition', '观点': 'idea', '数据': 'data', '其他': 'other' };
-                    const raw = classifyResp.translation?.replace(/[[\]Mock 翻译]/g, '').trim();
-                    const detectedType = typeMap[raw] || null;
-                    if (detectedType && detectedType !== payload.type) {
-                        // 更新本地笔记类型
-                        const notes = useStore.getState().notes;
-                        useStore.getState().setNotes(notes.map(n => n.id === payload.id ? { ...n, type: detectedType } : n));
-                    }
-                } catch {}
-            } catch (e) {
-                console.warn("后端同步失败:", e);
-            }
+                const classifyResp = await api.translateText(
+                    `请对以下学术文本片段进行知识类型分类，只返回一个词：方法/公式/定义/观点/数据/其他\n\n"${payload.content.substring(0, 200)}"`,
+                    'zh'
+                );
+                const typeMap = { '方法': 'method', '公式': 'formula', '定义': 'definition', '观点': 'idea', '数据': 'data', '其他': 'other' };
+                const raw = classifyResp.translation?.replace(/[[\]Mock 翻译]/g, '').trim();
+                const detectedType = typeMap[raw] || null;
+                if (detectedType && detectedType !== payload.type) {
+                    const notes = useStore.getState().notes;
+                    useStore.getState().setNotes(notes.map(n => n.id === payload.id ? { ...n, type: detectedType } : n));
+                }
+            } catch {}
             
         } else if (action === 'highlight') {
             try {
@@ -740,6 +848,7 @@ export const LeftColumn = () => {
                     color: highlightColor,
                     bbox: bboxArr,
                     lines: normLines,
+                    doc_id: activeDocId || '',
                 });
                 const hlNote = {
                     id: crypto.randomUUID(),
@@ -748,15 +857,9 @@ export const LeftColumn = () => {
                     page: currentPage,
                     bbox: bboxArr,
                     timestamp: new Date().toISOString(),
+                    doc_id: activeDocId || '',
                 };
                 addNote(hlNote);
-                api.createNote({
-                    content: hlNote.content,
-                    type: hlNote.type,
-                    page: hlNote.page,
-                    bbox: hlNote.bbox,
-                    doc_id: activeDocId || '',
-                }).catch((e) => console.warn('高亮笔记后端同步失败:', e));
             } catch (e) {
                 console.error('高亮操作失败:', e);
             }
@@ -776,7 +879,8 @@ export const LeftColumn = () => {
                     translation: resp.translation,
                     page: currentPage,
                     bbox: [selection.bbox.x, selection.bbox.y, selection.bbox.width, selection.bbox.height],
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    doc_id: activeDocId || '',
                 });
             } catch (e) {
                 setTranslationResult(`翻译失败: ${e instanceof Error ? e.message : '后端未启动'}`);
@@ -792,7 +896,8 @@ export const LeftColumn = () => {
                     content: `[批注] ${annotation}\n\n原文: ${selection.text.substring(0, 100)}...`,
                     page: currentPage,
                     bbox: [selection.bbox.x, selection.bbox.y, selection.bbox.width, selection.bbox.height],
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    doc_id: activeDocId || '',
                 });
             }
             setSelection(null);
@@ -802,7 +907,9 @@ export const LeftColumn = () => {
 
     // Render saved highlight overlays for current page（可点击弹窗显示原文）
     const renderHighlightOverlays = () => {
-        const pageHighlights = highlights.filter(h => h.page === currentPage && h.bbox);
+        const pageHighlights = highlights.filter(
+            (h) => h.page === currentPage && h.bbox && (h.doc_id || '') === (activeDocId || '')
+        );
         const colorMap = { yellow: 'bg-yellow-300', green: 'bg-green-300', blue: 'bg-blue-300', pink: 'bg-pink-300' };
         return pageHighlights.flatMap(h => {
             const colorClass = colorMap[h.color] || 'bg-yellow-300';
@@ -866,7 +973,7 @@ export const LeftColumn = () => {
             className="h-full flex flex-col bg-gray-50 relative"
         >
              {/* 阅读栏顶部：体验 Demo */}
-             <div className="border-b border-amber-200 bg-amber-50/80 shrink-0 px-3 py-2">
+             <div className="border-b border-amber-200 bg-amber-50/80 shrink-0 px-3 py-2 space-y-2">
                 <button
                     type="button"
                     onClick={handleLoadDemo}
@@ -882,6 +989,9 @@ export const LeftColumn = () => {
                         <>🎁 体验官方架构白皮书 Demo</>
                     )}
                 </button>
+                <div className="flex justify-center sm:hidden">
+                    <LocalFirstBadge />
+                </div>
              </div>
              {/* 文献库折叠面板 */}
              <div className="border-b border-gray-200 bg-white shrink-0">
@@ -913,10 +1023,10 @@ export const LeftColumn = () => {
                                             onClick={() => {
                                                 if (confirmRemoveId === doc.id) return;
                                                 if (doc.source === 'arxiv') {
-                                                    clearParseState();
-                                                    setPdfUrl(`https://arxiv.org/pdf/${doc.arxivId}.pdf`, doc.name);
+                                                    setPdfUrl(`https://arxiv.org/pdf/${doc.arxivId}.pdf`, doc.name, `arxiv_${doc.arxivId}`);
+                                                } else if (doc.source === 'demo') {
+                                                    loadSharedDemo();
                                                 } else if (doc.source === 'local' && doc.docId) {
-                                                    clearParseState();
                                                     setPdfUrl(doc.fileUrl || api.getDocumentFileUrl(doc.docId), doc.name, doc.docId);
                                                 } else {
                                                     useStore.getState().setNotification("本地文件因浏览器安全限制无法自动恢复，请重新上传。", "warn");

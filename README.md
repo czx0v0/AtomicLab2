@@ -101,6 +101,18 @@ npm run dev
 
 - 助手回复支持 **Markdown、GFM 表格、KaTeX 公式**；文中 **`[1]`** 等引用可点击跳转对应知识来源。
 
+### 双库架构：向量检索 vs 本地元数据（工业级 RAG 约定）
+
+AtomicLab 将 **语义检索** 与 **结构化/隐私敏感元数据** 分开存放，避免「什么都塞进向量库」导致难维护、难审计、难合规。
+
+| 职责 | 典型存储 | 放什么 | 不放什么 |
+|------|----------|--------|----------|
+| **向量与语义** | 后端 Chroma 等 | 文本分块、Embedding、检索用的文档/笔记向量通道 | 原始文件名层级树、高亮截图 Base64、按篇切换的 UI 快照 |
+| **元数据与隐私态** | 浏览器 **IndexedDB**（如 localforage）、Zustand 内存字典 | 高亮/截图与 `doc_id` 的映射、Local-First 笔记；**`parseCacheByDocId`**（按 `doc_id` 缓存 `parsedSections` + `parsedMarkdown` + `parsedDocName`，切文献秒开） | 大块正文重复入向量库（正文以解析管道与缓存为准） |
+
+- **后端**：仍以 Chroma + BM25 + 图谱等完成 RAG；若后续引入 **SQLite**，宜用于会话级/可审计的结构化表（与现有服务分层一致），与向量索引解耦。
+- **前端**：切换文献时优先读 **`parseCacheByDocId`**；「重新开始」会 **清空** 该字典，避免会话间串台。详见 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)。
+
 ### MinerU 云解析
 
 - 配置 `MINERU_API_TOKEN`（或 `MINERU_API_KEY`）后，解析走云 API。

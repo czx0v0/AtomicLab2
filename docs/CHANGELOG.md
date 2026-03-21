@@ -6,6 +6,12 @@
 
 ### Added
 
+- **解析大纲按文献缓存（冲刺二）**
+  - Zustand：`parseCacheByDocId` 按 `doc_id` 存储 `parsedSections` + `parsedMarkdown` + `parsedDocName`；`setPdfUrl` / `setPdfFile` 切换前写入上一篇快照，切换后从缓存恢复，大纲与 Markdown 正文一致「秒开」
+  - `resetParseUiState`：仅重置解析 Loading/日志；`startOver` 时 **`parseCacheByDocId` 整表清空**，避免会话间串台
+  - 本地上传：`uploadDocument` 完成后再 `setPdfUrl` 并开始 `parsePDF`，保证流式解析阶段 `activeDocId` 有效、缓存写入正确
+  - ArXiv 打开：`activeDocId` 使用 `arxiv_${id}`，与文献库切换一致
+
 - **Organize · 发现（ArXiv 学术秘书）体验**
   - 中日韩关键词/研究目标在检索前经 `POST /api/translate` 自动译为英文，提高 arXiv API 命中率；界面可提示「已转为英文检索词」
   - 与收件箱、关键词记忆（`last_keyword` / `last_research_goal`）联动不变

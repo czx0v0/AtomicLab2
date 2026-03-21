@@ -12,6 +12,7 @@ import { MiddleColumn } from './components/MiddleColumn';
 import { RightColumn } from './components/RightColumn';
 import { WriteTab } from './components/WriteTab';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { LocalFirstBadge } from './components/LocalFirstBadge';
 import { useStore } from './store/useStore';
 
 /** 全局浮动通知条（替代 alert/Toast），中性灰 SaaS 风格 */
@@ -80,6 +81,9 @@ const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo 
                 <span>Atomic</span><span className="text-blue-600">Lab</span>
               </h1>
               <p className="text-[10px] text-slate-500 leading-none mt-0.5">Read · Organize · Write</p>
+              <div className="mt-1.5 hidden sm:block">
+                <LocalFirstBadge compact />
+              </div>
             </div>
         </div>
 

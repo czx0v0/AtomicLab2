@@ -187,32 +187,87 @@ export const useStore = create((set, get) => ({
       setPdfRuntime: (pdfDocument, numPages) =>
         set({ pdfDocument: pdfDocument ?? null, pdfNumPages: Number.isFinite(numPages) ? numPages : null }),
       resetPdfRuntime: () => set({ pdfDocument: null, pdfNumPages: null }),
+      /** 按 doc_id 缓存解析大纲与 Markdown，切换文献时秒开且所见即所得（产品文档中的 outlineData 即本结构） */
+      parseCacheByDocId: {},
+      /** 递增以作废进行中的 parse SSE，避免切文献后旧回调写错 doc */
+      parseInflightId: 0,
+      bumpParseInflight: () => {
+        const s = get();
+        const next = s.parseInflightId + 1;
+        set({ parseInflightId: next });
+        return next;
+      },
       setPdfFile: (file) => {
         try {
           sessionStorage.removeItem(PDF_URL_KEY);
           if (file?.name) sessionStorage.setItem(PDF_NAME_KEY, file.name);
           sessionStorage.removeItem(PDF_DOC_ID_KEY);
         } catch {}
-        set({
-          pdfFile: file,
-          pdfUrl: null,
-          pdfFileName: file?.name ?? '',
-          activeDocId: '',
-          currentPage: 1,
-          pdfDocument: null,
-          pdfNumPages: null,
+        set((s) => {
+          const oldId = s.activeDocId;
+          let nextCache = { ...s.parseCacheByDocId };
+          if (oldId) {
+            nextCache = {
+              ...nextCache,
+              [oldId]: {
+                sections: s.parsedSections,
+                markdown: s.parsedMarkdown,
+                docName: s.parsedDocName,
+                updatedAt: Date.now(),
+              },
+            };
+          }
+          return {
+            parseCacheByDocId: nextCache,
+            pdfFile: file,
+            pdfUrl: null,
+            pdfFileName: file?.name ?? '',
+            activeDocId: '',
+            currentPage: 1,
+            pdfDocument: null,
+            pdfNumPages: null,
+            parsedMarkdown: '',
+            parsedSections: [],
+            parsedDocName: '',
+            parseStatus: 'idle',
+            parseProgress: [],
+          };
         });
       },
       setPdfUrl: (url, name, docId = '') => {
         persistPdfUrlState(url, name, docId);
-        set({
-          pdfFile: null,
-          pdfUrl: url,
-          pdfFileName: name,
-          activeDocId: docId,
-          currentPage: 1,
-          pdfDocument: null,
-          pdfNumPages: null,
+        set((s) => {
+          const oldId = s.activeDocId;
+          let nextCache = { ...s.parseCacheByDocId };
+          if (oldId && oldId !== docId) {
+            nextCache = {
+              ...nextCache,
+              [oldId]: {
+                sections: s.parsedSections,
+                markdown: s.parsedMarkdown,
+                docName: s.parsedDocName,
+                updatedAt: Date.now(),
+              },
+            };
+          }
+          const cached = docId ? nextCache[docId] : null;
+          const switchedDoc = !!(oldId && oldId !== docId);
+          return {
+            parseInflightId: switchedDoc ? s.parseInflightId + 1 : s.parseInflightId,
+            parseCacheByDocId: nextCache,
+            pdfFile: null,
+            pdfUrl: url,
+            pdfFileName: name,
+            activeDocId: docId,
+            currentPage: 1,
+            pdfDocument: null,
+            pdfNumPages: null,
+            parsedMarkdown: cached ? cached.markdown ?? '' : '',
+            parsedSections: cached ? cached.sections ?? [] : [],
+            parsedDocName: cached ? cached.docName ?? '' : '',
+            parseStatus: 'idle',
+            parseProgress: [],
+          };
         });
       },
       currentPage: 1,
@@ -234,6 +289,9 @@ export const useStore = create((set, get) => ({
           return { highlights: [...s.highlights, entry] };
         }),
       clearHighlights: () => set({ highlights: [] }),
+      setHighlights: (list) =>
+        set({ highlights: Array.isArray(list) ? list : [] }),
+      clearPendingScreenshotQueue: () => set({ pendingScreenshotQueue: [] }),
 
       // ── 文献库 ──────────────────────────────────────────────────────────────
       library: [], // [{ id, name, addedAt, source: 'upload'|'arxiv', arxivId?, noteCount }]
@@ -468,18 +526,110 @@ export const useStore = create((set, get) => ({
       setParseStatus: (status) => set({ parseStatus: status }),
       addParseLog: (msg) =>
         set((s) => ({ parseProgress: [...s.parseProgress, msg] })),
-      setParsedMarkdown: (md, docName = '') => set({ parsedMarkdown: md, parsedDocName: docName }),
-      setParsedSections: (sections) => set({ parsedSections: Array.isArray(sections) ? sections : [] }),
+      /** 仅重置解析 Loading / 日志，不删 parseCacheByDocId */
+      resetParseUiState: () => set({ parseStatus: 'idle', parseProgress: [] }),
+      setParsedMarkdown: (md, docName = '') =>
+        set((s) => {
+          const docId = s.activeDocId;
+          const nextName = docName || s.parsedDocName;
+          const patch = { parsedMarkdown: md, parsedDocName: nextName };
+          if (docId) {
+            patch.parseCacheByDocId = {
+              ...s.parseCacheByDocId,
+              [docId]: {
+                sections: s.parsedSections,
+                markdown: md,
+                docName: nextName,
+                updatedAt: Date.now(),
+              },
+            };
+          }
+          return patch;
+        }),
+      setParsedSections: (sections) =>
+        set((s) => {
+          const arr = Array.isArray(sections) ? sections : [];
+          const docId = s.activeDocId;
+          const patch = { parsedSections: arr };
+          if (docId) {
+            patch.parseCacheByDocId = {
+              ...s.parseCacheByDocId,
+              [docId]: {
+                sections: arr,
+                markdown: s.parsedMarkdown,
+                docName: s.parsedDocName,
+                updatedAt: Date.now(),
+              },
+            };
+          }
+          return patch;
+        }),
       addParsedSection: (section) =>
-        set((s) => ({ parsedSections: [...s.parsedSections, section] })),
+        set((s) => {
+          const nextSections = [...s.parsedSections, section];
+          const docId = s.activeDocId;
+          const patch = { parsedSections: nextSections };
+          if (docId) {
+            patch.parseCacheByDocId = {
+              ...s.parseCacheByDocId,
+              [docId]: {
+                sections: nextSections,
+                markdown: s.parsedMarkdown,
+                docName: s.parsedDocName,
+                updatedAt: Date.now(),
+              },
+            };
+          }
+          return patch;
+        }),
       updateParsedSectionSummary: (title, summary) =>
-        set((s) => ({
-          parsedSections: s.parsedSections.map((it) =>
+        set((s) => {
+          const nextSections = s.parsedSections.map((it) =>
             it.title === title ? { ...it, summary: summary || it.summary } : it
-          ),
-        })),
+          );
+          const docId = s.activeDocId;
+          const patch = { parsedSections: nextSections };
+          if (docId) {
+            patch.parseCacheByDocId = {
+              ...s.parseCacheByDocId,
+              [docId]: {
+                sections: nextSections,
+                markdown: s.parsedMarkdown,
+                docName: s.parsedDocName,
+                updatedAt: Date.now(),
+              },
+            };
+          }
+          return patch;
+        }),
+      /**
+       * 清空当前投影前先写回 parseCacheByDocId[activeDocId]，避免误丢大纲。
+       * 切换文献请优先用 setPdfUrl；勿在 doc 切换的 cleanup 里调用本方法。
+       */
       clearParseState: () =>
-        set({ parseStatus: 'idle', parseProgress: [], parsedMarkdown: '', parsedSections: [], parsedDocName: '' }),
+        set((s) => {
+          const docId = s.activeDocId;
+          let nextCache = { ...s.parseCacheByDocId };
+          if (docId) {
+            nextCache = {
+              ...nextCache,
+              [docId]: {
+                sections: s.parsedSections,
+                markdown: s.parsedMarkdown,
+                docName: s.parsedDocName,
+                updatedAt: Date.now(),
+              },
+            };
+          }
+          return {
+            parseCacheByDocId: nextCache,
+            parseStatus: 'idle',
+            parseProgress: [],
+            parsedMarkdown: '',
+            parsedSections: [],
+            parsedDocName: '',
+          };
+        }),
 
       // ── 由 Header/其他处触发「加载白皮书」：LeftColumn 消费后拉取 demo PDF 并当作用户上传解析 ──
       startDemoLoad: false,
@@ -502,6 +652,9 @@ export const useStore = create((set, get) => ({
           activeDocId: '',
           pdfDocument: null,
           pdfNumPages: null,
+          highlights: [],
+          activeReference: null,
+          pendingScreenshotQueue: [],
           notes: [],
           messages: [
             {
@@ -517,6 +670,8 @@ export const useStore = create((set, get) => ({
           parsedMarkdown: '',
           parsedSections: [],
           parsedDocName: '',
+          parseCacheByDocId: {},
+          parseInflightId: 0,
           currentPage: 1,
           graphData: { nodes: [], links: [] },
           noteLinks: [],

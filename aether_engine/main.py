@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import logging.config
 import time
@@ -9,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from api.demo import warm_demo_global_assets
 from api.router import root_router
 from config.settings import settings
 
@@ -52,6 +54,11 @@ async def lifespan(application: FastAPI):
         "   API文档:  http://%s:%s/docs", settings.UVICORN_HOST, settings.UVICORN_PORT
     )
     logger.info("=" * 50)
+    # Demo 只读单例预热（不阻塞启动；失败时首次 POST /api/demo/load 仍会解析）
+    try:
+        asyncio.create_task(warm_demo_global_assets())
+    except Exception as e:
+        logger.warning("Demo 预热任务未启动: %s", e)
     yield
     logger.info("Aether-Engine 关闭中 — 释放资源…")
 

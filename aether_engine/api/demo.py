@@ -19,8 +19,10 @@ router = APIRouter(prefix="/demo", tags=["demo"])
 logger = logging.getLogger("aether")
 
 _ENGINE_ROOT = Path(__file__).resolve().parent.parent
+_MS_ROOT = _ENGINE_ROOT.parent  # modelspace-deploy 根目录
 DEMO_DIR = _ENGINE_ROOT / "demo_data"
 DEMO_PDF = (DEMO_DIR / "demo_paper.pdf").resolve()
+PUBLIC_DEMO_PDF = (_MS_ROOT / "public" / "demo_paper.pdf").resolve()
 DATA_DIR = Path("data")
 DEMO_DOC_ID = "global_demo_official"
 DEMO_CACHE_FILE = DATA_DIR / "demo_cache.json"
@@ -50,8 +52,10 @@ def _debug_log(hid: str, location: str, message: str, data: Dict[str, Any]) -> N
 
 
 def _find_demo_pdf() -> Optional[Path]:
-    """按多种路径查找 demo_paper.pdf，兼容不同启动目录。"""
+    """按多种路径查找 demo_paper.pdf（含 public/ 与 demo_data/），兼容不同启动目录。"""
     candidates = [
+        PUBLIC_DEMO_PDF,
+        Path.cwd() / "public" / "demo_paper.pdf",
         DEMO_PDF,
         Path.cwd() / "demo_data" / "demo_paper.pdf",
         Path.cwd() / "Aether-Engine" / "demo_data" / "demo_paper.pdf",
@@ -191,6 +195,35 @@ def _ensure_demo_index(markdown: str) -> None:
         get_bm25_engine(None).invalidate()
     except Exception:
         pass
+
+
+async def warm_demo_global_assets() -> None:
+    """
+    启动时预热：解析 public/demo_data 中的白皮书并写入 global_demo_official 只读命名空间。
+    不触碰任何用户 session，供创空间首次打开即「秒开」。
+    """
+    path = _find_demo_pdf()
+    if not path:
+        logger.warning("Demo 预热跳过：未找到 demo_paper.pdf")
+        return
+    cache = _load_cache()
+    indexed = _is_demo_indexed()
+    if cache and cache.get("markdown") and indexed:
+        logger.info("Demo 全局缓存已就绪，跳过预热")
+        return
+    async with _DEMO_LOCK:
+        cache = _load_cache()
+        indexed = _is_demo_indexed()
+        if cache and cache.get("markdown") and indexed:
+            return
+        try:
+            markdown, sections = await _parse_demo_markdown(path)
+            demo_notes = _build_demo_notes(markdown, sections)
+            _ensure_demo_index(markdown)
+            _save_cache(markdown, sections, demo_notes)
+            logger.info("Demo 全局缓存预热完成: doc_id=%s", DEMO_DOC_ID)
+        except Exception as e:
+            logger.warning("Demo 预热失败（首次点击仍将尝试解析）: %s", e)
 
 
 @router.post("/load")

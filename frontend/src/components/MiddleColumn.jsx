@@ -35,6 +35,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ForceGraph2D from 'react-force-graph-2d';
 import { Document, Page } from 'react-pdf';
 import * as api from '../api/client';
+import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
 import { AgentTraceThoughtChain } from './AgentTraceThoughtChain';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -195,7 +196,7 @@ const SearchVisualizer = ({ status, query }) => {
 
 // ─── 笔记卡片：普通笔记（原文摘录）与原子知识（结构化 + 白底阴影）严格区分 ───────
 const NoteCard = ({ note, onDelete }) => {
-  const { pdfFile, pdfUrl, setActiveReference, addHighlight } = useStore();
+  const { pdfFile, pdfUrl, setActiveReference, addHighlight, activeDocId } = useStore();
   const pdfSource = note.screenshot ? null : (pdfFile || pdfUrl || null);
   const { imageSrc: hookSrc, loading: hookLoading } = useScreenshot(
     pdfSource,
@@ -240,6 +241,7 @@ const NoteCard = ({ note, onDelete }) => {
         color: 'yellow',
         bbox: note.bbox,
         id: Date.now(),
+        doc_id: activeDocId || '',
       });
       setActiveReference({ page: note.page, bbox: note.bbox });
     }
@@ -831,7 +833,7 @@ const GraphRAGTriplesView = ({ scope = 'global', docId = '', docName = '' }) => 
                     onClick={() => {
                       const srcDocId = t.source_doc_ids?.[idx];
                       if (!srcDocId) return;
-                      const url = srcDocId === 'global_demo_official' ? '/api/demo/pdf' : api.getDocumentFileUrl(srcDocId);
+                      const url = srcDocId === GLOBAL_DEMO_DOC_ID ? '/api/demo/pdf' : api.getDocumentFileUrl(srcDocId);
                       setPdfUrl(url, d, srcDocId);
                       setViewMode('read');
                     }}
@@ -976,7 +978,7 @@ const ArxivPanel = () => {
        arxivId: paper.arxiv_id,
        noteCount: 0
     });
-    setPdfUrl(url, paper.title);
+    setPdfUrl(url, paper.title, `arxiv_${paper.arxiv_id}`);
   };
 
   return (
@@ -1799,7 +1801,6 @@ const NEXUS_ORGANIZE_TAB_IDS = ['deck', 'atomic', 'tree', 'graph', 'graphrag', '
 
 // ─── 原子卡片面板（带 API 查询） ────────────────────────────────────────────────
 const NexusPanel = () => {
-  const DEMO_DOC_ID = 'global_demo_official';
   const {
     notes, removeNote, setNotes,
     searchQuery, setSearchQuery,
@@ -1808,7 +1809,7 @@ const NexusPanel = () => {
     parsedSections, pdfFileName,
     activeDocId,
     noteLinks,
-    setParsedSections, setParsedMarkdown, setNotification,
+    setNotification,
     setViewMode, setStartDemoLoad,
     setPdfUrl, setCurrentPage, setActiveReference,
     pendingOrganizeTab, setPendingOrganizeTab,
@@ -1960,11 +1961,9 @@ const NexusPanel = () => {
     : notes;
 
   const scopedNotes = React.useMemo(() => {
-    // 仅在 Demo 文档激活时展示 Demo 种子卡片；离开 Demo 自动隐藏该批卡片
-    if ((activeDocId || '') === DEMO_DOC_ID) {
-      return displayNotes.filter((n) => (n.doc_id || '') === DEMO_DOC_ID || n.source === 'demo_seed');
-    }
-    return displayNotes.filter((n) => (n.doc_id || '') !== DEMO_DOC_ID && n.source !== 'demo_seed');
+    const aid = activeDocId || '';
+    if (!aid) return displayNotes.filter((n) => !n.doc_id);
+    return displayNotes.filter((n) => (n.doc_id || '') === aid || (n.source === 'demo_seed' && aid === GLOBAL_DEMO_DOC_ID));
   }, [displayNotes, activeDocId]);
 
   // 仅当存在公理/方法/边界三层解构时为「原子知识」；其余（含高亮、截图、未粉碎）均在原始卡片
