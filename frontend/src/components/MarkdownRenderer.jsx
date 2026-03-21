@@ -20,7 +20,29 @@ const defaultComponents = {
     <pre className="my-2 overflow-x-auto rounded-lg border border-slate-200 bg-slate-900/90 p-3 text-sm text-slate-100">{children}</pre>
   ),
   img: ({ node, src, alt, ...props }) => {
-    const realSrc = src || node?.properties?.src || '';
+    const rawSrc = src || node?.properties?.src || '';
+    const safeDecode = (s) => {
+      try {
+        return decodeURIComponent(s);
+      } catch {
+        return s;
+      }
+    };
+    const normalizeParseImageSrc = (input) => {
+      const s = String(input || '');
+      if (!s.startsWith('/api/parse-images/')) return s;
+      const parts = s.split('/');
+      // ['', 'api', 'parse-images', stem, file]
+      if (parts.length < 5) return s;
+      const stem = parts[3] ? encodeURIComponent(safeDecode(parts[3])) : parts[3];
+      const file = parts.slice(4).join('/');
+      const encodedFile = file
+        .split('/')
+        .map((seg) => (seg ? encodeURIComponent(safeDecode(seg)) : seg))
+        .join('/');
+      return `/api/parse-images/${stem}/${encodedFile}`;
+    };
+    const realSrc = normalizeParseImageSrc(rawSrc);
     const isInlineBase64 = /^data:image\/[a-zA-Z]+;base64,/.test(realSrc);
     return (
       <img

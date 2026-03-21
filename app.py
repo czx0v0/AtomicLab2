@@ -31,6 +31,7 @@ if IN_MODELSCOPE_SPACE:
     # 创空间持久化存储目录
     MODEL_CACHE_DIR = "/mnt/workspace/.cache/huggingface"
     MODELSCOPE_CACHE_DIR = "/mnt/workspace/.cache/modelscope"
+    SENTENCE_TRANSFORMERS_CACHE_DIR = "/mnt/workspace/.cache/huggingface/sentence_transformers"
     CHROMA_CACHE_DIR = "/mnt/workspace/.cache/chroma"
 
     # 设置模型缓存环境变量（仅在未设置时）
@@ -40,12 +41,15 @@ if IN_MODELSCOPE_SPACE:
         os.environ["HF_HOME"] = MODEL_CACHE_DIR
     if "MODELSCOPE_CACHE" not in os.environ:
         os.environ["MODELSCOPE_CACHE"] = MODELSCOPE_CACHE_DIR
+    if "SENTENCE_TRANSFORMERS_HOME" not in os.environ:
+        os.environ["SENTENCE_TRANSFORMERS_HOME"] = SENTENCE_TRANSFORMERS_CACHE_DIR
     # ChromaDB ONNX 模型缓存（持久化）
     os.environ["CHROMA_CACHE_DIR"] = CHROMA_CACHE_DIR
 
     print(f"[Config] ModelScope 创空间环境")
     print(f"[Config] HuggingFace 缓存: {MODEL_CACHE_DIR}")
     print(f"[Config] ModelScope 缓存: {MODELSCOPE_CACHE_DIR}")
+    print(f"[Config] SentenceTransformers 缓存: {SENTENCE_TRANSFORMERS_CACHE_DIR}")
     print(f"[Config] ChromaDB 缓存: {CHROMA_CACHE_DIR}")
 
     # ══════════════════════════════════════════════════════════════

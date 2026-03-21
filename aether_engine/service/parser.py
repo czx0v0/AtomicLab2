@@ -26,6 +26,7 @@ import time
 import zipfile
 import asyncio
 from pathlib import Path
+from urllib.parse import quote
 from typing import AsyncGenerator, Optional
 
 import httpx
@@ -66,7 +67,10 @@ def _persist_and_rewrite_images(parsed_content: str, stem: str, img_sources) -> 
         if orig.startswith(("http://", "https://", "/")):
             return m.group(0)
         img_name = Path(orig).name
-        return f"![{alt}](/api/parse-images/{stem}/{img_name})"
+        # 对路径分段做编码，避免中文/空格文件名导致图片 URL 失效
+        safe_stem = quote(stem, safe="")
+        safe_name = quote(img_name, safe="")
+        return f"![{alt}](/api/parse-images/{safe_stem}/{safe_name})"
 
     return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _rewrite, parsed_content)
 

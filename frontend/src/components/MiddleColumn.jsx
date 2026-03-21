@@ -619,7 +619,14 @@ const isGraphAtomicType = (n) => {
 const graphNodeTypeKey = (n) => String(n?.type || n?.level || n?.category || 'unknown');
 
 const GraphView = ({ scope = 'global', docId = '', docName = '', domainFilterId = '' }) => {
-  const { setActiveReference } = useStore();
+  const {
+    setActiveReference,
+    setViewMode,
+    setPdfUrl,
+    setCurrentPage,
+    activeDocId,
+    setNotification,
+  } = useStore();
   const containerRef = useRef(null);
   const [dims, setDims] = useState({ w: 500, h: 400 });
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
@@ -640,6 +647,9 @@ const GraphView = ({ scope = 'global', docId = '', docName = '', domainFilterId 
     let cancelled = false;
     setLoading(true);
     setError('');
+    // 切 scope/doc 时先清空旧图，避免短暂显示上一文档残留节点
+    setGraphData({ nodes: [], links: [] });
+    setMeta({ truncated: false, message: '' });
     api.getOrganizeGraph(scope === 'current' ? (docId || '') : 'global', 200, scope === 'global' ? (domainFilterId || '') : '')
       .then((resp) => {
         if (cancelled) return;
@@ -669,6 +679,16 @@ const GraphView = ({ scope = 'global', docId = '', docName = '', domainFilterId 
           truncated: !!resp?.truncated,
           message: resp?.message || '',
         });
+        if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
+          const noteCount = nodes.filter((n) => graphNodeTypeKey(n) === 'note').length;
+          console.debug('[GraphView] loaded graph', {
+            scope,
+            docId: scope === 'current' ? (docId || '') : 'global',
+            nodes: nodes.length,
+            noteNodes: noteCount,
+            edges: links.length,
+          });
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e?.message || '图谱加载失败');
@@ -699,9 +719,17 @@ const GraphView = ({ scope = 'global', docId = '', docName = '', domainFilterId 
     };
   }, [graphData.nodes]);
 
-  const handleNodeClick = useCallback((node) => {
-    if (node.page_num) setActiveReference({ page: node.page_num, bbox: node.bbox ?? [0, 0, 0, 0] });
-  }, [setActiveReference]);
+  const handleNodeClick = useCallback(async (node) => {
+    if (!node) return;
+    await jumpToKnowledgeSource(node, {
+      setViewMode,
+      setPdfUrl,
+      setCurrentPage,
+      setActiveReference,
+      activeDocId,
+      setNotification,
+    });
+  }, [setViewMode, setPdfUrl, setCurrentPage, setActiveReference, activeDocId, setNotification]);
 
   if (loading) {
     return (
