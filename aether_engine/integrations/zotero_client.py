@@ -1,12 +1,12 @@
 """
 Zotero Web API（pyzotero）：按 Collection 拉取文献元数据并解析 PDF 附件 key。
+
+pyzotero 采用惰性导入：未安装时应用仍可启动，仅在调用 Zotero API 时返回明确错误。
 """
 
 import logging
 import re
-from typing import List, Optional, Tuple
-
-from pyzotero import zotero
+from typing import Any, List, Optional, Tuple
 
 from core.zotero_contracts import ZoteroErrorCode, ZoteroFetchResult, ZoteroItemDTO
 
@@ -14,12 +14,31 @@ logger = logging.getLogger("aether")
 
 _HEX_KEY_RE = re.compile(r"^[A-Za-z0-9]{8}$")
 
-
-def _client(user_id: str, api_key: str) -> zotero.Zotero:
-    return zotero.Zotero(str(user_id).strip(), "user", api_key.strip())
+_pyzotero_mod = None
 
 
-def resolve_collection_key(z: zotero.Zotero, name_or_key: str) -> Tuple[str, Optional[str]]:
+def _ensure_pyzotero():
+    """惰性加载 pyzotero，避免未安装时阻塞 FastAPI 启动。"""
+    global _pyzotero_mod
+    if _pyzotero_mod is not None:
+        return _pyzotero_mod
+    try:
+        from pyzotero import zotero as zmod
+
+        _pyzotero_mod = zmod
+        return zmod
+    except ImportError as e:
+        raise RuntimeError(
+            "未安装 pyzotero。请在运行环境执行: pip install pyzotero"
+        ) from e
+
+
+def _client(user_id: str, api_key: str) -> Any:
+    zmod = _ensure_pyzotero()
+    return zmod.Zotero(str(user_id).strip(), "user", api_key.strip())
+
+
+def resolve_collection_key(z: Any, name_or_key: str) -> Tuple[str, Optional[str]]:
     """
     若传入 8 位 key 则直接使用；否则按名称在库中查找（不区分大小写）。
     返回 (resolved_key, error_message)
@@ -55,7 +74,7 @@ def _creators_to_authors(data: dict) -> List[str]:
     return out
 
 
-def _find_pdf_attachment_key(z: zotero.Zotero, item_key: str) -> Optional[str]:
+def _find_pdf_attachment_key(z: Any, item_key: str) -> Optional[str]:
     try:
         children = z.children(item_key)
     except Exception as e:
@@ -119,6 +138,18 @@ def fetch_zotero_library(
     items_out: List[ZoteroItemDTO] = []
     try:
         z = _client(user_id, api_key)
+    except RuntimeError as e:
+        logger.warning("Zotero 依赖缺失: %s", e)
+        return ZoteroFetchResult(
+            items=[],
+            collection_resolved_key="",
+            errors=[
+                {
+                    "code": ZoteroErrorCode.INTERNAL.value,
+                    "message": str(e),
+                }
+            ],
+        )
     except Exception as e:
         logger.warning("Zotero 客户端初始化失败: %s", e)
         return ZoteroFetchResult(

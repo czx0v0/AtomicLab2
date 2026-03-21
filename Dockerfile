@@ -30,6 +30,9 @@ RUN pip install --no-cache-dir jieba || true
 RUN pip install --no-cache-dir rank-bm25 || true
 RUN pip install --no-cache-dir beautifulsoup4 lxml || true
 
+# Zotero 集成（与 aether_engine/requirements.txt 对齐；失败时仍可能启动，但 Zotero 功能受限）
+RUN pip install --no-cache-dir cryptography pyzotero || true
+
 # Step 3: 大包（RAG功能，尝试安装）
 RUN pip install --no-cache-dir chromadb || echo "[Dockerfile] chromadb 跳过"
 RUN pip install --no-cache-dir sentence-transformers || echo "[Dockerfile] sentence-transformers 跳过"
