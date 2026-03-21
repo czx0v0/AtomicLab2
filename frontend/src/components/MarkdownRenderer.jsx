@@ -1,35 +1,77 @@
 /**
- * 全局富文本与数学公式渲染：表格(GFM)、LaTeX、代码高亮、行内图片（含 Base64 data URL）。
- * 供阅读区 MinerU 结果、笔记卡片、AI 聊天等统一使用。
+ * 全局 Markdown：GFM 表格、LaTeX（$...$/$$...$$）、代码高亮、行内 HTML（经 sanitize 的 sup/sub 等）。
  */
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
+import { ErrorBoundary } from './ErrorBoundary';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize from 'rehype-sanitize';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 
 const defaultComponents = {
-  img: ({ node, src, alt, ...props }) => (
-    <img
-      src={src || node?.properties?.src}
-      alt={alt ?? node?.properties?.alt ?? ''}
-      className="max-w-full h-auto rounded border border-gray-200"
-      loading="lazy"
-      {...props}
-    />
+  /** 显式提供 code/pre，避免 rehype-highlight 与 react-markdown 组合时出现无效元素类型 (React #130) */
+  code: ({ className, children, inline, ...props }) => (
+    <code className={className} {...props}>{children}</code>
+  ),
+  pre: ({ children }) => (
+    <pre className="my-2 overflow-x-auto rounded-lg border border-slate-200 bg-slate-900/90 p-3 text-sm text-slate-100">{children}</pre>
+  ),
+  img: ({ node, src, alt, ...props }) => {
+    const realSrc = src || node?.properties?.src || '';
+    const isInlineBase64 = /^data:image\/[a-zA-Z]+;base64,/.test(realSrc);
+    return (
+      <img
+        src={realSrc}
+        alt={alt ?? node?.properties?.alt ?? ''}
+        className={
+          isInlineBase64
+            ? 'max-w-full h-auto rounded-lg border border-slate-200 my-2 shadow-sm'
+            : 'max-w-full h-auto rounded border border-gray-200'
+        }
+        style={{ maxWidth: '100%' }}
+        loading="lazy"
+        {...props}
+      />
+    );
+  },
+  table: ({ children }) => (
+    <div className="my-2 w-full overflow-x-auto rounded-lg border border-slate-200 bg-white">
+      <table className="min-w-full border-collapse text-sm text-slate-800">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-slate-50">{children}</thead>,
+  th: ({ children }) => (
+    <th className="border border-slate-200 px-2 py-1.5 text-left font-semibold">{children}</th>
+  ),
+  td: ({ children }) => (
+    <td className="border border-slate-200 px-2 py-1.5 align-top">{children}</td>
   ),
 };
 
-export function MarkdownRenderer({ children, className, components }) {
+function mergeMarkdownComponents(base, extra) {
+  const out = { ...base };
+  Object.entries(extra || {}).forEach(([k, v]) => {
+    if (typeof v === 'function') out[k] = v;
+  });
+  return out;
+}
+
+export function MarkdownRenderer({ children, className = '', components = {} }) {
+  const merged = mergeMarkdownComponents(defaultComponents, components);
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex, rehypeHighlight]}
-      className={className}
-      components={{ ...defaultComponents, ...components }}
-    >
-      {children}
-    </ReactMarkdown>
+    <ErrorBoundary context="MarkdownRenderer / ReactMarkdown">
+      <div className={className}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[rehypeRaw, rehypeSanitize, rehypeKatex, rehypeHighlight]}
+          components={merged}
+        >
+          {children}
+        </ReactMarkdown>
+      </div>
+    </ErrorBoundary>
   );
 }

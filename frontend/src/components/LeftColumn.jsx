@@ -1,18 +1,13 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import clsx from 'clsx';
+import { AlertCircle, BookOpen, Camera, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileText, FolderOpen, Highlighter, Languages, ListTree, MessageSquare, RotateCcw, Sparkles, Tag, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import { useStore } from '../store/useStore';
-import { createPortal } from 'react-dom';
-import { Highlighter, Type, Sparkles, AlertCircle, Languages, Palette, BookOpen, Tag, FolderOpen, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Trash2, FileText, ListTree, Camera, ZoomIn, ZoomOut, RotateCcw, MessageSquare, X, Upload } from 'lucide-react';
-import clsx from 'clsx';
 
-import { motion, AnimatePresence } from 'framer-motion';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import rehypeHighlight from 'rehype-highlight';
+import { AnimatePresence, motion } from 'framer-motion';
 import * as api from '../api/client';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
@@ -22,18 +17,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/b
 export const LeftColumn = () => {
     const {
         pdfFile, pdfUrl, setPdfUrl, setPdfFile, currentPage, setCurrentPage,
+        pdfDocument, pdfNumPages, setPdfRuntime, resetPdfRuntime,
         addHighlight, highlights, activeReference, addNote, library, addToLibrary,
         removeFromLibrary, pdfFileName, parseStatus, parseProgress, parsedMarkdown,
         parsedSections, parsedDocName, setParseStatus, addParseLog, setParsedMarkdown,
         addParsedSection, updateParsedSectionSummary, clearParseState,
         notes, setNotes, setParsedSections, setActiveReference, setViewMode, setCopilotOpen, setContextAttachment,
+        activeDocId,
         pendingScreenshotQueue, addPendingScreenshot, removePendingScreenshot, updateNoteContent,
         startOver, setNotification,
         startDemoLoad, setStartDemoLoad,
     } = useStore();
     const accumulatedMarkdownRef = useRef('');
-    const [numPages, setNumPages] = useState(null);
-    const [pdfDocument, setPdfDocument] = useState(null);
     const [pdfLoadError, setPdfLoadError] = useState(null);
     const [selection, setSelection] = useState(null);
     const [pageWidth, setPageWidth] = useState(600);
@@ -51,6 +46,8 @@ export const LeftColumn = () => {
     const containerRef = useRef(null);
     const pageRef = useRef(null);
     const actionInFlightRef = useRef(false);
+    const isScrollingRef = useRef(false);
+    const scrollUnlockTimerRef = useRef(null);
 
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -181,6 +178,7 @@ export const LeftColumn = () => {
                 page: shotNote.page,
                 bbox: shotNote.bbox,
                 screenshot: shotNote.screenshot,
+                doc_id: activeDocId || '',
             }).catch((e) => console.warn('截图笔记后端同步失败:', e))
             .finally(() => { actionInFlightRef.current = false; });
         }
@@ -386,25 +384,65 @@ export const LeftColumn = () => {
         if (file) applyFileAsUpload(file);
     };
 
+    const loadSharedDemo = useCallback(() => {
+        setDemoLoading(true);
+        setNotification('正在加载白皮书…');
+        // #region agent log
+        fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'LeftColumn.jsx:loadSharedDemo:start',message:'load demo triggers startOver',data:{viewMode:useStore.getState().viewMode,markdownLen:(useStore.getState().markdownContent||'').length},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        startOver();
+        api.loadDemo()
+            .then((resp) => {
+                const fileUrl = resp?.file_url || '/api/demo/pdf';
+                const title = resp?.title || 'demo_paper.pdf';
+                const docId = resp?.doc_id || 'global_demo_official';
+                setPdfUrl(fileUrl, title, docId);
+                addToLibrary({ id: docId, name: title, addedAt: new Date().toISOString(), source: 'demo' });
+                clearParseState();
+                if (Array.isArray(resp?.demo_notes)) {
+                    setNotes(resp.demo_notes);
+                } else {
+                    setNotes([]);
+                }
+                if (resp?.markdown) {
+                    setParsedMarkdown(resp.markdown, title);
+                }
+                if (Array.isArray(resp?.sections)) {
+                    setParsedSections(resp.sections.map((s) => ({
+                        title: s.title || 'Untitled',
+                        summary: s.summary || '',
+                        content: s.content || '',
+                        imageRefs: s.image_refs || s.imageRefs || [],
+                    })));
+                }
+                setParseStatus('done');
+                setViewMode('read');
+                // #region agent log
+                fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'LeftColumn.jsx:loadSharedDemo:done',message:'demo load completed',data:{cached:!!resp?.cached,docId:resp?.doc_id||'',markdownLen:(resp?.markdown||'').length},timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
+                setNotification(resp?.cached ? 'Demo 已复用缓存，秒开完成。' : 'Demo 首次解析完成，后续将复用缓存。');
+            })
+            .catch((e) => setNotification(e?.message || '加载白皮书失败', 'error'))
+            .finally(() => setDemoLoading(false));
+    }, [
+        setNotification,
+        startOver,
+        setPdfUrl,
+        addToLibrary,
+        clearParseState,
+        setNotes,
+        setParsedMarkdown,
+        setParsedSections,
+        setParseStatus,
+        setViewMode,
+    ]);
+
     // Header/其他处触发「加载白皮书」时，拉取 demo PDF 并当作用户上传解析
     useEffect(() => {
         if (!startDemoLoad) return;
         setStartDemoLoad(false);
-        setDemoLoading(true);
-        setNotification('正在加载白皮书…');
-        startOver();
-        api.resetSession()
-            .then(() => api.loadDemo())
-            .then(() => api.getDemoPdfBlob())
-            .then((blob) => {
-                const file = new File([blob], 'demo_paper.pdf', { type: 'application/pdf' });
-                applyFileAsUpload(file);
-                setViewMode('read');
-                setNotification('白皮书已加载，正在解析…');
-            })
-            .catch((e) => setNotification(e?.message || '加载白皮书失败', 'error'))
-            .finally(() => setDemoLoading(false));
-    }, [startDemoLoad, setStartDemoLoad, setNotification, startOver, applyFileAsUpload, setViewMode]);
+        loadSharedDemo();
+    }, [startDemoLoad, setStartDemoLoad, loadSharedDemo]);
 
     const outline = parsedSections.length > 0
         ? parsedSections.map((s, idx) => ({
@@ -455,15 +493,17 @@ export const LeftColumn = () => {
     const onDocumentLoadSuccess = (pdf) => {
         if (pdfLoadTimeoutRef.current) clearTimeout(pdfLoadTimeoutRef.current);
         setPdfLoadTimeout(false);
-        setNumPages(pdf.numPages);
-        setPdfDocument(pdf);
+        setPdfRuntime(pdf, pdf?.numPages ?? null);
+        if (currentPage > (pdf?.numPages || 1)) {
+            setCurrentPage(1);
+        }
         setPdfLoadError(null);
     };
     const onDocumentLoadError = (e) => {
         if (pdfLoadTimeoutRef.current) clearTimeout(pdfLoadTimeoutRef.current);
         setPdfLoadTimeout(false);
         setPdfLoadError(e?.message || 'PDF 加载失败');
-        setPdfDocument(null);
+        resetPdfRuntime();
     };
 
     // 点击空白区域时清除工具栏（mousedown 阶段，在 mouseup 之前）
@@ -476,7 +516,7 @@ export const LeftColumn = () => {
     }, [selection]);
 
     const handleMouseUp = useCallback(() => {
-        if (toolMode === 'screenshot') return;
+        if (toolMode === 'screenshot' || isScrollingRef.current) return;
         // 用 setTimeout 确保浏览器选区完全稳定（比 rAF 更可靠）
         setTimeout(() => {
             const sel = window.getSelection();
@@ -485,6 +525,11 @@ export const LeftColumn = () => {
             if (!text || !sel || sel.rangeCount === 0) return;
 
             const range = sel.getRangeAt(0);
+            const root = containerRef.current;
+            const commonNode = range.commonAncestorContainer?.nodeType === 3
+                ? range.commonAncestorContainer.parentElement
+                : range.commonAncestorContainer;
+            if (root && commonNode && !root.contains(commonNode)) return;
             const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
             if (rects.length === 0) return;
 
@@ -508,10 +553,51 @@ export const LeftColumn = () => {
                 text,
                 bbox: { x: fullX, y: fullY, width: fullRight - fullX, height: fullBottom - fullY },
                 lines: relLines,   // 逐行 bbox，用于精准高亮
-                screenPos: { x: rects[0].left, y: rects[0].top },
+                screenPos: {
+                    x: rects[0].left + rects[0].width / 2,
+                    y: rects[0].top,
+                    bottom: rects[rects.length - 1].bottom,
+                },
             });
         }, 16);
     }, [toolMode]);
+
+    const handleTouchEnd = useCallback(() => {
+        handleMouseUp();
+    }, [handleMouseUp]);
+
+    useEffect(() => {
+        const onSelectionChange = () => {
+            if (toolMode === 'screenshot' || isScrollingRef.current) return;
+            const sel = window.getSelection();
+            if (!sel || sel.rangeCount === 0 || !sel.toString().trim()) {
+                setSelection(null);
+                return;
+            }
+            const range = sel.getRangeAt(0);
+            const root = containerRef.current;
+            const commonNode = range.commonAncestorContainer?.nodeType === 3
+                ? range.commonAncestorContainer.parentElement
+                : range.commonAncestorContainer;
+            if (!root || !commonNode || !root.contains(commonNode)) return;
+            handleMouseUp();
+        };
+        document.addEventListener('selectionchange', onSelectionChange);
+        return () => document.removeEventListener('selectionchange', onSelectionChange);
+    }, [handleMouseUp, toolMode]);
+
+    const markScrolling = useCallback(() => {
+        isScrollingRef.current = true;
+        setSelection(null);
+        if (scrollUnlockTimerRef.current) clearTimeout(scrollUnlockTimerRef.current);
+        scrollUnlockTimerRef.current = setTimeout(() => {
+            isScrollingRef.current = false;
+        }, 140);
+    }, []);
+
+    useEffect(() => () => {
+        if (scrollUnlockTimerRef.current) clearTimeout(scrollUnlockTimerRef.current);
+    }, []);
 
 
     const handleAction = async (action) => {
@@ -572,13 +658,53 @@ export const LeftColumn = () => {
 
             // 后端同步 + Crusher 自动分类
             try {
+                // #region agent log
+                fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
+                    body: JSON.stringify({
+                        sessionId: '1d3683',
+                        runId: 'post-fix',
+                        hypothesisId: 'H4',
+                        location: 'LeftColumn.jsx:createNote:request',
+                        message: 'create note payload before api call',
+                        data: {
+                            noteId: payload.id,
+                            hasScreenshot: !!payload.screenshot,
+                            screenshotLen: (payload.screenshot || '').length,
+                            page: payload.page || 0,
+                        },
+                        timestamp: Date.now(),
+                    }),
+                }).catch(() => {});
+                // #endregion
                 const created = await api.createNote({
                     content: payload.content,
                     type: payload.type,
                     page: payload.page,
                     bbox: payload.bbox,
                     screenshot: payload.screenshot,
+                    doc_id: activeDocId || '',
                 });
+                // #region agent log
+                fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
+                    body: JSON.stringify({
+                        sessionId: '1d3683',
+                        runId: 'post-fix',
+                        hypothesisId: 'H4',
+                        location: 'LeftColumn.jsx:createNote:response',
+                        message: 'create note response',
+                        data: {
+                            noteId: created?.id || '',
+                            hasScreenshot: !!created?.screenshot,
+                            screenshotLen: (created?.screenshot || '').length,
+                        },
+                        timestamp: Date.now(),
+                    }),
+                }).catch(() => {});
+                // #endregion
                 // 尝试通过翻译接口做 Crusher 分类（利用 DeepSeek 做简单分类）
                 try {
                     const classifyResp = await api.translateText(
@@ -629,6 +755,7 @@ export const LeftColumn = () => {
                     type: hlNote.type,
                     page: hlNote.page,
                     bbox: hlNote.bbox,
+                    doc_id: activeDocId || '',
                 }).catch((e) => console.warn('高亮笔记后端同步失败:', e));
             } catch (e) {
                 console.error('高亮操作失败:', e);
@@ -731,21 +858,8 @@ export const LeftColumn = () => {
     };
 
     const handleLoadDemo = useCallback(() => {
-        setDemoLoading(true);
-        setNotification('正在加载白皮书…');
-        startOver();
-        api.resetSession()
-            .then(() => api.loadDemo())
-            .then(() => api.getDemoPdfBlob())
-            .then((blob) => {
-                const file = new File([blob], 'demo_paper.pdf', { type: 'application/pdf' });
-                applyFileAsUpload(file);
-                setViewMode('read');
-                setNotification('白皮书已加载，正在解析…');
-            })
-            .catch((e) => setNotification(e?.message || '加载白皮书失败', 'error'))
-            .finally(() => setDemoLoading(false));
-    }, [startOver, applyFileAsUpload, setViewMode, setNotification]);
+        loadSharedDemo();
+    }, [loadSharedDemo]);
 
     return (
         <div 
@@ -947,15 +1061,14 @@ export const LeftColumn = () => {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: 4 }}
                         transition={{ duration: 0.15 }}
-                        className="fixed z-[90] flex items-center gap-0.5 px-1.5 py-1 rounded-lg border border-slate-200 shadow-lg bg-white"
+                        className="fixed z-[90] flex items-center gap-1 px-2 py-1.5 rounded-xl border border-slate-200 shadow-lg bg-white"
                         style={{
-                            left: Math.max(8, Math.min(selection.screenPos.x, typeof window !== 'undefined' ? window.innerWidth - 280 : selection.screenPos.x)),
-                            top: Math.max(60, selection.screenPos.y - 44),
+                            left: Math.max(10, Math.min(selection.screenPos.x - 94, typeof window !== 'undefined' ? window.innerWidth - 198 : selection.screenPos.x - 94)),
+                            top: selection.screenPos.y > 72 ? Math.max(56, selection.screenPos.y - 62) : (selection.screenPos.bottom + 10),
                         }}
                     >
-                        <button onClick={() => { setHighlightColor('yellow'); handleAction('highlight'); }} className="p-1.5 rounded hover:bg-yellow-100 text-yellow-700" title="高亮"><Highlighter size={14} /></button>
-                        <button onClick={() => handleAction('annotate')} className="p-1.5 rounded hover:bg-green-100 text-green-700" title="批注"><Tag size={14} /></button>
-                        <button onClick={() => handleAction('crush')} className="p-1.5 rounded hover:bg-pink-100 text-pink-600" title="存为卡片"><Sparkles size={14} /></button>
+                        <button onClick={() => { setHighlightColor('yellow'); handleAction('highlight'); }} className="w-11 h-11 rounded-lg hover:bg-yellow-100 text-yellow-700 flex items-center justify-center" title="高亮"><Highlighter size={18} /></button>
+                        <button onClick={() => handleAction('crush')} className="w-11 h-11 rounded-lg hover:bg-pink-100 text-pink-600 flex items-center justify-center" title="生成卡片"><Sparkles size={18} /></button>
                         <button
                             onClick={() => {
                               setContextAttachment({
@@ -967,14 +1080,12 @@ export const LeftColumn = () => {
                               setSelection(null);
                               setTranslationResult(null);
                             }}
-                            className="p-1.5 rounded hover:bg-blue-100 text-blue-600"
-                            title="原子助手"
+                            className="w-11 h-11 rounded-lg hover:bg-blue-100 text-blue-600 flex items-center justify-center"
+                            title="作为上下文问 AI"
                         >
-                            <MessageSquare size={14} />
+                            <MessageSquare size={18} />
                         </button>
-                        <div className="w-px h-5 bg-gray-200 mx-0.5" />
-                        <button onClick={() => handleAction('translate')} disabled={translating} className="p-1.5 rounded hover:bg-sky-100 text-sky-600 disabled:opacity-50" title="翻译"><Languages size={14} /></button>
-                        <button onClick={() => { setSelection(null); setTranslationResult(null); }} className="p-1 rounded hover:bg-gray-100 text-gray-400" title="关闭">×</button>
+                        <button onClick={() => { setSelection(null); setTranslationResult(null); }} className="w-11 h-11 rounded-lg hover:bg-gray-100 text-gray-400 flex items-center justify-center" title="关闭">×</button>
                     </motion.div>
                 </AnimatePresence>,
                 document.body
@@ -993,7 +1104,11 @@ export const LeftColumn = () => {
                 ref={containerRef}
                 className="flex-1 overflow-y-auto p-4 flex justify-center custom-scrollbar"
                 onMouseDown={handleMouseDown}
+                onTouchStart={handleMouseDown}
                 onMouseUp={handleMouseUp}
+                onTouchEnd={handleTouchEnd}
+                onTouchMove={markScrolling}
+                onScroll={markScrolling}
             >
                 {contentMode === 'markdown' && (
                     <div className="w-full max-w-3xl bg-white border border-gray-200 p-4">
@@ -1019,7 +1134,7 @@ export const LeftColumn = () => {
                                     <button
                                         key={`${item.title}-${idx}`}
                                         onClick={() => {
-                                            const approx = Math.max(1, Math.round(((idx + 1) / Math.max(outline.length, 1)) * Math.max(numPages || 1, 1)));
+                                            const approx = Math.max(1, Math.round(((idx + 1) / Math.max(outline.length, 1)) * Math.max(pdfNumPages || 1, 1)));
                                             setContentMode('pdf');
                                             setCurrentPage(approx);
                                             const related = notes.find((n) => (n.content || '').toLowerCase().includes((item.title || '').toLowerCase().slice(0, 12)));
@@ -1190,8 +1305,8 @@ export const LeftColumn = () => {
                     <ChevronLeft size={16} />
                     <span>上一页</span>
                 </button>
-                <span className="text-slate-600 tabular-nums min-w-[4rem] text-center">第 {currentPage} / {numPages ?? '—'} 页</span>
-                <button onClick={() => setCurrentPage(Math.min(numPages ?? 999, currentPage + 1))} disabled={currentPage >= (numPages ?? 0)} className="flex items-center gap-1 hover:bg-slate-100 px-2 py-1.5 rounded disabled:opacity-50 text-slate-600 hover:text-slate-900 disabled:cursor-not-allowed transition-colors" title="下一页">
+                <span className="text-slate-600 tabular-nums min-w-[4rem] text-center">第 {currentPage} / {pdfNumPages ?? '—'} 页</span>
+                <button onClick={() => setCurrentPage(Math.min(pdfNumPages ?? 999, currentPage + 1))} disabled={currentPage >= (pdfNumPages ?? 0)} className="flex items-center gap-1 hover:bg-slate-100 px-2 py-1.5 rounded disabled:opacity-50 text-slate-600 hover:text-slate-900 disabled:cursor-not-allowed transition-colors" title="下一页">
                     <span>下一页</span>
                     <ChevronRight size={16} />
                 </button>

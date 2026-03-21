@@ -14,6 +14,40 @@ function getOrCreateSessionId() {
 export const SESSION_ID = getOrCreateSessionId();
 const MARKDOWN_CACHE_KEY = 'atomiclab_markdown_cache';
 
+/** 刷新后恢复当前文献 URL，便于笔记 bbox 重新裁图（File 上传仍无法跨刷新恢复） */
+const PDF_URL_KEY = 'atomiclab_pdf_url';
+const PDF_NAME_KEY = 'atomiclab_pdf_name';
+const PDF_DOC_ID_KEY = 'atomiclab_active_doc_id';
+
+function loadPersistedPdfState() {
+  try {
+    return {
+      pdfUrl: sessionStorage.getItem(PDF_URL_KEY) || null,
+      pdfFileName: sessionStorage.getItem(PDF_NAME_KEY) || '',
+      activeDocId: sessionStorage.getItem(PDF_DOC_ID_KEY) || '',
+    };
+  } catch {
+    return { pdfUrl: null, pdfFileName: '', activeDocId: '' };
+  }
+}
+
+function persistPdfUrlState(url, name, docId) {
+  try {
+    if (url) sessionStorage.setItem(PDF_URL_KEY, url);
+    else sessionStorage.removeItem(PDF_URL_KEY);
+    if (name != null) sessionStorage.setItem(PDF_NAME_KEY, name);
+    if (docId != null) sessionStorage.setItem(PDF_DOC_ID_KEY, docId);
+  } catch {}
+}
+
+function clearPersistedPdfState() {
+  try {
+    sessionStorage.removeItem(PDF_URL_KEY);
+    sessionStorage.removeItem(PDF_NAME_KEY);
+    sessionStorage.removeItem(PDF_DOC_ID_KEY);
+  } catch {}
+}
+
 // ── 学术课题 / 投稿进度（Project & Submission）────────────────────────────
 /** @typedef {'Plan'|'Reading'|'Drafting'|'Reviewing'|'Submitted'|'Rebuttal'} ProjectStatus */
 export const PROJECT_STATUSES = ['Plan', 'Reading', 'Drafting', 'Reviewing', 'Submitted', 'Rebuttal'];
@@ -29,6 +63,33 @@ export const PROJECT_STATUS_LABELS = {
 
 /** sessionStorage：本标签页内仅注入一次截稿催更消息 */
 export const PROJECT_REMINDER_SESSION_KEY = 'atomiclab_project_deadline_reminder';
+
+/** localStorage：持久化课题标题、目标类型、截止日期（用户可改，非写死会议名） */
+export const PROJECT_LOCAL_STORAGE_KEY = 'atomiclab_projects_v1';
+
+function loadPersistedProjectsState() {
+  try {
+    const raw = localStorage.getItem(PROJECT_LOCAL_STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.projects) || data.projects.length === 0) return null;
+    const id = typeof data.activeProjectId === 'string' ? data.activeProjectId : data.projects[0]?.id;
+    const projects = data.projects.filter(
+      (p) => p && typeof p.id === 'string' && typeof p.title === 'string' && typeof p.target_journal === 'string' && p.deadline && p.status
+    );
+    if (projects.length === 0) return null;
+    const activeProjectId = projects.some((p) => p.id === id) ? id : projects[0].id;
+    return { projects, activeProjectId };
+  } catch {
+    return null;
+  }
+}
+
+function persistProjectsState(projects, activeProjectId) {
+  try {
+    localStorage.setItem(PROJECT_LOCAL_STORAGE_KEY, JSON.stringify({ projects, activeProjectId }));
+  } catch {}
+}
 
 /** @param {string} iso ISO 8601 截止日期 */
 export function daysUntilDeadline(iso) {
@@ -47,10 +108,29 @@ function makeDeadlineIsoDaysFromNow(days) {
   return d.toISOString();
 }
 
+/** 截止日期 ISO → `<input type="date">` 用的 yyyy-mm-dd（本地日历日） */
+export function deadlineIsoToDateInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** `<input type="date">` → 当日 23:59:59.999 的 ISO 字符串 */
+export function dateInputToDeadlineIso(yyyymmdd) {
+  if (!yyyymmdd || !/^\d{4}-\d{2}-\d{2}$/.test(yyyymmdd)) return makeDeadlineIsoDaysFromNow(5);
+  const d = new Date(`${yyyymmdd}T23:59:59.999`);
+  return Number.isNaN(d.getTime()) ? makeDeadlineIsoDaysFromNow(5) : d.toISOString();
+}
+
+/** 默认课题（可被用户覆盖并写入 localStorage） */
 export const MOCK_PROJECT = {
-  id: 'proj-mock-kdd',
-  title: '大模型图检索综述',
-  target_journal: 'KDD 2026',
+  id: 'proj-default',
+  title: '我的课题',
+  target_journal: '毕业论文',
   deadline: makeDeadlineIsoDaysFromNow(5),
   status: 'Drafting',
 };
@@ -59,8 +139,12 @@ function buildProjectDeadlineReminder(project) {
   const days = daysUntilDeadline(project.deadline);
   const d = Math.max(0, days);
   const stage = PROJECT_STATUS_LABELS[project.status] || project.status;
-  return `⚠️ 侦测到您的课题《${project.title}》距离 ${project.target_journal} 截稿仅剩 ${d} 天！当前处于 [${stage}] 阶段。需要我帮您检查格式，或者模拟同行评审 (Peer Review) 吗？`;
+  const target = project.target_journal || '当前任务';
+  return `⚠️ 侦测到您的课题《${project.title}》（${target}）距离截止日期仅剩 ${d} 天！当前处于 [${stage}] 阶段。需要我帮您检查格式，或者模拟同行评审 (Peer Review) 吗？`;
 }
+
+const persistedProjectState = loadPersistedProjectsState();
+const defaultProjectsSeed = () => [{ ...MOCK_PROJECT, deadline: makeDeadlineIsoDaysFromNow(5) }];
 
 function getInitialMarkdown() {
   try {
@@ -103,16 +187,24 @@ export const useStore = create((set, get) => ({
       setPdfRuntime: (pdfDocument, numPages) =>
         set({ pdfDocument: pdfDocument ?? null, pdfNumPages: Number.isFinite(numPages) ? numPages : null }),
       resetPdfRuntime: () => set({ pdfDocument: null, pdfNumPages: null }),
-      setPdfFile: (file) =>
+      setPdfFile: (file) => {
+        try {
+          sessionStorage.removeItem(PDF_URL_KEY);
+          if (file?.name) sessionStorage.setItem(PDF_NAME_KEY, file.name);
+          sessionStorage.removeItem(PDF_DOC_ID_KEY);
+        } catch {}
         set({
           pdfFile: file,
           pdfUrl: null,
           pdfFileName: file?.name ?? '',
+          activeDocId: '',
           currentPage: 1,
           pdfDocument: null,
           pdfNumPages: null,
-        }),
-      setPdfUrl: (url, name, docId = '') =>
+        });
+      },
+      setPdfUrl: (url, name, docId = '') => {
+        persistPdfUrlState(url, name, docId);
         set({
           pdfFile: null,
           pdfUrl: url,
@@ -121,7 +213,8 @@ export const useStore = create((set, get) => ({
           currentPage: 1,
           pdfDocument: null,
           pdfNumPages: null,
-        }),
+        });
+      },
       currentPage: 1,
       setCurrentPage: (pageOrUpdater) =>
         set((s) => {
@@ -251,6 +344,10 @@ export const useStore = create((set, get) => ({
       pendingChatQuestion: null,
       setPendingChatQuestion: (q) => set({ pendingChatQuestion: q }),
 
+      /** Organize 中栏子 Tab（deck/inbox/…），任务中心等跳转后由 NexusPanel 消费并清空 */
+      pendingOrganizeTab: null,
+      setPendingOrganizeTab: (tab) => set({ pendingOrganizeTab: tab }),
+
       // ── 原子助手边栏与上下文附件 ─────────────────────────────────────────────
       copilotOpen: false,
       setCopilotOpen: (v) => set({ copilotOpen: v }),
@@ -264,16 +361,27 @@ export const useStore = create((set, get) => ({
       pendingEditorAction: null, // { function:'update_markdown_editor', action_type:'append|replace|insert', content:string }
       setPendingEditorAction: (action) => set({ pendingEditorAction: action || null }),
 
-      // ── 学术课题（投稿与进度）────────────────────────────────────────────────
+      // ── 学术课题（投稿与进度，持久化至 localStorage）──────────────────────────
       /** @type {{ id: string, title: string, target_journal: string, deadline: string, status: ProjectStatus }[]} */
-      projects: [{ ...MOCK_PROJECT, deadline: makeDeadlineIsoDaysFromNow(5) }],
-      activeProjectId: MOCK_PROJECT.id,
-      setProjects: (projects) => set({ projects: Array.isArray(projects) ? projects : [] }),
-      setActiveProjectId: (id) => set({ activeProjectId: id }),
+      projects: persistedProjectState?.projects ?? defaultProjectsSeed(),
+      activeProjectId: persistedProjectState?.activeProjectId ?? MOCK_PROJECT.id,
+      setProjects: (projects) => {
+        const arr = Array.isArray(projects) ? projects : [];
+        set({ projects: arr });
+        const s = get();
+        persistProjectsState(s.projects, s.activeProjectId);
+      },
+      setActiveProjectId: (id) => {
+        set({ activeProjectId: id });
+        const s = get();
+        persistProjectsState(s.projects, s.activeProjectId);
+      },
       updateProject: (id, patch) =>
-        set((s) => ({
-          projects: s.projects.map((p) => (p.id === id ? { ...p, ...patch } : p)),
-        })),
+        set((s) => {
+          const projects = s.projects.map((p) => (p.id === id ? { ...p, ...patch } : p));
+          persistProjectsState(projects, s.activeProjectId);
+          return { projects };
+        }),
 
       /** 助手展开时调用：截稿不足 7 天则在消息列表最前插入一条 Agent 催更（每会话一次） */
       ensureProjectDeadlineReminder: () => {
@@ -383,10 +491,17 @@ export const useStore = create((set, get) => ({
           try {
             sessionStorage.removeItem(PROJECT_REMINDER_SESSION_KEY);
           } catch {}
+          clearPersistedPdfState();
           // #region agent log
           fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H4',location:'useStore.js:startOver',message:'startOver called',data:{viewMode:s.viewMode,markdownLen:(s.markdownContent||'').length,activeDocId:s.activeDocId||''},timestamp:Date.now()})}).catch(()=>{});
           // #endregion
           return {
+          pdfFile: null,
+          pdfUrl: null,
+          pdfFileName: '',
+          activeDocId: '',
+          pdfDocument: null,
+          pdfNumPages: null,
           notes: [],
           messages: [
             {
@@ -396,21 +511,19 @@ export const useStore = create((set, get) => ({
               content: '欢迎来到 AtomicLab！上传 PDF 开始原子化解析，或直接提问让 Seeker 为你检索知识库。',
             },
           ],
-          projects: [{ ...MOCK_PROJECT, deadline: makeDeadlineIsoDaysFromNow(5) }],
-          activeProjectId: MOCK_PROJECT.id,
+          // 课题设置保留在 localStorage，不在「重新开始」时清空
           parseStatus: 'idle',
           parseProgress: [],
           parsedMarkdown: '',
           parsedSections: [],
           parsedDocName: '',
           currentPage: 1,
-          pdfDocument: null,
-          pdfNumPages: null,
           graphData: { nodes: [], links: [] },
           noteLinks: [],
           searchResults: [],
           searchQuery: '',
           references: [],
+          pendingOrganizeTab: null,
           };
         }),
 

@@ -40,4 +40,15 @@ async def decompose_note(
     from service.atomic_decomposer import decompose_note as _decompose
 
     result = await _decompose(body.content, body.note_id, body.doc_id)
+    # 兼容前端旧协议：同时返回首个 atom 的平铺字段
+    atoms = result.get("atoms") or []
+    first = atoms[0] if atoms else {}
+    if isinstance(first, dict):
+        result.setdefault("axiom", first.get("axiom", "") or "")
+        result.setdefault("method", first.get("methodology", "") or "")
+        result.setdefault("boundary", first.get("boundary", "") or "")
+    else:
+        result.setdefault("axiom", "")
+        result.setdefault("method", "")
+        result.setdefault("boundary", "")
     return result

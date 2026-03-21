@@ -6,6 +6,8 @@ import {
   PROJECT_STATUSES,
   PROJECT_STATUS_LABELS,
   daysUntilDeadline,
+  deadlineIsoToDateInput,
+  dateInputToDeadlineIso,
   useStore,
 } from '../store/useStore';
 
@@ -14,7 +16,19 @@ import {
  */
 export function MissionControlFab() {
   const [open, setOpen] = useState(false);
-  const { projects, activeProjectId, setViewMode } = useStore();
+  const {
+    projects,
+    activeProjectId,
+    setViewMode,
+    updateProject,
+    setPendingOrganizeTab,
+    setCopilotOpen,
+    setPendingChatQuestion,
+    setNotification,
+  } = useStore();
+  const [draftTitle, setDraftTitle] = useState('');
+  const [draftTarget, setDraftTarget] = useState('');
+  const [draftDate, setDraftDate] = useState('');
 
   const activeProject = useMemo(
     () => projects.find((p) => p.id === activeProjectId) ?? null,
@@ -39,6 +53,75 @@ export function MissionControlFab() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
+
+  // 仅在打开浮层或切换激活课题时同步 store → 草稿（不把 projects 列入依赖，避免保存后覆盖正在输入的内容）
+  useEffect(() => {
+    if (!open) return;
+    const ap = projects.find((p) => p.id === activeProjectId);
+    if (!ap) return;
+    setDraftTitle(ap.title ?? '');
+    setDraftTarget(ap.target_journal ?? '');
+    setDraftDate(deadlineIsoToDateInput(ap.deadline));
+  }, [open, activeProjectId]);
+
+  const saveDraft = () => {
+    if (!activeProject) return;
+    updateProject(activeProject.id, {
+      title: (draftTitle || '').trim() || '我的课题',
+      target_journal: (draftTarget || '').trim() || '毕业论文',
+      deadline: dateInputToDeadlineIso(draftDate),
+    });
+  };
+
+  /** 点击 Timeline 阶段：跳转 Organize 子页 / 写作 / 打开助手模拟评审 */
+  const handleTimelineStage = (statusKey) => {
+    const ap = projects.find((p) => p.id === activeProjectId);
+    const title = (ap?.title || draftTitle || '当前课题').trim();
+    const target = (ap?.target_journal || draftTarget || '目标期刊/会议').trim();
+    setOpen(false);
+
+    switch (statusKey) {
+      case 'Plan':
+        setPendingOrganizeTab('deck');
+        setViewMode('organize');
+        setNotification('已打开：Organize · 卡片（文稿/知识管理）', 'info');
+        break;
+      case 'Reading':
+        setPendingOrganizeTab('inbox');
+        setViewMode('organize');
+        setNotification('已打开：Organize · 发现', 'info');
+        break;
+      case 'Drafting':
+        setViewMode('write');
+        setNotification('已打开：写作', 'info');
+        break;
+      case 'Reviewing':
+        setViewMode('organize');
+        setCopilotOpen(true);
+        setPendingChatQuestion(
+          `请作为同行评审专家，针对课题「${title}」、投稿目标「${target}」，结合当前知识库与对话上下文，给出一份**模拟同行评审**（中文、Markdown）：\n\n` +
+            '1. **优点与创新点**\n2. **主要问题与风险**\n3. **修改建议**（分条）\n4. **模拟结论**（接收 / 大修 / 拒稿）及简要理由'
+        );
+        setNotification('已打开助手并填入「模拟同行评审」提示', 'info');
+        break;
+      case 'Submitted':
+        setPendingOrganizeTab('deck');
+        setViewMode('organize');
+        setNotification('已打开：Organize · 卡片', 'info');
+        break;
+      case 'Rebuttal':
+        setViewMode('write');
+        setCopilotOpen(true);
+        setPendingChatQuestion(
+          `请协助我准备课题「${title}」的**返修（Rebuttal）**回复：列出审稿意见要点、逐条回应思路与可补充实验。用中文、Markdown。`
+        );
+        setNotification('已打开写作与助手，填入返修提示', 'info');
+        break;
+      default:
+        setPendingOrganizeTab('deck');
+        setViewMode('organize');
+    }
+  };
 
   return (
     <>
@@ -99,13 +182,43 @@ export function MissionControlFab() {
               )}
 
               <div className="p-4 border-b-[3px] border-black/10 bg-[#fce7f3]/60 flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <h2 id="mission-control-title" className="text-sm font-black text-slate-900 truncate">
-                    {activeProject?.title ?? '未选择课题'}
+                <div className="min-w-0 flex-1 space-y-2">
+                  <h2 id="mission-control-title" className="text-sm font-black text-slate-900">
+                    课题设置
                   </h2>
-                  <p className="text-[11px] text-slate-600 mt-1 font-medium">
-                    目标期刊 / 会议：<span className="text-indigo-700">{activeProject?.target_journal ?? '—'}</span>
-                  </p>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">课题标题</span>
+                    <input
+                      type="text"
+                      value={draftTitle}
+                      onChange={(e) => setDraftTitle(e.target.value)}
+                      onBlur={saveDraft}
+                      className="mt-0.5 w-full rounded-lg border-2 border-black bg-white px-2 py-1.5 text-xs font-medium text-slate-900"
+                      placeholder="我的课题"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">目标（期刊 / 会议 / 毕业论文等）</span>
+                    <input
+                      type="text"
+                      value={draftTarget}
+                      onChange={(e) => setDraftTarget(e.target.value)}
+                      onBlur={saveDraft}
+                      className="mt-0.5 w-full rounded-lg border-2 border-black bg-white px-2 py-1.5 text-xs font-medium text-slate-900"
+                      placeholder="毕业论文"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">截止日期</span>
+                    <input
+                      type="date"
+                      value={draftDate}
+                      onChange={(e) => setDraftDate(e.target.value)}
+                      onBlur={saveDraft}
+                      className="mt-0.5 w-full rounded-lg border-2 border-black bg-white px-2 py-1.5 text-xs font-medium text-slate-900"
+                    />
+                  </label>
+                  <p className="text-[10px] text-slate-500">修改后自动保存到本机</p>
                 </div>
                 <button
                   type="button"
@@ -125,10 +238,26 @@ export function MissionControlFab() {
                       const done = currentIdx >= 0 && idx < currentIdx;
                       const current = currentIdx >= 0 && idx === currentIdx;
                       return (
-                        <div
+                        <button
                           key={st}
+                          type="button"
+                          onClick={() => handleTimelineStage(st)}
+                          title={
+                            st === 'Plan'
+                              ? '打开 Organize · 卡片'
+                              : st === 'Reading'
+                                ? '打开 Organize · 发现'
+                                : st === 'Drafting'
+                                  ? '打开写作'
+                                  : st === 'Reviewing'
+                                    ? '一键模拟同行评审（打开助手）'
+                                    : st === 'Submitted'
+                                      ? '打开 Organize · 卡片'
+                                      : '返修助手'
+                          }
                           className={clsx(
                             'flex-1 min-w-[52px] flex flex-col items-center gap-1 px-1 py-2 rounded-lg border-2 border-black text-[9px] font-bold',
+                            'cursor-pointer hover:opacity-95 active:scale-[0.98] transition-transform',
                             done && 'bg-emerald-100 text-emerald-900',
                             current && 'bg-amber-200 text-amber-950 ring-2 ring-amber-500 ring-offset-1',
                             !done && !current && 'bg-slate-200/80 text-slate-400 border-slate-300'
@@ -136,7 +265,7 @@ export function MissionControlFab() {
                         >
                           <span className="text-sm leading-none">{done ? '✓' : current ? '●' : '·'}</span>
                           <span className="text-center leading-tight">{PROJECT_STATUS_LABELS[st]}</span>
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -145,6 +274,22 @@ export function MissionControlFab() {
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">资产挂载</p>
                   <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingOrganizeTab('deck');
+                        setViewMode('organize');
+                        setOpen(false);
+                        setNotification('已打开 Organize · 卡片（文稿与知识管理）', 'info');
+                      }}
+                      className={clsx(
+                        'inline-flex items-center gap-2 px-3 py-2 rounded-xl border-2 border-black bg-white',
+                        'text-xs font-bold shadow-[3px_3px_0px_rgba(0,0,0,0.15)] hover:bg-emerald-50'
+                      )}
+                    >
+                      <span>📚</span>
+                      <span>文稿管理</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => {

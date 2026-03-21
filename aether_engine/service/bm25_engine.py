@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -17,6 +19,28 @@ from rank_bm25 import BM25Okapi
 logger = logging.getLogger("aether")
 
 NOTES_FILE = Path("data/notes.json")
+
+
+def _debug_log(hid: str, location: str, message: str, data: Dict[str, Any]) -> None:
+    try:
+        with open("debug-360e80.log", "a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "sessionId": "360e80",
+                        "runId": "pre-fix",
+                        "hypothesisId": hid,
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": int(time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
 
 # 检测是否在创空间环境
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
@@ -142,6 +166,7 @@ class BM25Engine:
 
     def __init__(self, session_id: Optional[str] = None):
         self.session_id = session_id
+        self._lock = threading.RLock()
 
         # 会话层笔记文件路径
         if IN_MODELSCOPE_SPACE and session_id:
@@ -170,18 +195,19 @@ class BM25Engine:
 
     def build_notes_index(self):
         """从 notes.json 构建/重建 BM25 索引。"""
-        if not self.notes_file.exists():
-            return 0
+        with self._lock:
+            if not self.notes_file.exists():
+                return 0
 
-        try:
-            notes = json.loads(self.notes_file.read_text(encoding="utf-8"))
-        except Exception:
-            return 0
+            try:
+                notes = json.loads(self.notes_file.read_text(encoding="utf-8"))
+            except Exception:
+                return 0
 
-        self._note_ids = []
-        self._note_corpus = []
-        self._note_meta = []
-        self._note_id_set = set()
+            self._note_ids = []
+            self._note_corpus = []
+            self._note_meta = []
+            self._note_id_set = set()
 
         for n in notes:
             nid = n.get("id", "")
@@ -209,6 +235,7 @@ class BM25Engine:
                     "type": n.get("type", "other"),
                     "page": int(n.get("page", 0) or 0),
                     "bbox": n.get("bbox", []),
+                    "doc_id": n.get("doc_id", "") or "",
                     "translation": translation,
                     "source_name": source_name,
                     "screenshot": n.get("screenshot", ""),
@@ -216,78 +243,81 @@ class BM25Engine:
             )
             self._note_id_set.add(nid)
 
-        if self._note_corpus:
-            self._note_bm25 = BM25Okapi(self._note_corpus)
-            logger.info("BM25 Notes 索引构建完成: %d 条", len(self._note_ids))
-        else:
-            self._note_bm25 = None
+            if self._note_corpus:
+                self._note_bm25 = BM25Okapi(self._note_corpus)
+                logger.info("BM25 Notes 索引构建完成: %d 条", len(self._note_ids))
+            else:
+                self._note_bm25 = None
 
-        return len(self._note_ids)
+            return len(self._note_ids)
 
     def search_notes(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """BM25 检索笔记，返回带分数的结果列表。"""
-        if not self._note_bm25 or not self._note_ids:
-            self.build_notes_index()
+        with self._lock:
+            if not self._note_bm25 or not self._note_ids:
+                self.build_notes_index()
 
-        if not self._note_bm25 or not self._note_ids:
-            return []
+            if not self._note_bm25 or not self._note_ids:
+                return []
 
-        tokens = tokenize_zh(query)
-        if not tokens:
-            return []
+            tokens = tokenize_zh(query)
+            if not tokens:
+                return []
 
-        scores = self._note_bm25.get_scores(tokens)
+            scores = self._note_bm25.get_scores(tokens)
 
-        # 取 top_k
-        scored = [(i, s) for i, s in enumerate(scores) if s > 0]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        scored = scored[:top_k]
+            # 取 top_k
+            scored = [(i, s) for i, s in enumerate(scores) if s > 0]
+            scored.sort(key=lambda x: x[1], reverse=True)
+            scored = scored[:top_k]
 
-        if not scored:
-            return []
+            if not scored:
+                return []
 
-        # 归一化分数到 [0, 1]
-        max_score = scored[0][1]
-        results = []
-        for idx, raw_score in scored:
-            meta = self._note_meta[idx]
-            norm_score = raw_score / max_score if max_score > 0 else 0
-            results.append(
-                {
-                    "note_id": self._note_ids[idx],
-                    "summary": meta["content"],
-                    "concept": meta["type"],
-                    "keywords": tokens[:6],
-                    "doc_title": meta["source_name"],
-                    "page_num": meta["page"],
-                    "bbox": meta["bbox"],
-                    "score": round(norm_score, 4),
-                    "source": "note_bm25",
-                }
-            )
+            # 归一化分数到 [0, 1]
+            max_score = scored[0][1]
+            results = []
+            for idx, raw_score in scored:
+                meta = self._note_meta[idx]
+                norm_score = raw_score / max_score if max_score > 0 else 0
+                results.append(
+                    {
+                        "note_id": self._note_ids[idx],
+                        "summary": meta["content"],
+                        "concept": meta["type"],
+                        "keywords": tokens[:6],
+                        "doc_title": meta["source_name"],
+                        "doc_id": meta.get("doc_id", ""),
+                        "page_num": meta["page"],
+                        "bbox": meta["bbox"],
+                        "score": round(norm_score, 4),
+                        "source": "note_bm25",
+                    }
+                )
 
-        return results
+            return results
 
     # ── Document Chunks 索引 ─────────────────────────────────────────────────
 
     def build_doc_index_from_chromadb(self):
         """从 DocumentRAG ChromaDB 读取所有切块构建 BM25 索引。"""
-        try:
-            from service.doc_rag import get_document_rag
+        with self._lock:
+            try:
+                from service.doc_rag import get_document_rag
 
-            doc_rag = get_document_rag(self.session_id)
-            if doc_rag.collection.count() == 0:
+                doc_rag = get_document_rag(self.session_id)
+                if doc_rag.collection.count() == 0:
+                    return 0
+
+                raw = doc_rag.collection.get(include=["documents", "metadatas"])
+            except Exception as e:
+                logger.warning("BM25 读取 DocumentRAG 失败: %s", e)
                 return 0
 
-            raw = doc_rag.collection.get(include=["documents", "metadatas"])
-        except Exception as e:
-            logger.warning("BM25 读取 DocumentRAG 失败: %s", e)
-            return 0
-
-        self._doc_ids = []
-        self._doc_corpus = []
-        self._doc_meta = []
-        self._doc_id_set = set()
+            self._doc_ids = []
+            self._doc_corpus = []
+            self._doc_meta = []
+            self._doc_id_set = set()
 
         for i, cid in enumerate(raw.get("ids", [])):
             doc_text = (raw.get("documents") or [""])[i] or ""
@@ -318,56 +348,81 @@ class BM25Engine:
             )
             self._doc_id_set.add(cid)
 
-        if self._doc_corpus:
-            self._doc_bm25 = BM25Okapi(self._doc_corpus)
-            logger.info("BM25 DocChunks 索引构建完成: %d 条", len(self._doc_ids))
-        else:
-            self._doc_bm25 = None
+            if self._doc_corpus:
+                self._doc_bm25 = BM25Okapi(self._doc_corpus)
+                logger.info("BM25 DocChunks 索引构建完成: %d 条", len(self._doc_ids))
+            else:
+                self._doc_bm25 = None
 
-        return len(self._doc_ids)
+            return len(self._doc_ids)
 
     def search_docs(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """BM25 检索文档切块。"""
-        if not self._doc_bm25 or not self._doc_ids:
-            self.build_doc_index_from_chromadb()
+        with self._lock:
+            if not self._doc_bm25 or not self._doc_ids:
+                self.build_doc_index_from_chromadb()
 
-        if not self._doc_bm25 or not self._doc_ids:
-            return []
+            if not self._doc_bm25 or not self._doc_ids:
+                return []
 
-        tokens = tokenize_zh(query)
-        if not tokens:
-            return []
+            tokens = tokenize_zh(query)
+            if not tokens:
+                return []
 
-        scores = self._doc_bm25.get_scores(tokens)
-
-        scored = [(i, s) for i, s in enumerate(scores) if s > 0]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        scored = scored[:top_k]
-
-        if not scored:
-            return []
-
-        max_score = scored[0][1]
-        results = []
-        for idx, raw_score in scored:
-            meta = self._doc_meta[idx]
-            norm_score = raw_score / max_score if max_score > 0 else 0
-            results.append(
+            scores = self._doc_bm25.get_scores(tokens)
+            _debug_log(
+                "H5",
+                "bm25_engine.py:search_docs:pre-loop",
+                "bm25 doc search dimensions",
                 {
-                    "note_id": self._doc_ids[idx],
-                    "summary": meta["content"],
-                    "concept": f"doc:{meta['section_title'] or 'chunk'}",
-                    "keywords": tokens[:6],
-                    "doc_title": meta["doc_title"],
-                    "page_num": meta.get("chunk_index", 0) // 3 + 1,
-                    "bbox": [],
-                    "score": round(norm_score, 4),
-                    "source": "doc_bm25",
-                    "doc_id": meta["doc_id"],
-                }
+                    "query": query[:64],
+                    "token_count": len(tokens),
+                    "scores_len": len(scores),
+                    "doc_ids_len": len(self._doc_ids),
+                    "doc_meta_len": len(self._doc_meta),
+                },
             )
 
-        return results
+            scored = [(i, s) for i, s in enumerate(scores) if s > 0]
+            scored.sort(key=lambda x: x[1], reverse=True)
+            scored = scored[:top_k]
+
+            if not scored:
+                return []
+
+            max_score = scored[0][1]
+            results = []
+            for idx, raw_score in scored:
+                if idx >= len(self._doc_meta) or idx >= len(self._doc_ids):
+                    _debug_log(
+                        "H5",
+                        "bm25_engine.py:search_docs:index-guard",
+                        "bm25 index out of range guard",
+                        {
+                            "idx": idx,
+                            "doc_ids_len": len(self._doc_ids),
+                            "doc_meta_len": len(self._doc_meta),
+                        },
+                    )
+                    continue
+                meta = self._doc_meta[idx]
+                norm_score = raw_score / max_score if max_score > 0 else 0
+                results.append(
+                    {
+                        "note_id": self._doc_ids[idx],
+                        "summary": meta["content"],
+                        "concept": f"doc:{meta['section_title'] or 'chunk'}",
+                        "keywords": tokens[:6],
+                        "doc_title": meta["doc_title"],
+                        "page_num": meta.get("chunk_index", 0) // 3 + 1,
+                        "bbox": [],
+                        "score": round(norm_score, 4),
+                        "source": "doc_bm25",
+                        "doc_id": meta["doc_id"],
+                    }
+                )
+
+            return results
 
     def invalidate(self):
         """标记索引需要重建（当笔记或文档发生变化时调用）。"""

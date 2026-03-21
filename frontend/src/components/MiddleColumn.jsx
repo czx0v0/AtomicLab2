@@ -37,6 +37,7 @@ import { Document, Page } from 'react-pdf';
 import * as api from '../api/client';
 import { AgentTraceThoughtChain } from './AgentTraceThoughtChain';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { ErrorBoundary } from './ErrorBoundary';
 import { AssistantSidebar } from './CopilotSidebar';
 import { useScreenshot } from '../hooks/useScreenshot';
 import { SESSION_ID, useStore } from '../store/useStore';
@@ -194,9 +195,12 @@ const SearchVisualizer = ({ status, query }) => {
 
 // ─── 笔记卡片：普通笔记（原文摘录）与原子知识（结构化 + 白底阴影）严格区分 ───────
 const NoteCard = ({ note, onDelete }) => {
-  const { pdfFile, setActiveReference, addHighlight } = useStore();
+  const { pdfFile, pdfUrl, setActiveReference, addHighlight } = useStore();
+  const pdfSource = note.screenshot ? null : (pdfFile || pdfUrl || null);
   const { imageSrc: hookSrc, loading: hookLoading } = useScreenshot(
-    note.screenshot ? null : pdfFile, note.page, note.bbox
+    pdfSource,
+    note.page,
+    note.bbox
   );
   const imageSrc = note.screenshot || hookSrc;
   const loading = !note.screenshot && hookLoading;
@@ -1040,9 +1044,50 @@ const ArxivPanel = () => {
   );
 };
 
+/** 含中日韩等则视为需先英文化再查 arXiv */
+const CJK_RE = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/;
+
+/** 将中文关键词/目标译为英文，便于 arXiv API 命中 */
+async function prepareSecretaryKeywords(keyword, researchGoal) {
+  let kw = keyword.trim();
+  let goal = (researchGoal || '').trim();
+  let hint = '';
+  if (!kw) return { kw, goal, hint };
+
+  const tryTranslateLine = async (text, instruction) => {
+    try {
+      const resp = await api.translateText(`${instruction}\n\n${text}`, 'en');
+      const raw = (resp.translation || '').replace(/\n/g, ' ').trim();
+      const line = raw.split(/[。.;；\n]/)[0].replace(/^["'「」]|["'」]$/g, '').trim();
+      return line.length >= 2 ? line : null;
+    } catch {
+      return null;
+    }
+  };
+
+  if (CJK_RE.test(kw)) {
+    const en = await tryTranslateLine(
+      kw,
+      '请只输出一行英文：用于 arXiv 检索的 3–10 个英文关键词或短语，用空格连接；不要引号、不要解释。'
+    );
+    if (en) {
+      kw = en;
+      hint = '已将中文关键词自动转为英文检索词';
+    }
+  }
+  if (goal && CJK_RE.test(goal)) {
+    const enG = await tryTranslateLine(
+      goal,
+      '将下列研究目标译为英文（一段学术英文，用于摘要相关性过滤）：'
+    );
+    if (enG) goal = enG;
+  }
+  return { kw, goal, hint };
+}
+
 // ─── ArXiv 学术秘书 · 收件箱（LLM 预读过滤后的推荐）────────────────────────────
 const SecretaryInboxPanel = () => {
-  const { setNotes } = useStore();
+  const { setNotes, setNotification } = useStore();
   const [keyword, setKeyword] = useState('');
   const [researchGoal, setResearchGoal] = useState('');
   const [items, setItems] = useState([]);
@@ -1075,7 +1120,9 @@ const SecretaryInboxPanel = () => {
     setLoading(true);
     setError('');
     try {
-      await api.secretaryFetch(k, researchGoal.trim());
+      const { kw, goal, hint } = await prepareSecretaryKeywords(k, researchGoal);
+      if (hint) setNotification(hint, 'info');
+      await api.secretaryFetch(kw, goal);
       await loadInbox();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1109,7 +1156,7 @@ const SecretaryInboxPanel = () => {
         <input
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
-          placeholder="设置我的研究方向（英文检索词效果更好）..."
+          placeholder="研究方向关键词（支持中文，将自动译成英文检索）..."
           className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-300"
         />
         <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wide">研究课题 / 过滤目标</p>
@@ -1341,9 +1388,13 @@ const ChatMessage = ({ msg }) => {
           </div>
         )}
         {msg.agentTrace && <AgentTraceThoughtChain agentTrace={msg.agentTrace} />}
-        {msg.agentType === 'synthesizer' ? (
+        {!isUser ? (
           <div className="leading-relaxed break-words text-gray-800 chat-synth-md">
-            {renderCitedContent(msg.content, msg.relatedNotes, onJumpSource)}
+            {renderCitedContent(
+              typeof msg.content === 'string' ? msg.content : String(msg.content ?? ''),
+              msg.relatedNotes || [],
+              onJumpSource
+            )}
           </div>
         ) : (
           <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
@@ -1744,6 +1795,8 @@ const RecommendedCards = ({ notes }) => {
   );
 };
 
+const NEXUS_ORGANIZE_TAB_IDS = ['deck', 'atomic', 'tree', 'graph', 'graphrag', 'map', 'inbox', 'arxiv'];
+
 // ─── 原子卡片面板（带 API 查询） ────────────────────────────────────────────────
 const NexusPanel = () => {
   const DEMO_DOC_ID = 'global_demo_official';
@@ -1758,6 +1811,7 @@ const NexusPanel = () => {
     setParsedSections, setParsedMarkdown, setNotification,
     setViewMode, setStartDemoLoad,
     setPdfUrl, setCurrentPage, setActiveReference,
+    pendingOrganizeTab, setPendingOrganizeTab,
   } = useStore();
   const [demoLoading, setDemoLoading] = useState(false);
   const [searchPanelOpen, setSearchPanelOpen] = useState(false);
@@ -1771,11 +1825,39 @@ const NexusPanel = () => {
   const [distillText, setDistillText] = useState('');
   const [distilling, setDistilling] = useState(false);
 
+  useEffect(() => {
+    if (!pendingOrganizeTab) return;
+    if (NEXUS_ORGANIZE_TAB_IDS.includes(pendingOrganizeTab)) {
+      setActiveTab(pendingOrganizeTab);
+    }
+    setPendingOrganizeTab(null);
+  }, [pendingOrganizeTab, setPendingOrganizeTab]);
+
   // 进入整理视图时以服务端为准同步笔记，避免旧会话/幽灵卡片残留
   useEffect(() => {
     api.getNotes()
       .then((data) => {
         const list = Array.isArray(data.notes) ? data.notes : [];
+        // #region agent log
+        fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
+          body: JSON.stringify({
+            sessionId: '1d3683',
+            runId: 'post-fix',
+            hypothesisId: 'H3',
+            location: 'MiddleColumn.jsx:getNotes',
+            message: 'notes list loaded for organize tab',
+            data: {
+              total: list.length,
+              withScreenshot: list.filter((n) => !!n?.screenshot).length,
+              withBboxArray: list.filter((n) => Array.isArray(n?.bbox) && n.bbox.length === 4).length,
+              withBboxObject: list.filter((n) => n?.bbox && typeof n.bbox === 'object' && !Array.isArray(n.bbox)).length,
+            },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
         setNotes(list);
       })
       .catch(() => {});
@@ -2378,7 +2460,9 @@ const ReferencePanel = () => {
                 refTab === id ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50' : 'border-transparent text-slate-500 hover:bg-slate-50'
               )}
             >
-              <Icon size={12} /> {label}
+              {typeof Icon === 'function' ? <Icon size={12} /> : null}
+              {' '}
+              {label}
             </button>
           ))}
         </div>
@@ -2645,7 +2729,9 @@ export const MiddleColumn = () => {
       {viewMode === 'read' ? (
         <ReadSidebar />
       ) : viewMode === 'write' ? (
-        <ReferencePanel />
+        <ErrorBoundary context="Write / ReferencePanel">
+          <ReferencePanel />
+        </ErrorBoundary>
       ) : viewMode === 'organize' ? (
         <NexusPanel />
       ) : (

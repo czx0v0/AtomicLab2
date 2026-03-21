@@ -9,7 +9,9 @@ import { MissionControlFab } from './components/MissionControlFab';
 import { AssistantSidebar } from './components/CopilotSidebar';
 import { LeftColumn } from './components/LeftColumn';
 import { MiddleColumn } from './components/MiddleColumn';
+import { RightColumn } from './components/RightColumn';
 import { WriteTab } from './components/WriteTab';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { useStore } from './store/useStore';
 
 /** 全局浮动通知条（替代 alert/Toast），中性灰 SaaS 风格 */
@@ -240,6 +242,55 @@ function App() {
 
   // #region agent log
   useEffect(() => {
+    const onError = (event) => {
+      fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
+        body: JSON.stringify({
+          sessionId: '1d3683',
+          runId: 'post-fix',
+          hypothesisId: 'H1',
+          location: 'App.jsx:window.onerror',
+          message: 'runtime error captured',
+          data: {
+            viewMode: useStore.getState().viewMode,
+            message: event?.message || '',
+            filename: event?.filename || '',
+            lineno: event?.lineno || 0,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+    };
+    const onUnhandled = (event) => {
+      fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
+        body: JSON.stringify({
+          sessionId: '1d3683',
+          runId: 'post-fix',
+          hypothesisId: 'H1',
+          location: 'App.jsx:window.unhandledrejection',
+          message: 'unhandled promise rejection',
+          data: {
+            viewMode: useStore.getState().viewMode,
+            reason: String(event?.reason || ''),
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+    };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onUnhandled);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onUnhandled);
+    };
+  }, []);
+  // #endregion
+
+  // #region agent log
+  useEffect(() => {
     if (viewMode !== 'write') return;
     fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
       method: 'POST',
@@ -264,15 +315,19 @@ function App() {
       {/* Global Header */}
       {!isZenMode && <Header viewMode={viewMode} setViewMode={setViewMode} backendOnline={backendOnline} onStartOver={handleStartOver} onLoadDemo={handleLoadDemo} />}
       
-      {/* Resizable Layout */}
-      <div className="flex-1 w-full relative min-h-0">
+      {/* Resizable Layout：flex-col + min-h-0 保证移动端写作 Tab 获得可计算高度，避免 h-full 塌陷为空白 */}
+      <div className="flex-1 w-full relative min-h-0 flex flex-col">
         {/* Desktop / iPad 大屏：三栏可变布局 */}
-        <div className="hidden md:block h-full w-full">
+        <div className="hidden md:block h-full w-full min-h-0 flex-1">
           {/* viewMode 作为 key：避免从 Read 切换 Write 时沿用已折叠的左栏宽度导致写作区/顶栏视觉异常 */}
           <Group key={viewMode} ref={panelGroupRef} direction="horizontal" className="h-full w-full min-h-0">
               {/* 左栏：Read = PDF+章节，Write = 写作区，Organize = 可选原文 PDF（复用阅读界面） */}
               <Panel defaultSize={viewMode === 'organize' ? 25 : 30} minSize={viewMode === 'organize' ? 0 : 15} collapsible={true} order={1} className="bg-white min-h-0">
-                  {viewMode === 'write' ? <RightColumn /> : (viewMode === 'read' || viewMode === 'organize') ? <LeftColumn /> : <div className="h-full bg-slate-50" />}
+                  {viewMode === 'write' ? (
+                    <ErrorBoundary context="Write / RightColumn">
+                      <RightColumn />
+                    </ErrorBoundary>
+                  ) : (viewMode === 'read' || viewMode === 'organize') ? <LeftColumn /> : <div className="h-full bg-slate-50" />}
               </Panel>
 
               <ResizeHandle />
@@ -291,8 +346,8 @@ function App() {
           </Group>
         </div>
 
-        {/* Mobile：单栏堆叠（按 viewMode 展示核心工作区） */}
-        <div className="md:hidden h-full w-full bg-white">
+        {/* Mobile：单栏堆叠（flex-1 占满主内容区剩余高度） */}
+        <div className="md:hidden flex-1 min-h-0 w-full bg-white flex flex-col overflow-hidden">
           {viewMode === 'write' ? <WriteTab /> : viewMode === 'read' ? <LeftColumn /> : <MiddleColumn />}
         </div>
       </div>

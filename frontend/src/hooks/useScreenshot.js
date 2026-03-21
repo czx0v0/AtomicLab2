@@ -1,30 +1,64 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { pdfjs } from 'react-pdf';
 
-export const useScreenshot = (file, pageNumber, bbox) => {
+/** 将笔记中的 bbox 统一为 [x, y, w, h]，供裁剪渲染 */
+export function normalizeNoteBbox(bbox) {
+  if (bbox == null) return null;
+  if (Array.isArray(bbox) && bbox.length >= 4) {
+    return [
+      Number(bbox[0]),
+      Number(bbox[1]),
+      Number(bbox[2]),
+      Number(bbox[3]),
+    ];
+  }
+  if (typeof bbox === 'object') {
+    const x = bbox.x ?? bbox[0];
+    const y = bbox.y ?? bbox[1];
+    const w = bbox.width ?? bbox.w ?? bbox[2];
+    const h = bbox.height ?? bbox.h ?? bbox[3];
+    if (x != null && y != null && w != null && h != null) {
+      return [Number(x), Number(y), Number(w), Number(h)];
+    }
+  }
+  return null;
+}
+
+/**
+ * 从 PDF 按页码与 bbox 裁剪预览图。
+ * @param fileOrUrl File 对象，或同源 PDF URL 字符串（刷新后 pdfFile 为空时用 pdfUrl）
+ * @param pageNumber 页码
+ * @param bbox 选区
+ */
+export const useScreenshot = (fileOrUrl, pageNumber, bbox) => {
   const [imageSrc, setImageSrc] = useState(null);
   const [loading, setLoading] = useState(false);
+  const bboxKey = bbox == null ? '' : typeof bbox === 'object' ? JSON.stringify(bbox) : String(bbox);
+  const normBbox = useMemo(() => normalizeNoteBbox(bbox), [bboxKey]);
 
   useEffect(() => {
-    if (!file || !bbox || !pageNumber) return;
+    if (!fileOrUrl || !normBbox || !pageNumber) return;
 
     let isActive = true;
     const loadTask = async () => {
       setLoading(true);
       try {
-        // Load PDF
-        // Convert File object to ArrayBuffer for PDF.js
-        const arrayBuffer = await file.arrayBuffer();
-        const pdf = await pdfjs.getDocument(arrayBuffer).promise;
+        let arrayBuffer;
+        if (typeof fileOrUrl === 'string') {
+          const res = await fetch(fileOrUrl, {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/pdf' },
+          });
+          if (!res.ok) throw new Error(`PDF fetch ${res.status}`);
+          arrayBuffer = await res.arrayBuffer();
+        } else {
+          arrayBuffer = await fileOrUrl.arrayBuffer();
+        }
+
+        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
         const page = await pdf.getPage(pageNumber);
-        
-        const viewport = page.getViewport({ scale: 1.5 }); // High res for screenshot
-        // BBox: [left, top, width, height] (PDF coordinates, likely unscaled or user needs to handle scale)
-        // Assuming bbox is [x, y, w, h] in viewport coordinates of the main viewer? 
-        // Need to relate coordinates. For now, assume bbox is roughly correct for scale 1.0 or normalized.
-        // If bbox comes from a scale=1.2 viewer, and we render at 1.5, we need to adjust.
-        // Let's assume passed bbox is proportional or relative to unscaled PDF point units.
-        
+
+        const viewport = page.getViewport({ scale: 1.5 });
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
         canvas.height = viewport.height;
@@ -32,33 +66,35 @@ export const useScreenshot = (file, pageNumber, bbox) => {
 
         const renderContext = {
           canvasContext: context,
-          viewport: viewport
+          viewport,
         };
         await page.render(renderContext).promise;
 
-        // Crop
-        // If bbox is [x, y, w, h] in PDF Point units:
-        // x * scale, y * scale, w * scale, h * scale
-        const scale = 1.5; 
-        const [x, y, w, h] = bbox;
-        
-        // Create a new canvas for the cropped image
+        const scale = 1.5;
+        const [x, y, w, h] = normBbox;
+
         const cropCanvas = document.createElement('canvas');
         cropCanvas.width = w * scale;
         cropCanvas.height = h * scale;
         const cropCtx = cropCanvas.getContext('2d');
-        
+
         cropCtx.drawImage(
-            canvas, 
-            x * scale, y * scale, w * scale, h * scale,
-            0, 0, w * scale, h * scale
+          canvas,
+          x * scale,
+          y * scale,
+          w * scale,
+          h * scale,
+          0,
+          0,
+          w * scale,
+          h * scale
         );
 
         if (isActive) {
-            setImageSrc(cropCanvas.toDataURL('image/png'));
+          setImageSrc(cropCanvas.toDataURL('image/png'));
         }
       } catch (error) {
-        console.error("Screenshot error:", error);
+        console.error('Screenshot error:', error);
       } finally {
         if (isActive) setLoading(false);
       }
@@ -66,8 +102,10 @@ export const useScreenshot = (file, pageNumber, bbox) => {
 
     loadTask();
 
-    return () => { isActive = false; };
-  }, [file, pageNumber, bbox]); // deep compare bbox if array
+    return () => {
+      isActive = false;
+    };
+  }, [fileOrUrl, pageNumber, normBbox]);
 
   return { imageSrc, loading };
 };

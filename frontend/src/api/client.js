@@ -70,7 +70,7 @@ export const resetSession = () =>
 
 // ─── Demo 白皮书（极简：仅清空会话 + 提供 PDF 流，前端当作用户上传并解析）──
 export const loadDemo = () =>
-  json('/demo/load', { method: 'POST' });
+  json('/demo/load', { method: 'POST', timeout: 240000 });
 
 /** 拉取预置白皮书 PDF 的 Blob，用于当作用户上传并触发解析 */
 export async function getDemoPdfBlob() {
@@ -132,6 +132,12 @@ export const createNote = (note) =>
     body: JSON.stringify(note),
   });
 
+export const distillNote = (text, docId = '', source = 'ugc', page = null) =>
+  json('/note/distill', {
+    method: 'POST',
+    body: JSON.stringify({ text, doc_id: docId, source, page }),
+  });
+
 export const deleteNote = (noteId) =>
   request(`/notes/${noteId}`, { method: 'DELETE' });
 
@@ -161,6 +167,12 @@ export const indexDocument = (docId, docTitle, markdown) =>
     method: 'POST',
     body: JSON.stringify({ doc_id: docId, doc_title: docTitle, markdown }),
   });
+
+export const getOrganizeGraph = (docId = '', topN = 200) =>
+  json(`/organize/graph?doc_id=${encodeURIComponent(docId || 'global')}&top_n=${topN}`);
+
+export const getOrganizeTriples = (docId = '', topN = 200) =>
+  json(`/organize/triples?doc_id=${encodeURIComponent(docId || 'global')}&top_n=${topN}`);
 
 // ─── 文献文件管理 ─────────────────────────────────────────────────────────────
 export async function uploadDocument(file) {
@@ -196,6 +208,47 @@ export const searchArxiv = (query, maxResults = 10) =>
 /** 返回代理后的 PDF 下载 URL（直接用于 <a href> 或 react-pdf） */
 export const getArxivPdfUrl = (arxivId) =>
   `${BASE_URL}/arxiv/download/${arxivId}`;
+
+// ─── ArXiv 学术秘书（收件箱 / 发现）──────────────────────────────────────────
+export const secretaryFetch = (keyword, researchGoal = '') =>
+  json('/arxiv-secretary/fetch', {
+    method: 'POST',
+    body: JSON.stringify({
+      keyword,
+      research_goal: researchGoal || '',
+      max_results: 5,
+    }),
+  });
+
+export const secretaryInbox = () => json('/arxiv-secretary/inbox');
+
+export const secretaryImport = (itemId) =>
+  json('/arxiv-secretary/import', {
+    method: 'POST',
+    body: JSON.stringify({ item_id: itemId }),
+  });
+
+// ─── LaTeX 导出（ZIP：main.tex + references.bib）───────────────────────────────
+export async function exportLatexZip(markdown) {
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/export/latex_zip`,
+    {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ markdown, template: 'ieee' }),
+    },
+    120000
+  );
+  if (!res.ok) {
+    let errorMsg = `HTTP ${res.status}`;
+    try {
+      const err = await res.json();
+      errorMsg = err.detail || errorMsg;
+    } catch {}
+    throw new Error(errorMsg);
+  }
+  return res.blob();
+}
 
 // ─── AgenticRAG 对话 ──────────────────────────────────────────────────────────────────
 /**
@@ -265,6 +318,12 @@ export async function chatStream(question, onEvent, opts = {}) {
     }
   }
 }
+
+export const submitChatFeedback = (payload) =>
+  json('/chat/feedback', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 
 // ─── 写作辅助 ────────────────────────────────────────────────────────────────
 export const writingAssist = (action, text, context = '') =>

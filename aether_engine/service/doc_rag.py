@@ -66,6 +66,7 @@ class DocumentRAG:
         from service.embedding import get_embedding_function
 
         self.session_id = session_id
+        self._embedding_fn = get_embedding_function()
 
         # 获取 ChromaDB 存储路径
         if IN_MODELSCOPE_SPACE and session_id:
@@ -77,10 +78,10 @@ class DocumentRAG:
         self.client = chromadb.Client(
             ChromaSettings(persist_directory=chroma_dir, is_persistent=True)
         )
+        # 不在 collection 级绑定 embedding_function，避免与已持久化集合配置冲突
         self.collection = self.client.get_or_create_collection(
             name="doc_chunks",
             metadata={"hnsw:space": "cosine"},
-            embedding_function=get_embedding_function(),
         )
         logger.info(
             "[Session:%s] DocumentRAG 初始化: count=%d",
@@ -118,15 +119,22 @@ class DocumentRAG:
                 }
             )
 
-        self.collection.add(ids=ids, documents=docs, metadatas=metas)
+        embeddings = self._embedding_fn(docs)
+        self.collection.add(
+            ids=ids,
+            documents=docs,
+            metadatas=metas,
+            embeddings=embeddings,
+        )
         logger.info("DocumentRAG 索引完成: doc=%s chunks=%d", doc_id, len(ids))
         return len(ids)
 
     def search(self, query: str, top_k: int = 6) -> List[Dict[str, Any]]:
         if self.collection.count() == 0:
             return []
+        query_vec = self._embedding_fn([query])[0]
         resp = self.collection.query(
-            query_texts=[query],
+            query_embeddings=[query_vec],
             n_results=min(top_k, self.collection.count()),
         )
         if not resp.get("ids") or not resp["ids"][0]:
@@ -153,6 +161,20 @@ class DocumentRAG:
                 }
             )
         return out
+
+    def reset(self):
+        """
+        DocumentRAG 为轻量无状态封装：reset 仅刷新句柄，不删除底层持久化数据。
+        用于兼容 reset/demo 流程，避免 AttributeError 警告。
+        """
+        self.collection = self.client.get_or_create_collection(
+            name="doc_chunks",
+            metadata={"hnsw:space": "cosine"},
+        )
+        logger.debug(
+            "[Session:%s] DocumentRAG reset: keep persisted collection",
+            self.session_id or "default",
+        )
 
 
 def get_document_rag(session_id: Optional[str] = None) -> "DocumentRAG":

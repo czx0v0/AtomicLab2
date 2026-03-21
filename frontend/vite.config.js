@@ -9,7 +9,7 @@ export default defineConfig({
     proxy: {
       // 将 /api 代理到后端
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:7860',
         changeOrigin: true,
         rewrite: (path) => path,  // 保留 /api 前缀
       },

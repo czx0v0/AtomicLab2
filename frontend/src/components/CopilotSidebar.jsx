@@ -22,6 +22,8 @@ export function AssistantSidebar({ embedded = false }) {
     clearMessages,
     activeDocId,
     ensureProjectDeadlineReminder,
+    pendingChatQuestion,
+    setPendingChatQuestion,
   } = useStore();
 
   const [input, setInput] = useState('');
@@ -30,6 +32,13 @@ export function AssistantSidebar({ embedded = false }) {
   useEffect(() => {
     ensureProjectDeadlineReminder();
   }, [ensureProjectDeadlineReminder]);
+
+  useEffect(() => {
+    if (pendingChatQuestion) {
+      setInput(pendingChatQuestion);
+      setPendingChatQuestion(null);
+    }
+  }, [pendingChatQuestion, setPendingChatQuestion]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });

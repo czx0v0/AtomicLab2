@@ -1,3 +1,76 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer components {
+  .prose table {
+    width: 100%;
+    border-collapse: collapse;
+    display: table;
+    overflow-x: auto;
+  }
+
+  .prose thead {
+    background: #f8fafc;
+  }
+
+  .prose th,
+  .prose td {
+    border: 1px solid #e2e8f0;
+    padding: 0.5rem 0.625rem;
+    vertical-align: top;
+    text-align: left;
+  }
+
+  .prose img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.5rem;
+  }
+
+  /* 聊天合成 / 检索摘要里的公式与上下标 */
+  .chat-synth-md .katex,
+  .chat-snippet-md .katex {
+    font-size: 0.95em;
+  }
+  .chat-synth-md sup,
+  .chat-synth-md sub,
+  .chat-snippet-md sup,
+  .chat-snippet-md sub {
+    font-size: 0.75em;
+    line-height: 0;
+    position: relative;
+    vertical-align: baseline;
+  }
+  .chat-synth-md sup,
+  .chat-snippet-md sup {
+    top: -0.35em;
+  }
+  .chat-synth-md sub,
+  .chat-snippet-md sub {
+    top: 0.2em;
+  }
+
+  /* 助手回答卡片：GFM 表格（非 .prose 包裹时显式保证可见） */
+  .chat-synth-md table,
+  .cited-md-part table {
+    width: 100%;
+    border-collapse: collapse;
+    display: table;
+    font-size: 0.8rem;
+    margin: 0.5rem 0;
+  }
+  .chat-synth-md thead,
+  .cited-md-part thead {
+    background: #f8fafc;
+  }
+  .chat-synth-md th,
+  .chat-synth-md td,
+  .cited-md-part th,
+  .cited-md-part td {
+    border: 1px solid #e2e8f0;
+    padding: 0.35rem 0.5rem;
+    vertical-align: top;
+    text-align: left;
+  }
+}

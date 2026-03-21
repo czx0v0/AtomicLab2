@@ -9,7 +9,7 @@ import os
 import threading
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
@@ -69,13 +69,19 @@ def _save_notes(notes: List[dict], session_id: str = None):
 
 class NoteCreate(BaseModel):
     content: str
-    type: str = "idea"  # method | formula | idea | definition | data | other
+    type: str = "idea"  # method | formula | idea | definition | data | other | arxiv_recommendation
     page: Optional[int] = None
     bbox: Optional[List[float]] = None
     screenshot: Optional[str] = None
     doc_id: Optional[str] = None
     translation: Optional[str] = None
     keywords: Optional[List[str]] = None
+    axiom: Optional[str] = None
+    method: Optional[str] = None
+    boundary: Optional[str] = None
+    source: Optional[str] = None
+    arxiv_id: Optional[str] = None
+    arxiv_url: Optional[str] = None
 
 
 class NoteUpdate(BaseModel):
@@ -83,6 +89,14 @@ class NoteUpdate(BaseModel):
     type: Optional[str] = None
     translation: Optional[str] = None
     keywords: Optional[List[str]] = None
+    axiom: Optional[str] = None
+    method: Optional[str] = None
+    boundary: Optional[str] = None
+    page: Optional[int] = None
+    bbox: Optional[List[float]] = None
+    screenshot: Optional[str] = None
+    doc_id: Optional[str] = None
+    source: Optional[str] = None
 
 
 @router.get("")
@@ -99,9 +113,10 @@ def create_note(body: NoteCreate, x_session_id: str = Header(default="")):
     """创建新的原子笔记（会话隔离）。"""
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
     notes = _load_notes(session_id)
+    raw = body.model_dump(exclude_none=True)
     new_note = {
         "id": str(uuid.uuid4()),
-        **body.model_dump(),
+        **raw,
     }
     notes.append(new_note)
     _save_notes(notes, session_id)
@@ -130,6 +145,45 @@ def create_note(body: NoteCreate, x_session_id: str = Header(default="")):
     threading.Thread(target=_sync, daemon=True).start()
 
     return new_note
+
+
+@router.patch("/{note_id}")
+def update_note(
+    note_id: str, body: NoteUpdate, x_session_id: str = Header(default="")
+) -> Dict[str, Any]:
+    """更新笔记（部分字段 PATCH）。前端粉碎/解构、同步截图等依赖此接口。"""
+    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    notes = _load_notes(session_id)
+    idx = next((i for i, n in enumerate(notes) if n.get("id") == note_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail=f"笔记 {note_id} 不存在")
+    patch = body.model_dump(exclude_none=True)
+    merged = {**notes[idx], **patch}
+    notes[idx] = merged
+    _save_notes(notes, session_id)
+    logger.info(
+        "[Session:%s] 更新笔记 id=%s keys=%s",
+        session_id or "default",
+        note_id,
+        list(patch.keys()),
+    )
+
+    def _sync():
+        try:
+            from service.note_rag import get_note_rag
+
+            get_note_rag(session_id).sync_notes()
+        except Exception as e:
+            logger.warning("向量库同步失败: %s", e)
+        try:
+            from service.bm25_engine import get_bm25_engine
+
+            get_bm25_engine(session_id).invalidate()
+        except Exception:
+            pass
+
+    threading.Thread(target=_sync, daemon=True).start()
+    return merged
 
 
 @router.delete("/{note_id}", status_code=204)

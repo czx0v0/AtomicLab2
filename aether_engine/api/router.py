@@ -12,6 +12,10 @@ from api.writing import router as writing_router
 from api.reset import router as reset_router
 from api.demo import router as demo_router
 from api.atomic import router as atomic_router
+from api.note import router as note_router
+from api.organize import router as organize_router
+from api.arxiv_secretary import router as arxiv_secretary_router
+from api.export_latex import router as export_latex_router
 
 root_router = APIRouter()
 root_router.include_router(health_router)  # health 已有自己的/api 前缀
@@ -20,6 +24,10 @@ root_router.include_router(reset_router, prefix="/api")
 root_router.include_router(demo_router, prefix="/api")
 root_router.include_router(notes_router, prefix="/api")
 root_router.include_router(atomic_router, prefix="/api")
+root_router.include_router(note_router, prefix="/api")
+root_router.include_router(organize_router, prefix="/api")
+root_router.include_router(arxiv_secretary_router, prefix="/api")
+root_router.include_router(export_latex_router, prefix="/api")
 root_router.include_router(search_router, prefix="/api")
 root_router.include_router(translate_router, prefix="/api")
 root_router.include_router(arxiv_router, prefix="/api")

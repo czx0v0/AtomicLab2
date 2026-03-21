@@ -17,6 +17,7 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger("aether")
 NOTES_FILE = Path("data/notes.json")
+GLOBAL_DEMO_DOC_ID = "global_demo_official"
 
 # 检测是否在创空间环境
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
@@ -47,6 +48,107 @@ class SearchResult(BaseModel):
     page_num: int
     bbox: List[float]
     score: float = 1.0
+
+
+def _load_notes_for_session(session_id: Optional[str]) -> List[dict]:
+    """复用 notes API 的存储层，读取会话笔记。"""
+    try:
+        from api.notes import _load_notes
+
+        return _load_notes(session_id)
+    except Exception:
+        return []
+
+
+def _note_tags(note: dict) -> List[str]:
+    tags = []
+    for k in ("tags", "keywords"):
+        vals = note.get(k) or []
+        if isinstance(vals, list):
+            tags.extend([str(v).strip().lower() for v in vals if str(v).strip()])
+    return list(dict.fromkeys(tags))
+
+
+def _graph_one_hop_expand(
+    seed_notes: List[dict],
+    session_id: Optional[str],
+    max_graph_items: int = 10,
+) -> List[dict]:
+    """
+    对 seed notes 执行 1-hop 图谱扩展。
+    返回可参与融合的“图谱三元组文本”结果，source=graph_1hop。
+    """
+    if not seed_notes:
+        return []
+
+    note_map = {n.get("id"): n for n in _load_notes_for_session(session_id)}
+    seed_ids = [n.get("note_id") for n in seed_notes if n.get("note_id")]
+
+    graph_triples: List[dict] = []
+    # 优先使用持久化图谱（UGC 蒸馏写入）
+    try:
+        from service.knowledge_graph_store import get_one_hop_triples
+
+        graph_triples = get_one_hop_triples(session_id, seed_ids, max_items=max_graph_items)
+    except Exception as e:
+        logger.warning("图谱 1-hop 扩展失败，回退 tag 邻接: %s", e)
+
+    # 回退：基于 tags 在内存边集合上构造 1-hop 邻接
+    if not graph_triples:
+        seed_with_tags = [(sid, _note_tags(note_map.get(sid, {}))) for sid in seed_ids]
+        for sid, stags in seed_with_tags:
+            if not stags:
+                continue
+            sset = set(stags)
+            for oid, onote in note_map.items():
+                if oid == sid:
+                    continue
+                oset = set(_note_tags(onote))
+                overlap = sorted(sset & oset)
+                if not overlap:
+                    continue
+                graph_triples.append(
+                    {
+                        "subject": sid,
+                        "relation": "Shares_Concept",
+                        "object": oid,
+                        "tags": overlap[:6],
+                        "source_note_id": sid,
+                        "target_note_id": oid,
+                    }
+                )
+                if len(graph_triples) >= max_graph_items:
+                    break
+            if len(graph_triples) >= max_graph_items:
+                break
+
+    out: List[dict] = []
+    for idx, t in enumerate(graph_triples[:max_graph_items]):
+        sid = t.get("source_note_id", "")
+        tid = t.get("target_note_id", "")
+        s_note = note_map.get(sid, {})
+        o_note = note_map.get(tid, {})
+        relation = t.get("relation", "related_to")
+        triple_text = (
+            f"[G{idx+1}] {s_note.get('axiom') or s_note.get('content') or sid} "
+            f"-{relation}-> "
+            f"{o_note.get('axiom') or o_note.get('content') or tid}"
+        )
+        out.append(
+            {
+                "note_id": f"graph::{sid}::{relation}::{tid}::{idx}",
+                "summary": triple_text,
+                "concept": f"[G{idx+1}] graph_1hop",
+                "keywords": t.get("tags", []),
+                "doc_title": "KnowledgeGraph",
+                "page_num": int(s_note.get("page", 0) or 0),
+                "bbox": [],
+                "score": round(0.62 - idx * 0.02, 4),
+                "source": "graph_1hop",
+                "graph_ref": f"[G{idx+1}]",
+            }
+        )
+    return out
 
 
 # ── RRF 融合 ────────────────────────────────────────────────────────────────
@@ -245,7 +347,8 @@ def _search_pipeline(
         try:
             from service.doc_rag import get_document_rag
 
-            doc_rag = get_document_rag(session_id)
+            rag_session_id = None if doc_id == GLOBAL_DEMO_DOC_ID else session_id
+            doc_rag = get_document_rag(rag_session_id)
             doc_vector = doc_rag.search(q, top_k=fetch_k)
             doc_vector = _dedup(doc_vector)
             if doc_vector:
@@ -284,6 +387,16 @@ def _search_pipeline(
                 channel_stats["note_vector"] = channel_stats.get(
                     "note_vector", 0
                 ) + len(note_vector)
+
+                # ── 通道 3.1: GraphRAG 1-hop（仅首轮，基于稠密 Top-5）────────────
+                if is_first_round:
+                    seed_notes = note_vector[:5]
+                    graph_hits = _graph_one_hop_expand(seed_notes, session_id)
+                    graph_hits = _dedup(graph_hits)
+                    if graph_hits:
+                        all_channels.append(graph_hits)
+                        channel_weights.append(1.0)
+                        channel_stats["graph_1hop"] = len(graph_hits)
         except Exception as e:
             logger.warning("NoteRAG 检索失败 (round %d): %s", round_idx + 1, e)
 
@@ -325,6 +438,20 @@ def _search_pipeline(
 
     # ── RRF 加权融合 ─────────────────────────────────────────────────────────
     merged = _rrf_fuse(all_channels, weights=channel_weights, top_k=top_k)
+    # doc_id 过滤（图谱项无 doc_id 时保持）
+    if doc_id:
+        merged = [x for x in merged if (not x.get("doc_id")) or x.get("doc_id") == doc_id]
+
+    # 给上层（chat/router）用的融合上下文
+    context_parts = []
+    for i, item in enumerate(merged[: top_k + 3]):
+        src = item.get("source", "unknown")
+        ref = item.get("graph_ref") or f"[{i+1}]"
+        context_parts.append(
+            f"{ref} src={src} concept={item.get('concept','')} score={item.get('score',0)}\n"
+            f"{item.get('summary','')}"
+        )
+    fused_context = "\n\n".join(context_parts)
 
     logger.info(
         "检索完成: %d 轮, %d 通道, 融合后 %d 条结果 | 通道统计: %s",
@@ -340,6 +467,7 @@ def _search_pipeline(
         "query": query,
         "rounds": rounds,
         "channels": channel_stats,
+        "context": fused_context,
     }
 
 
@@ -398,7 +526,8 @@ def index_document(body: IndexDocumentRequest, x_session_id: str = Header(defaul
     try:
         from service.doc_rag import get_document_rag
 
-        rag = get_document_rag(session_id)
+        rag_session_id = None if body.doc_id == GLOBAL_DEMO_DOC_ID else session_id
+        rag = get_document_rag(rag_session_id)
         count = rag.index_document(
             body.doc_id, body.doc_title or body.doc_id, body.markdown
         )

@@ -32,6 +32,7 @@ class NoteRAG:
         from service.embedding import get_embedding_function
 
         self.session_id = session_id
+        self._embedding_fn = get_embedding_function()
 
         # 根据 session 确定路径
         if IN_MODELSCOPE_SPACE and session_id:
@@ -47,10 +48,10 @@ class NoteRAG:
         self.client = chromadb.Client(
             ChromaSettings(persist_directory=chroma_dir, is_persistent=True)
         )
+        # 不在 collection 级绑定 embedding_function，避免与已持久化集合配置冲突
         self.collection = self.client.get_or_create_collection(
             name="notes",
             metadata={"hnsw:space": "cosine"},
-            embedding_function=get_embedding_function(),
         )
         logger.info(
             "[Session:%s] NoteRAG 初始化: collection=%s, count=%d",
@@ -89,13 +90,21 @@ class NoteRAG:
                 {
                     "type": n.get("type", "other"),
                     "page": n.get("page", 0) or 0,
+                    "doc_id": n.get("doc_id", "") or "",
+                    "source_name": n.get("source_name", "") or "",
                     "bbox": json.dumps(n.get("bbox", [])),
                     "translation": n.get("translation", "") or "",
                 }
             )
 
         if ids:
-            self.collection.add(ids=ids, documents=documents, metadatas=metadatas)
+            embeddings = self._embedding_fn(documents)
+            self.collection.add(
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embeddings,
+            )
             logger.info(
                 "[Session:%s] 同步 %d 条笔记到向量库",
                 self.session_id or "default",
@@ -111,8 +120,9 @@ class NoteRAG:
         if self.collection.count() == 0:
             return []
 
+        query_vec = self._embedding_fn([query])[0]
         results = self.collection.query(
-            query_texts=[query],
+            query_embeddings=[query_vec],
             n_results=min(top_k, self.collection.count()),
         )
 
@@ -138,7 +148,8 @@ class NoteRAG:
                     "summary": doc,
                     "concept": meta.get("type", "other"),
                     "keywords": [],
-                    "doc_title": "",
+                    "doc_title": meta.get("source_name", ""),
+                    "doc_id": meta.get("doc_id", ""),
                     "page_num": int(meta.get("page", 0)),
                     "bbox": bbox,
                     "score": round(score, 4),

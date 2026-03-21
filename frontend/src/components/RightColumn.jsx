@@ -1,27 +1,28 @@
-import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   Bold, Italic, List, Quote, Code, BookOpen, ChevronLeft, ChevronRight,
   Sparkles, FileText, Maximize2, Minimize2, Timer, TimerOff, Play, Pause,
-  Square, Download, Upload, Trash2, PanelLeftOpen, Eye, EyeOff, AlignJustify, ListTree, X, Bot
+  Square, Download, Upload, Trash2, PanelLeftOpen, Eye, EyeOff, AlignJustify, ListTree, X, Bot,
+  Package, Loader2
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { Document, Page, pdfjs } from 'react-pdf';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import rehypeHighlight from 'rehype-highlight';
 import clsx from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as api from '../api/client';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 // 行内助手建议 diff 展示：删除红、新增绿、续写灰（类似 git diff）
 function getGhostDiffSegments(ghost, fullContent) {
   if (!ghost) return [];
-  const { result, action, paragraphStart, paragraphEnd } = ghost;
-  const orig = fullContent.slice(paragraphStart, paragraphEnd);
+  const result = ghost?.result ?? '';
+  const action = ghost?.action;
+  const paragraphStart = Number.isFinite(ghost?.paragraphStart) ? ghost.paragraphStart : 0;
+  const paragraphEnd = Number.isFinite(ghost?.paragraphEnd) ? ghost.paragraphEnd : 0;
+  const fc = typeof fullContent === 'string' ? fullContent : '';
+  const orig = fc.slice(paragraphStart, paragraphEnd);
   if (action === 'continue') {
     return [{ type: 'continue', text: result }];
   }
@@ -161,16 +162,19 @@ const PomodoroTimer = ({ onExit }) => {
 
 // ─── 知识卡片侧边栏 ────────────────────────────────────────────────────────────
 const BrainstormDrawer = ({ isOpen, onClose }) => {
-  const { notes, setActiveReference, markdownContent } = useStore();
+  const { notes: rawNotes, setActiveReference, markdownContent: rawMd } = useStore();
+  const notes = Array.isArray(rawNotes) ? rawNotes : [];
+  const markdownContent = typeof rawMd === 'string' ? rawMd : '';
 
   const related = notes.filter((n) => {
-    const snippet = n.content?.substring(0, 15).toLowerCase() ?? '';
+    const snippet = n?.content?.substring(0, 15)?.toLowerCase() ?? '';
     return snippet && markdownContent.toLowerCase().includes(snippet);
   });
   const display = related.length > 0 ? related : notes.slice(0, 4);
 
   const insertRef = (note) => {
-    const ref = `[@${note.id.substring(0, 8)}](page-${note.page ?? 1} "${note.content?.substring(0, 30)}")`;
+    const nid = note?.id != null ? String(note.id) : 'note';
+    const ref = `[@${nid.substring(0, 8)}](page-${note?.page ?? 1} "${String(note?.content ?? '').substring(0, 30)}")`;
     const el = document.getElementById('main-editor');
     if (!el) return;
     const start = el.selectionStart;
@@ -200,24 +204,24 @@ const BrainstormDrawer = ({ isOpen, onClose }) => {
             暂无相关原子卡片
           </p>
         )}
-        {display.map((note) => (
+        {(display || []).map((note, ni) => (
           <div
-            key={note.id}
+            key={note?.id ?? `note-${ni}`}
             className="bg-white border border-amber-300 p-2 shadow-sm text-xs cursor-pointer hover:shadow-md transition-all group"
             draggable
             onDragEnd={() => insertRef(note)}
           >
             <div className="flex justify-between mb-1 items-center">
-              <span className="font-bold text-gray-700 uppercase text-[10px]">#{note.type}</span>
+              <span className="font-bold text-gray-700 uppercase text-[10px]">#{note?.type ?? 'note'}</span>
               <button
                 className="bg-gray-100 px-1.5 py-0.5 rounded text-[10px] hover:bg-blue-100 hover:text-blue-600 flex items-center gap-1"
-                onClick={() => setActiveReference({ page: note.page ?? 1, bbox: note.bbox ?? [0,0,0,0] })}
+                onClick={() => setActiveReference({ page: note?.page ?? 1, bbox: note?.bbox ?? [0, 0, 0, 0] })}
               >
                 <BookOpen size={9} />
-                p.{note.page}
+                p.{note?.page ?? '—'}
               </button>
             </div>
-            <p className="line-clamp-3 text-gray-600 leading-relaxed">{note.content}</p>
+            <p className="line-clamp-3 text-gray-600 leading-relaxed">{note?.content ?? ''}</p>
             <div className="mt-1 opacity-0 group-hover:opacity-100 text-[10px] text-amber-600">
               拖拽插入引用
             </div>
@@ -229,8 +233,9 @@ const BrainstormDrawer = ({ isOpen, onClose }) => {
 };
 
 // ─── Markdown 渲染组件（支持文末参考文献列表）────────────────────────────────────
-const MarkdownPreview = ({ content, references = [] }) => {
+const MarkdownPreview = ({ content, references: refsProp }) => {
   const { setActiveReference } = useStore();
+  const references = Array.isArray(refsProp) ? refsProp : [];
 
   const components = {
     a: ({ href, children }) => {
@@ -258,13 +263,9 @@ const MarkdownPreview = ({ content, references = [] }) => {
   return (
     <div className="h-full overflow-y-auto p-8 custom-scrollbar">
       <div className="prose prose-sm max-w-none prose-a:text-blue-600 prose-code:bg-slate-100 prose-code:px-1 prose-code:rounded prose-h1:text-2xl prose-h1:font-extrabold prose-h1:mt-8 prose-h1:mb-3 prose-h1:text-slate-900 prose-h1:border-b prose-h1:border-slate-200 prose-h1:pb-2 prose-h2:text-xl prose-h2:font-bold prose-h2:mt-6 prose-h2:mb-2 prose-h2:text-slate-800 prose-h2:border-b prose-h2:border-slate-100 prose-h2:pb-1 prose-h3:text-lg prose-h3:font-semibold prose-h3:mt-4 prose-h3:mb-1 prose-h3:text-slate-800">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[rehypeKatex, rehypeHighlight]}
-          components={components}
-        >
-          {content}
-        </ReactMarkdown>
+        <MarkdownRenderer components={components}>
+          {typeof content === 'string' ? content : ''}
+        </MarkdownRenderer>
       </div>
       {references && references.length > 0 && (
         <div className="mt-8 pt-6 border-t border-slate-200">
@@ -294,18 +295,27 @@ const MarkdownPreview = ({ content, references = [] }) => {
 // ─── 主编辑器 ──────────────────────────────────────────────────────────────────
 export const RightColumn = () => {
   const {
-    markdownContent, setMarkdownContent,
+    markdownContent: rawMarkdown,
+    setMarkdownContent,
     isZenMode, toggleZenMode,
     setCopilotOpen,
     pomodoroActive,
-    pdfFile, pdfUrl, currentPage, setCurrentPage,
-    notes,
-    references,
+    pdfFile, pdfUrl, currentPage, setCurrentPage, pdfNumPages, setPdfRuntime, resetPdfRuntime,
+    notes: rawNotes,
+    addNote,
+    references: rawReferences,
     addReference,
     pdfFileName,
     parsedDocName,
+    activeDocId,
     pendingInsert, setPendingInsert,
+    pendingEditorAction, setPendingEditorAction,
+    setContextAttachment, setWriteRefTab, setMobileReferenceOpen,
   } = useStore();
+
+  const markdownContent = typeof rawMarkdown === 'string' ? rawMarkdown : '';
+  const notes = Array.isArray(rawNotes) ? rawNotes : [];
+  const references = Array.isArray(rawReferences) ? rawReferences : [];
 
   const [showPreview, setShowPreview] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -327,10 +337,36 @@ export const RightColumn = () => {
   const [showResolvePopover, setShowResolvePopover] = useState(false);
   const [refSearchTitle, setRefSearchTitle] = useState('');
   const [refSearchDoi, setRefSearchDoi] = useState('');
+  const [writeSelectionMenu, setWriteSelectionMenu] = useState(null); // { text,start,end,x,y,bottom }
+  const [latexExporting, setLatexExporting] = useState(false);
   const inlineInputRef = useRef(null);
   const savedCursorRef = useRef(null);
   const savedSelectionRef = useRef(null); // { start, end } 选中文本时用，Ctrl+J 时为 null
   const textAreaRef = useRef(null);
+  const editorWrapRef = useRef(null);
+  const writeScrollingRef = useRef(false);
+  const writeScrollUnlockTimerRef = useRef(null);
+
+  // #region agent log
+  useLayoutEffect(() => {
+    if (isZenMode) return;
+    const el = editorWrapRef.current;
+    const h = el?.getBoundingClientRect?.().height ?? -1;
+    fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '360e80' },
+      body: JSON.stringify({
+        sessionId: '360e80',
+        runId: 'pre-fix',
+        hypothesisId: 'H-blank',
+        location: 'RightColumn.jsx:editorWrap',
+        message: 'write editor container layout',
+        data: { editorAreaH: h, markdownLen: (markdownContent || '').length, isZenMode },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }, [isZenMode, markdownContent]);
+  // #endregion
 
   // 根据当前光标或选区文本推荐卡片（词重叠打分，取 top5）
   const inlineRecommendedNotes = useMemo(() => {
@@ -375,7 +411,7 @@ export const RightColumn = () => {
 
   // 从 Markdown 解析大纲（# 标题）用于专注模式跳转
   const outlineHeadings = useMemo(() => {
-    const lines = markdownContent.split('\n');
+    const lines = (markdownContent || '').split('\n');
     const list = [];
     let offset = 0;
     for (let i = 0; i < lines.length; i++) {
@@ -390,7 +426,8 @@ export const RightColumn = () => {
     if (!el) return;
     el.focus();
     el.setSelectionRange(charOffset, charOffset);
-    el.scrollTop = Math.max(0, (el.scrollHeight * (charOffset / markdownContent.length)) - el.clientHeight / 2);
+    const len = Math.max(1, (markdownContent || '').length);
+    el.scrollTop = Math.max(0, (el.scrollHeight * (charOffset / len)) - el.clientHeight / 2);
     setShowOutlinePopover(false);
   }, [markdownContent]);
 
@@ -444,6 +481,61 @@ export const RightColumn = () => {
     }
     setPendingInsert(null);
   }, [pendingInsert, setPendingInsert, markdownContent, setMarkdownContent]);
+
+  // Agent Tool Calling：执行 update_markdown_editor(action_type, content)
+  useEffect(() => {
+    if (!pendingEditorAction || pendingEditorAction.function !== 'update_markdown_editor') return;
+    const actionType = pendingEditorAction.action_type || 'append';
+    const content = (pendingEditorAction.content || '').trim();
+    if (!content) {
+      setPendingEditorAction(null);
+      return;
+    }
+
+    const el = textAreaRef.current;
+    if (actionType === 'replace') {
+      setMarkdownContent(content);
+      requestAnimationFrame(() => {
+        if (!textAreaRef.current) return;
+        textAreaRef.current.focus();
+        const end = content.length;
+        textAreaRef.current.setSelectionRange(end, end);
+      });
+      setPendingEditorAction(null);
+      return;
+    }
+
+    if (actionType === 'insert' && el) {
+      const start = el.selectionStart ?? markdownContent.length;
+      const newVal = markdownContent.slice(0, start) + content + markdownContent.slice(start);
+      setMarkdownContent(newVal);
+      requestAnimationFrame(() => {
+        if (!textAreaRef.current) return;
+        textAreaRef.current.focus();
+        const next = start + content.length;
+        textAreaRef.current.setSelectionRange(next, next);
+      });
+      setPendingEditorAction(null);
+      return;
+    }
+
+    const base = markdownContent || '';
+    const prefix = base.trimEnd().length > 0 ? '\n\n' : '';
+    const newVal = `${base}${prefix}${content}`;
+    setMarkdownContent(newVal);
+    requestAnimationFrame(() => {
+      if (!textAreaRef.current) return;
+      textAreaRef.current.focus();
+      const end = newVal.length;
+      textAreaRef.current.setSelectionRange(end, end);
+    });
+    setPendingEditorAction(null);
+  }, [
+    pendingEditorAction,
+    setPendingEditorAction,
+    markdownContent,
+    setMarkdownContent,
+  ]);
 
   const insertRefAtCursor = useCallback((key) => {
     insertAtCursor(`[${key}]`);
@@ -548,6 +640,21 @@ export const RightColumn = () => {
         requestAnimationFrame(() => inlineInputRef.current?.focus());
       }
     }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'K' || e.key === 'k')) {
+      e.preventDefault();
+      const el = textAreaRef.current;
+      if (!el) return;
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      if (end <= start) return;
+      savedSelectionRef.current = { start, end };
+      savedCursorRef.current = start;
+      setInlineScopeForCards(markdownContent.slice(start, end));
+      setInlineContextMode('selection');
+      setInlineInput('基于卡片润色');
+      setInlineOpen(true);
+      requestAnimationFrame(() => inlineInputRef.current?.focus());
+    }
     if (e.ctrlKey && e.key === 'b') {
       e.preventDefault();
       wrapSelection('**');
@@ -570,6 +677,32 @@ export const RightColumn = () => {
     a.download = `note_${new Date().toISOString().slice(0, 10)}.md`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const exportLatexProject = async () => {
+    const md = (markdownContent || '').trim();
+    if (!md) {
+      useStore.getState().setNotification?.('请先在编辑器中撰写内容', 'warn');
+      return;
+    }
+    setLatexExporting(true);
+    try {
+      const blob = await api.exportLatexZip(md);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `atomiclab_latex_${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      useStore.getState().setNotification?.('LaTeX 项目已下载（main.tex + references.bib + README）', 'info');
+    } catch (e) {
+      useStore.getState().setNotification?.(
+        `导出失败: ${e instanceof Error ? e.message : String(e)}`,
+        'error'
+      );
+    } finally {
+      setLatexExporting(false);
+    }
   };
 
   // 字数统计
@@ -654,16 +787,17 @@ export const RightColumn = () => {
     if (!paragraphText && !inlineInput.trim()) return;
     const command = inlineInput.trim() || '结合现有卡片续写';
     const selectedCards = notes.filter((n) => inlineSelectedCardIds.includes(n.id));
+    // 权限隔离：仅上传当前局部段落/选区 + 用户选中的卡片，不上传整篇正文
     const cardsContext = selectedCards.length > 0
-      ? markdownContent + '\n\n【已选卡片】\n' + selectedCards.map((n) => n.content || n.axiom || '').join('\n\n')
-      : markdownContent;
+      ? '【当前局部草稿】\n' + (paragraphText || '') + '\n\n【已选卡片】\n' + selectedCards.map((n) => n.content || n.axiom || '').join('\n\n')
+      : '【当前局部草稿】\n' + (paragraphText || '');
     setInlineOpen(false);
     setInlineInput('');
     setInlineSelectedCardIds([]);
     savedSelectionRef.current = null;
     setInlineLoading(true);
     try {
-      const resp = await api.writingInline(command, paragraphText || markdownContent.slice(0, 500), cardsContext);
+      const resp = await api.writingInline(command, paragraphText || '', cardsContext);
       setGhostSuggestion({
         result: resp.result || '',
         action: resp.action || 'continue',
@@ -701,6 +835,145 @@ export const RightColumn = () => {
     setInlineInput('');
     requestAnimationFrame(() => inlineInputRef.current?.focus());
   }, [markdownContent, getParagraphAtPosition]);
+
+  const getTextareaSelectionRect = useCallback((el, start, end) => {
+    const style = window.getComputedStyle(el);
+    const div = document.createElement('div');
+    const props = [
+      'boxSizing', 'width', 'height', 'overflowX', 'overflowY', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch',
+      'fontSize', 'fontSizeAdjust', 'lineHeight', 'fontFamily', 'textAlign', 'textTransform', 'textIndent', 'textDecoration',
+      'letterSpacing', 'wordSpacing', 'tabSize', 'MozTabSize'
+    ];
+    div.style.position = 'absolute';
+    div.style.visibility = 'hidden';
+    div.style.whiteSpace = 'pre-wrap';
+    div.style.wordWrap = 'break-word';
+    div.style.left = '-9999px';
+    props.forEach((p) => { div.style[p] = style[p]; });
+    div.textContent = el.value.slice(0, start);
+    const span = document.createElement('span');
+    span.textContent = el.value.slice(start, end) || '.';
+    div.appendChild(span);
+    document.body.appendChild(div);
+    const spanRect = span.getBoundingClientRect();
+    const divRect = div.getBoundingClientRect();
+    const taRect = el.getBoundingClientRect();
+    const x = taRect.left + (spanRect.left - divRect.left) - el.scrollLeft;
+    const y = taRect.top + (spanRect.top - divRect.top) - el.scrollTop;
+    const width = Math.max(spanRect.width, 8);
+    const height = Math.max(spanRect.height, parseFloat(style.lineHeight || '20'));
+    document.body.removeChild(div);
+    return { x, y, width, height, bottom: y + height };
+  }, []);
+
+  const resolveWriteSelection = useCallback(() => {
+    const el = textAreaRef.current;
+    if (!el || writeScrollingRef.current) return null;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const text = (markdownContent.slice(start, end) || '').trim();
+    if (!text) return null;
+    const rect = getTextareaSelectionRect(el, start, end);
+    return { text, start, end, x: rect.x + rect.width / 2, y: rect.y, bottom: rect.bottom };
+  }, [markdownContent, getTextareaSelectionRect]);
+
+  const handleEditorMouseUp = useCallback(() => {
+    const selection = resolveWriteSelection();
+    if (selection) setWriteSelectionMenu(selection);
+    else setWriteSelectionMenu(null);
+  }, [resolveWriteSelection]);
+
+  const handleEditorTouchEnd = useCallback(() => {
+    setTimeout(() => {
+      const selection = resolveWriteSelection();
+      if (selection) setWriteSelectionMenu(selection);
+      else setWriteSelectionMenu(null);
+    }, 20);
+  }, [resolveWriteSelection]);
+
+  const markWriteScrolling = useCallback(() => {
+    writeScrollingRef.current = true;
+    setWriteSelectionMenu(null);
+    if (writeScrollUnlockTimerRef.current) clearTimeout(writeScrollUnlockTimerRef.current);
+    writeScrollUnlockTimerRef.current = setTimeout(() => {
+      writeScrollingRef.current = false;
+    }, 140);
+  }, []);
+
+  useEffect(() => () => {
+    if (writeScrollUnlockTimerRef.current) clearTimeout(writeScrollUnlockTimerRef.current);
+  }, []);
+
+  const openContextAskFromSelection = useCallback(() => {
+    const selection = resolveWriteSelection();
+    const text = (selection?.text || writeSelectionMenu?.text || '').trim();
+    if (!text) return;
+    setContextAttachment({
+      text,
+      page: currentPage,
+      docName: pdfFileName || parsedDocName || '',
+    });
+    setWriteRefTab('notes');
+    setCopilotOpen(true);
+    setWriteSelectionMenu(null);
+  }, [resolveWriteSelection, writeSelectionMenu, setContextAttachment, currentPage, pdfFileName, parsedDocName, setWriteRefTab, setCopilotOpen]);
+
+  const createSelectionNote = useCallback(async (asHighlight = false) => {
+    const selection = resolveWriteSelection();
+    const text = (selection?.text || writeSelectionMenu?.text || '').trim();
+    if (!text) return;
+    const payload = {
+      id: crypto.randomUUID(),
+      type: 'idea',
+      content: asHighlight ? `[高亮] ${text}` : text,
+      page: currentPage,
+      bbox: [],
+      timestamp: new Date().toISOString(),
+    };
+    addNote(payload);
+    setWriteSelectionMenu(null);
+    try {
+      await api.createNote({
+        content: payload.content,
+        type: payload.type,
+        page: payload.page,
+        bbox: payload.bbox,
+        doc_id: activeDocId || '',
+      });
+    } catch (e) {
+      if (typeof useStore.getState().setNotification === 'function') {
+        useStore.getState().setNotification(`保存卡片失败: ${e instanceof Error ? e.message : String(e)}`, 'warn');
+      }
+    }
+  }, [resolveWriteSelection, writeSelectionMenu, currentPage, addNote, activeDocId]);
+
+  useEffect(() => {
+    const onSelectionChange = () => {
+      if (writeScrollingRef.current) return;
+      const active = document.activeElement;
+      if (active !== textAreaRef.current) {
+        setWriteSelectionMenu(null);
+        return;
+      }
+      const selection = resolveWriteSelection();
+      if (selection) setWriteSelectionMenu(selection);
+      else setWriteSelectionMenu(null);
+    };
+    document.addEventListener('selectionchange', onSelectionChange);
+    return () => document.removeEventListener('selectionchange', onSelectionChange);
+  }, [resolveWriteSelection]);
+
+  useEffect(() => {
+    const onPointerDown = (e) => {
+      if (!writeSelectionMenu) return;
+      const target = e.target;
+      if (target?.closest?.('[data-write-selection-menu="1"]')) return;
+      setWriteSelectionMenu(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [writeSelectionMenu]);
 
   const handleAssist = async (action) => {
     const { text, start, end } = getSelectedText();
@@ -818,8 +1091,17 @@ export const RightColumn = () => {
                     <Document
                       key={zenPdfObjectUrl || pdfUrl}
                       file={zenPdfObjectUrl || pdfUrl}
-                      onLoadSuccess={() => { setZenPdfLoading(false); setZenPdfError(null); }}
-                      onLoadError={(e) => { setZenPdfLoading(false); setZenPdfError(e?.message || 'PDF 加载失败'); }}
+                      onLoadSuccess={(pdf) => {
+                        setPdfRuntime(pdf, pdf?.numPages ?? null);
+                        if (currentPage > (pdf?.numPages || 1)) setCurrentPage(1);
+                        setZenPdfLoading(false);
+                        setZenPdfError(null);
+                      }}
+                      onLoadError={(e) => {
+                        resetPdfRuntime();
+                        setZenPdfLoading(false);
+                        setZenPdfError(e?.message || 'PDF 加载失败');
+                      }}
                       loading=""
                     >
                       {!zenPdfLoading && !zenPdfError && (
@@ -830,7 +1112,7 @@ export const RightColumn = () => {
                   {!zenPdfLoading && !zenPdfError && (
                     <div className="flex items-center gap-2 mt-2 text-xs text-slate-600">
                       <button onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">上一页</button>
-                      <button onClick={() => setCurrentPage((p) => p + 1)} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">下一页</button>
+                      <button onClick={() => setCurrentPage((p) => Math.min(pdfNumPages || 999, p + 1))} className="px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">下一页</button>
                     </div>
                   )}
                 </>
@@ -886,8 +1168,8 @@ export const RightColumn = () => {
           </div>
 
           {/* 中间：编辑器 */}
-          <div className="flex-1 flex flex-col justify-center items-center overflow-hidden min-w-0">
-            <div className="w-full max-w-3xl h-full flex flex-col p-4">
+          <div className="flex-1 flex flex-col justify-center items-center overflow-hidden min-w-0 min-h-0">
+            <div className="w-full max-w-3xl h-full min-h-0 flex flex-col p-4">
               {/* 编辑/预览切换 */}
               <div className="flex items-center justify-between mb-2 shrink-0">
                 <button onClick={() => setShowPreview(!showPreview)} className="text-xs text-stone-400 hover:text-stone-600 flex items-center gap-1">
@@ -897,7 +1179,7 @@ export const RightColumn = () => {
                 <span className="text-[10px] text-stone-400 font-mono">{wordCount} 词 · {charCount} 字符</span>
               </div>
               {showPreview ? (
-                <div className="flex-1 overflow-y-auto bg白 rounded-lg shadow-sm border border-stone-200 p-8 custom-scrollbar">
+                <div className="flex-1 overflow-y-auto bg-white rounded-lg shadow-sm border border-stone-200 p-8 custom-scrollbar">
                   <MarkdownPreview content={markdownContent} references={references} />
                 </div>
               ) : (
@@ -958,10 +1240,47 @@ export const RightColumn = () => {
                     value={markdownContent}
                     onChange={(e) => setMarkdownContent(e.target.value)}
                     onDoubleClick={handleEditorDoubleClick}
+                    onMouseUp={handleEditorMouseUp}
+                    onTouchEnd={handleEditorTouchEnd}
+                    onScroll={markWriteScrolling}
                     onKeyDown={handleKeyDown}
                     placeholder="开始书写..."
                     autoFocus
                   />
+                  {writeSelectionMenu && (
+                    <div
+                      data-write-selection-menu="1"
+                      className="fixed z-30 bg-white border border-slate-200 shadow-lg rounded-xl px-2 py-1.5 flex items-center gap-1"
+                      style={{
+                        left: Math.max(10, Math.min((writeSelectionMenu?.x || 0) - 94, (typeof window !== 'undefined' ? window.innerWidth : 320) - 198)),
+                        top: (writeSelectionMenu?.y || 0) > 72 ? Math.max(56, (writeSelectionMenu?.y || 0) - 62) : ((writeSelectionMenu?.bottom || 0) + 10),
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => createSelectionNote(true)}
+                        className="w-11 h-11 rounded-lg bg-yellow-50 text-yellow-700 hover:bg-yellow-100 flex items-center justify-center text-[11px] font-medium"
+                        title="高亮"
+                      >
+                        高亮
+                      </button>
+                      <button
+                        type="button"
+                        onClick={openContextAskFromSelection}
+                        className="w-11 h-11 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 flex items-center justify-center text-[11px] font-medium"
+                      >
+                        问AI
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => createSelectionNote(false)}
+                        className="w-11 h-11 rounded-lg bg-pink-50 text-pink-700 hover:bg-pink-100 flex items-center justify-center text-[11px] font-medium"
+                        title="生成卡片"
+                      >
+                        卡片
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -970,9 +1289,18 @@ export const RightColumn = () => {
 
         {/* 专注模式底栏 */}
         <div className="flex items-center justify-between px-6 py-2 bg-white/80 border-t border-stone-200 text-xs text-stone-400 font-mono shrink-0">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 flex-wrap">
+            <button
+              type="button"
+              onClick={exportLatexProject}
+              disabled={latexExporting}
+              className="hover:text-indigo-700 flex items-center gap-1 font-semibold text-indigo-700 disabled:opacity-50"
+            >
+              {latexExporting ? <Loader2 size={12} className="animate-spin" /> : <Package size={12} />}
+              📥 导出 LaTeX 项目
+            </button>
             <button onClick={exportMd} className="hover:text-stone-600 flex items-center gap-1">
-              <Download size={12} /> 导出
+              <Download size={12} /> 导出 MD
             </button>
             <span className="text-[10px]">Ctrl+B 粗体 · Ctrl+I 斜体 · Esc 退出</span>
           </div>
@@ -1022,7 +1350,7 @@ export const RightColumn = () => {
                 <ListTree size={12} /> 写作大纲
               </button>
               {showOutlinePopover && (
-                <div className="absolute left-0 top-full mt-1 w-52 max-h-72 overflow-y-auto bg白 border border-gray-200 rounded-lg shadow-lg py-2 z-50 custom-scrollbar">
+                <div className="absolute left-0 top-full mt-1 w-52 max-h-72 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg py-2 z-50 custom-scrollbar">
                   {outlineHeadings.length === 0 ? (
                     <p className="px-3 py-2 text-[10px] text-gray-400">暂无标题（使用 # / ## / ### 书写）</p>
                   ) : (
@@ -1031,7 +1359,7 @@ export const RightColumn = () => {
                         key={i}
                         type="button"
                         onClick={() => jumpToOutline(h.offset)}
-                        className="w-full(text-left px-3 py-1.5 hover:bg-amber-50 text-[11px] text-gray-700 border-l-2 border-transparent hover:border-amber-400"
+                        className="w-full text-left px-3 py-1.5 hover:bg-amber-50 text-[11px] text-gray-700 border-l-2 border-transparent hover:border-amber-400"
                         style={{ paddingLeft: 8 + (h.level - 1) * 10 }}
                       >
                         {h.title}
@@ -1123,6 +1451,26 @@ export const RightColumn = () => {
             <button onClick={() => handleAssist('spell')} disabled={assistLoading !== ''} className="p-1 hover:bg-gray-200 rounded text-gray-600 text-[10px] disabled:opacity-50" title="错别字检测">错别字</button>
             <button onClick={() => handleAssist('grammar')} disabled={assistLoading !== ''} className="p-1 hover:bg-gray-200 rounded text-gray-600 text-[10px] disabled:opacity-50" title="病句检测">病句</button>
             <button onClick={() => handleAssist('polish')} disabled={assistLoading !== ''} className="p-1 hover:bg-gray-200 rounded text-gray-600 text-[10px] disabled:opacity-50" title="优化润色">润色</button>
+            <button
+              onClick={() => {
+                const el = textAreaRef.current;
+                if (!el) return;
+                const start = el.selectionStart;
+                const end = el.selectionEnd;
+                if (end <= start) return;
+                savedSelectionRef.current = { start, end };
+                savedCursorRef.current = start;
+                setInlineScopeForCards(markdownContent.slice(start, end));
+                setInlineContextMode('selection');
+                setInlineInput('基于卡片润色');
+                setInlineOpen(true);
+                requestAnimationFrame(() => inlineInputRef.current?.focus());
+              }}
+              className="p-1 hover:bg-emerald-100 rounded text-emerald-700 text-[10px]"
+              title="基于卡片润色（仅处理当前选区）"
+            >
+              基于卡片润色
+            </button>
             <button onClick={() => handleAssist('continue')} disabled={assistLoading !== ''} className="p-1 hover:bg-gray-200 rounded text-gray-600 text-[10px] disabled:opacity-50" title="建议续写">续写</button>
           </div>
 
@@ -1140,6 +1488,16 @@ export const RightColumn = () => {
               {showPreview ? '编辑' : '预览'}
             </button>
             <button
+              type="button"
+              onClick={exportLatexProject}
+              disabled={latexExporting}
+              className="text-xs font-bold px-2.5 py-1.5 rounded-lg border-2 border-indigo-400 bg-indigo-50 text-indigo-800 hover:bg-indigo-100 flex items-center gap-1.5 disabled:opacity-50 shadow-sm"
+              title="生成 IEEEtran main.tex + references.bib ZIP 并下载"
+            >
+              {latexExporting ? <Loader2 size={14} className="animate-spin" /> : <Package size={14} />}
+              📥 导出为 LaTeX 项目
+            </button>
+            <button
               onClick={exportMd}
               className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
               title="导出 Markdown"
@@ -1155,6 +1513,14 @@ export const RightColumn = () => {
             </button>
           </div>
         </div>
+
+        {/* 空状态：无 PDF / 无卡片时仍允许写作，仅作引导 */}
+        {notes.length === 0 && !pdfUrl && !pdfFile && (
+          <div className="mx-2 mt-2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-[11px] text-slate-600 leading-relaxed shrink-0">
+            <strong className="text-slate-700">暂无关联文献与知识卡片</strong>
+            ：请先在 <strong>Read</strong> 上传 PDF 或加载 Demo，或在 <strong>Organize</strong> 生成卡片；中栏可检索并拖拽引用。下方编辑器可直接撰写 Markdown。
+          </div>
+        )}
 
         {/* 行内 Copilot 弹出框（Ctrl+J 唤起） */}
         {inlineOpen && (
@@ -1221,18 +1587,18 @@ export const RightColumn = () => {
           <div className="mx-2 mt-2 py-2 text-center text-xs text-amber-600">行内助手处理中…</div>
         )}
         {/* 编辑区 / 预览区 */}
-        <div className="flex-1 overflow-hidden">
+        <div ref={editorWrapRef} className="flex-1 overflow-hidden min-h-0 flex flex-col">
           {assistTasks.length > 0 && (
             <div className="px-3 pt-2 space-y-2 max-h-48 overflow-y-auto border-b border-gray-100 bg-gray-50/70">
-              {assistTasks.slice(0, 6).map((task) => (
-                <div key={task.id} className="bg-white border border-gray-200 rounded px-2 py-1.5 text-[11px]">
-                  <div className="flex(items-center justify-between mb-1">
-                    <span className="font-semibold text-gray-700">{task.actionLabel}</span>
+              {assistTasks.slice(0, 6).map((task, ti) => (
+                <div key={task?.id ?? `task-${ti}`} className="bg-white border border-gray-200 rounded px-2 py-1.5 text-[11px]">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-gray-700">{task?.actionLabel ?? ''}</span>
                     <div className="flex items-center gap-2">
                       <span className={`text-[10px] ${task.status === 'error' ? 'text-red-500' : task.status === 'done' ? 'text-emerald-600' : 'text-blue-600'}`}>
                         {task.status === 'running' ? '处理中' : task.status === 'done' ? '已完成' : '失败'}
                       </span>
-                      <button className="text-gray-400 hover:text-gray-700" onClick={() => removeTask(task.id)}>关闭</button>
+                      <button className="text-gray-400 hover:text-gray-700" onClick={() => removeTask(task?.id)}>关闭</button>
                     </div>
                   </div>
                   <div className="h-1.5 w-full bg-gray-100 rounded overflow-hidden mb-1">
@@ -1263,17 +1629,56 @@ export const RightColumn = () => {
           {showPreview ? (
             <MarkdownPreview content={markdownContent} references={references} />
           ) : (
-            <textarea
-              ref={textAreaRef}
-              id="main-editor"
-              className="w-full h-full resize-none p-8 focus:outline-none font-mono text-sm text-gray-800 leading-relaxed custom-scrollbar selection:bg-yellow-200 caret-blue-500"
-              value={markdownContent}
-              onChange={(e) => setMarkdownContent(e.target.value)}
-              onDoubleClick={handleEditorDoubleClick}
-              onKeyDown={handleKeyDown}
-              placeholder="# 开始书写...\n\n使用 **粗体**、*斜体*、`代码`。双击文字或 Ctrl+J 唤出行内助手（续写/润色/纠错）"
-              spellCheck={false}
-            />
+            <>
+              <textarea
+                ref={textAreaRef}
+                id="main-editor"
+                className="w-full flex-1 min-h-[200px] resize-none p-8 focus:outline-none font-mono text-sm text-gray-800 leading-relaxed custom-scrollbar selection:bg-yellow-200 caret-blue-500"
+                value={markdownContent}
+                onChange={(e) => setMarkdownContent(e.target.value)}
+                onDoubleClick={handleEditorDoubleClick}
+                onMouseUp={handleEditorMouseUp}
+                onTouchEnd={handleEditorTouchEnd}
+                onScroll={markWriteScrolling}
+                onKeyDown={handleKeyDown}
+                placeholder="# 开始书写...\n\n使用 **粗体**、*斜体*、`代码`。双击文字或 Ctrl+J 唤出行内助手（续写/润色/纠错）"
+                spellCheck={false}
+              />
+              {writeSelectionMenu && (
+                <div
+                  data-write-selection-menu="1"
+                  className="fixed z-30 bg-white border border-slate-200 shadow-lg rounded-xl px-2 py-1.5 flex items-center gap-1"
+                  style={{
+                    left: Math.max(10, Math.min((writeSelectionMenu?.x || 0) - 94, (typeof window !== 'undefined' ? window.innerWidth : 320) - 198)),
+                    top: (writeSelectionMenu?.y || 0) > 72 ? Math.max(56, (writeSelectionMenu?.y || 0) - 62) : ((writeSelectionMenu?.bottom || 0) + 10),
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => createSelectionNote(true)}
+                    className="w-11 h-11 rounded-lg bg-yellow-50 text-yellow-700 hover:bg-yellow-100 flex items-center justify-center text-[11px] font-medium"
+                    title="高亮"
+                  >
+                    高亮
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openContextAskFromSelection}
+                    className="w-11 h-11 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 flex items-center justify-center text-[11px] font-medium"
+                  >
+                    问AI
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => createSelectionNote(false)}
+                    className="w-11 h-11 rounded-lg bg-pink-50 text-pink-700 hover:bg-pink-100 flex items-center justify-center text-[11px] font-medium"
+                    title="生成卡片"
+                  >
+                    卡片
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -1286,6 +1691,14 @@ export const RightColumn = () => {
           <span>{wordCount} 词 · {charCount} 字符</span>
         </div>
       </div>
+      {/* 移动端：查看参考资料（MiddleColumn 半屏抽屉） */}
+      <button
+        type="button"
+        onClick={() => setMobileReferenceOpen(true)}
+        className="md:hidden fixed right-4 bottom-24 z-30 px-3 py-2 rounded-full bg-slate-900 text-white text-xs shadow-lg border border-slate-700"
+      >
+        查看参考资料
+      </button>
     </div>
   );
 };
