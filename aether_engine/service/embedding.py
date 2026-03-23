@@ -2,6 +2,7 @@
 共享 Embedding 函数
 在 ModelScope 创空间中优先使用 ModelScope 下载并离线加载 embedding 模型，
 避免访问 HuggingFace 导致网络不可达。
+本地若需同样走 ModelScope，设置环境变量 EMBEDDING_USE_MODELSCOPE=1（见 modelspace-deploy/README.md「本地运行」）。
 """
 import logging
 import os

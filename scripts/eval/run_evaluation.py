@@ -4,9 +4,11 @@ import argparse
 import csv
 import json
 import os
+from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Set
+from uuid import uuid4
 
 import httpx
 from openai import OpenAI
@@ -71,21 +73,34 @@ def _normalize_row_status(raw: str | None) -> str:
     return s
 
 
-def _load_completed_questions(csv_path: Path, count_failed_as_done: bool) -> Set[str]:
-    """按题目在报告中的最后一行判定是否已完成：仅 status=ok 视为成功（旧 CSV 无 status 列视为 ok）。
+def _effective_row_status(row: Dict[str, Any], has_status_column: bool) -> str:
+    """有 status 列时以列为准（空视为 ok）；无列时根据 judge_reason 前缀推断执行失败行。"""
+    if has_status_column:
+        return _normalize_row_status(row.get("status"))
+    reason = (row.get("judge_reason") or "").strip()
+    if reason.startswith("执行失败:"):
+        return "failed"
+    return "ok"
 
-    count_failed_as_done 为 True 时，最后一行为 failed 也视为已完成（兼容旧「任意一行即跳过」语义）。
+
+def _load_completed_questions(csv_path: Path, count_failed_as_done: bool) -> Set[str]:
+    """按题目在报告中的最后一行判定是否已完成：仅最终状态为 ok 视为成功。
+
+    旧版 CSV 无 status 列时：judge_reason 以「执行失败:」开头的行视为 failed，其余视为 ok。
+    count_failed_as_done 为 True 时，最后一行为 failed 也视为已完成。
     """
     if not csv_path.exists():
         return set()
     last_status_by_question: Dict[str, str] = {}
     with csv_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        has_status_column = "status" in fieldnames
         for row in reader:
             q = (row.get("question") or "").strip()
             if not q:
                 continue
-            st = _normalize_row_status(row.get("status"))
+            st = _effective_row_status(row, has_status_column)
             last_status_by_question[q] = st
 
     done: Set[str] = set()
@@ -195,6 +210,33 @@ def _append_result(csv_path: Path, row: Dict[str, Any]) -> None:
         writer.writerow(row)
 
 
+def _default_jsonl_path(csv_report: Path) -> Path:
+    if csv_report.suffix.lower() == ".csv":
+        return csv_report.with_suffix(".jsonl")
+    return csv_report.parent / (csv_report.name + ".jsonl")
+
+
+def _append_jsonl(jsonl_path: Path, record: Dict[str, Any]) -> None:
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with jsonl_path.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+
+def _default_manifest_path(csv_report: Path) -> Path:
+    return csv_report.parent / "experiments_manifest.jsonl"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _append_manifest_entry(manifest_path: Path, entry: Dict[str, Any]) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 def _print_markdown_summary(csv_path: Path) -> None:
     """按 question 去重：同一题多行时仅以文件顺序最后一行计入汇总，避免重复拉偏平均分。"""
     last_row_by_question: Dict[str, Dict[str, str]] = {}
@@ -269,11 +311,34 @@ def main() -> None:
         action="store_true",
         help="将报告中最后一行为 failed 的题目也视为已完成并跳过（默认仅 ok 视为完成，失败可重试）",
     )
+    parser.add_argument(
+        "--output-format",
+        choices=["csv", "jsonl"],
+        default="csv",
+        help="csv 仅写 CSV；jsonl 仍写 CSV（断点续跑仅以 CSV 为准）并追加 JSON Lines 侧车，便于多行文本与结构化上下文",
+    )
+    parser.add_argument(
+        "--jsonl-report",
+        default="",
+        help="JSONL 路径；仅在 --output-format jsonl 时生效，默认同目录下与 CSV 同名 .jsonl",
+    )
+    parser.add_argument("--run-name", default="baseline", help="实验名称标签（如 baseline、topk8_read180）")
+    parser.add_argument("--manifest", default="", help="实验参数清单 JSONL 路径；默认与 report 同目录 experiments_manifest.jsonl")
     parser.add_argument("--limit", type=int, default=0, help="仅评测前 N 题（0 表示全部）")
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset).resolve()
     report_path = Path(args.report).resolve()
+    manifest_path = Path(args.manifest).resolve() if args.manifest.strip() else _default_manifest_path(report_path)
+    run_id = uuid4().hex[:12]
+    run_started_at = _now_iso()
+    jsonl_path: Path | None = None
+    if args.output_format == "jsonl":
+        jsonl_path = (
+            Path(args.jsonl_report.strip()).resolve()
+            if args.jsonl_report.strip()
+            else _default_jsonl_path(report_path)
+        )
     rows = _load_dataset(dataset_path)
     if args.limit and args.limit > 0:
         rows = rows[: args.limit]
@@ -354,6 +419,23 @@ def main() -> None:
                 "error_type": "",
             }
             _append_result(report_path, row)
+            if jsonl_path is not None:
+                _append_jsonl(
+                    jsonl_path,
+                    {
+                        "index": idx,
+                        "type": q_type,
+                        "question": question,
+                        "ground_truth": ground_truth,
+                        "answer": answer,
+                        "context_precision": judge["context_precision"],
+                        "faithfulness": judge["faithfulness"],
+                        "judge_reason": judge["reason"],
+                        "retrieved_contexts": retrieved_contexts,
+                        "status": "ok",
+                        "error_type": "",
+                    },
+                )
             completed.add(question)
             stats["ok"] += 1
             progress.set_postfix(
@@ -378,6 +460,23 @@ def main() -> None:
                 "error_type": err_type,
             }
             _append_result(report_path, row)
+            if jsonl_path is not None:
+                _append_jsonl(
+                    jsonl_path,
+                    {
+                        "index": idx,
+                        "type": q_type,
+                        "question": question,
+                        "ground_truth": ground_truth,
+                        "answer": "",
+                        "context_precision": 0,
+                        "faithfulness": 0.0,
+                        "judge_reason": row["judge_reason"],
+                        "retrieved_contexts": [],
+                        "status": "failed",
+                        "error_type": err_type,
+                    },
+                )
             if args.count_failed_as_done:
                 completed.add(question)
             progress.set_postfix_str(f"failed={stats['failed']}, last={err_type}")
@@ -390,6 +489,36 @@ def main() -> None:
         f"skip_done={stats['skip_done']}, skip_before_start={stats['skip_before_start']}"
     )
     print(f"\n报告已写入: {report_path}")
+    if jsonl_path is not None:
+        print(f"JSONL 侧车已写入: {jsonl_path}")
+    run_ended_at = _now_iso()
+    manifest_entry = {
+        "run_id": run_id,
+        "run_name": args.run_name,
+        "started_at": run_started_at,
+        "ended_at": run_ended_at,
+        "dataset_path": str(dataset_path),
+        "report_path": str(report_path),
+        "output_format": args.output_format,
+        "jsonl_report_path": str(jsonl_path) if jsonl_path else "",
+        "chat_url": args.chat_url,
+        "top_k": args.top_k,
+        "max_rounds": args.max_rounds,
+        "timeout": args.timeout,
+        "connect_timeout": args.connect_timeout,
+        "read_timeout": args.read_timeout,
+        "write_timeout": args.write_timeout,
+        "pool_timeout": args.pool_timeout,
+        "chat_retries": args.chat_retries,
+        "chat_retry_wait_max": args.chat_retry_wait_max,
+        "start_index": args.start_index,
+        "count_failed_as_done": bool(args.count_failed_as_done),
+        "fail_fast": bool(args.fail_fast),
+        "limit": args.limit,
+        "stats": stats,
+    }
+    _append_manifest_entry(manifest_path, manifest_entry)
+    print(f"实验参数清单已写入: {manifest_path}")
 
 
 if __name__ == "__main__":

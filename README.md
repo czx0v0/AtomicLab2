@@ -87,6 +87,17 @@ cd frontend && npm install && npm run dev
 
 前端开发服务器默认 `http://localhost:5173`（代理至后端端口，与 `app.py` 监听一致即可）。
 
+### 嵌入模型：Hugging Face 与 ModelScope
+
+创空间内会检测 `/mnt/workspace` 并**默认从 ModelScope** 拉取 `paraphrase-multilingual-MiniLM-L12-v2`（见 `aether_engine/service/embedding.py`）。**本机直接运行 `python app.py` 时**，若未设置下面开关，则 `sentence-transformers` 会按模型名访问 **Hugging Face Hub**，日志里可能出现对 `huggingface.co` 的请求；网络不通或超时时，可改用魔搭源：
+
+| 变量 | 说明 |
+|------|------|
+| `EMBEDDING_USE_MODELSCOPE=1` | 启用后从 ModelScope `snapshot_download` 同一模型到本地再加载，避免直连 HF。 |
+| `MODELSCOPE_CACHE` | 可选；ModelScope 缓存目录，未设时默认用户目录下 `.cache/modelscope`。 |
+
+需已安装 **`modelscope`**（`pip install modelscope`）。创空间无需手动设 `EMBEDDING_USE_MODELSCOPE`。
+
 ---
 
 ## 文档与评测

@@ -171,11 +171,29 @@ export const searchGlobal = (query, topK = 16, maxRounds = 2) =>
     body: JSON.stringify({ query, top_k: topK, max_rounds: maxRounds }),
   });
 
-export const indexDocument = (docId, docTitle, markdown) =>
-  json('/search/index-document', {
-    method: 'POST',
-    body: JSON.stringify({ doc_id: docId, doc_title: docTitle, markdown }),
-  });
+/** 建索引可能需加载嵌入模型 + 切块，易超过默认 30s；与 loadDemo 同级放宽。 */
+const INDEX_DOCUMENT_TIMEOUT_MS = 180000;
+const _indexDocumentInflight = new Map();
+
+export const indexDocument = (docId, docTitle, markdown) => {
+  const existing = _indexDocumentInflight.get(docId);
+  if (existing) return existing;
+
+  const p = (async () => {
+    try {
+      return await json('/search/index-document', {
+        method: 'POST',
+        body: JSON.stringify({ doc_id: docId, doc_title: docTitle, markdown }),
+        timeout: INDEX_DOCUMENT_TIMEOUT_MS,
+      });
+    } finally {
+      _indexDocumentInflight.delete(docId);
+    }
+  })();
+
+  _indexDocumentInflight.set(docId, p);
+  return p;
+};
 
 export const getOrganizeGraph = (docId = '', topN = 200, domainId = '') => {
   const q = new URLSearchParams();
