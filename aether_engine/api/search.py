@@ -50,24 +50,6 @@ class SearchResult(BaseModel):
     score: float = 1.0
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name, "")
-    if not raw:
-        return default
-    return str(raw).strip().lower() in ("1", "true", "yes", "on")
-
-
-def _graph_rag_enabled() -> bool:
-    # 默认保持当前行为：开启 notes 图扩展
-    return _env_bool("SEARCH_ENABLE_GRAPH_RAG", True)
-
-
-def _graph_rag_mode() -> str:
-    # notes: 现有逻辑；unified: 实验性文档块+笔记扩展；off: 显式关闭
-    mode = (os.getenv("GRAPH_RAG_MODE", "notes") or "notes").strip().lower()
-    return mode if mode in ("notes", "unified", "off") else "notes"
-
-
 def _load_notes_for_session(session_id: Optional[str]) -> List[dict]:
     """复用 notes API 的存储层，读取会话笔记。"""
     try:
@@ -238,7 +220,7 @@ def _graph_doc_note_expand(
 ) -> List[dict]:
     """
     实验模式：把文档块关键词与笔记 tags 做重叠配对，生成跨类型 GraphRAG 扩展。
-    仅在 GRAPH_RAG_MODE=unified 时启用，不影响默认路径。
+    默认启用的跨类型扩展：文档块关键词与笔记 tags 做重叠配对。
     """
     if not seed_doc_chunks:
         return []
@@ -520,24 +502,22 @@ def _search_pipeline(
                 channel_stats["note_vector"] = channel_stats.get(
                     "note_vector", 0
                 ) + len(note_vector)
-            # ── 通道 3.1: GraphRAG（默认 notes；可切 unified/off）───────────────
-            if is_first_round and _graph_rag_enabled():
-                mode = _graph_rag_mode()
-                if mode in ("notes", "unified"):
-                    seed_notes = note_vector[:5]
-                    graph_hits = _graph_one_hop_expand(seed_notes, session_id)
-                    graph_hits = _dedup(graph_hits)
-                    if graph_hits:
-                        all_channels.append(graph_hits)
-                        channel_weights.append(1.0)
-                        channel_stats["graph_1hop"] = len(graph_hits)
-                    graph_2 = _graph_two_hop_expand(seed_notes, session_id)
-                    graph_2 = _dedup(graph_2)
-                    if graph_2:
-                        all_channels.append(graph_2)
-                        channel_weights.append(0.85)
-                        channel_stats["graph_2hop"] = len(graph_2)
-                if mode == "unified" and doc_vector:
+            # ── 通道 3.1: GraphRAG（默认全量：1-hop + 2-hop + 跨类型 doc-note）──
+            if is_first_round:
+                seed_notes = note_vector[:5]
+                graph_hits = _graph_one_hop_expand(seed_notes, session_id)
+                graph_hits = _dedup(graph_hits)
+                if graph_hits:
+                    all_channels.append(graph_hits)
+                    channel_weights.append(1.0)
+                    channel_stats["graph_1hop"] = len(graph_hits)
+                graph_2 = _graph_two_hop_expand(seed_notes, session_id)
+                graph_2 = _dedup(graph_2)
+                if graph_2:
+                    all_channels.append(graph_2)
+                    channel_weights.append(0.85)
+                    channel_stats["graph_2hop"] = len(graph_2)
+                if doc_vector:
                     doc_graph = _graph_doc_note_expand(doc_vector[:6], session_id)
                     doc_graph = _dedup(doc_graph)
                     if doc_graph:

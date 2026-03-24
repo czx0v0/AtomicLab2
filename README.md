@@ -106,13 +106,13 @@ cd frontend && npm install && npm run dev
 
 需已安装 **`modelscope`**（`pip install modelscope`）。创空间无需手动设 `EMBEDDING_USE_MODELSCOPE`。
 
-### 可选实验开关（默认不改现有行为）
+### 检索默认行为
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `SEARCH_ENABLE_GRAPH_RAG` | `1` | 是否启用 GraphRAG 通道（默认保持当前开启）。 |
-| `GRAPH_RAG_MODE` | `notes` | `notes`=现有笔记图扩展；`unified`=实验性「文档块+笔记」跨类型扩展；`off`=关闭图扩展。 |
-| `ATOMIC_ENGINE` | `default` | 原子拆解/蒸馏引擎：`default` 走当前 LLM 路径；`heuristic` 走轻量规则模式（用于对照实验）。 |
+- `search` / `search/global` / 写作检索默认启用全量多通道融合：
+  - 文档向量 + 文档 BM25 + 笔记向量 + 笔记 BM25 + 截图 OCR
+  - GraphRAG 1-hop + 2-hop + 跨类型 doc-note 扩展
+- 不再通过 `SEARCH_ENABLE_GRAPH_RAG` / `GRAPH_RAG_MODE` 环境变量切换检索路径。
+- `ATOMIC_ENGINE` 仍可用于原子蒸馏/解构实验（默认 `default`）。
 
 ---
 
