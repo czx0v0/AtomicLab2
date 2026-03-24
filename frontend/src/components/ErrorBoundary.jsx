@@ -17,25 +17,6 @@ export class ErrorBoundary extends React.Component {
     this.setState({ error, errorInfo });
     // eslint-disable-next-line no-console
     console.error('[ErrorBoundary]', this.props?.context || '', error, errorInfo);
-    // #region agent log
-    fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
-      body: JSON.stringify({
-        sessionId: '1d3683',
-        runId: 'post-fix-2',
-        hypothesisId: 'H1',
-        location: 'ErrorBoundary.jsx:componentDidCatch',
-        message: 'boundary caught render error',
-        data: {
-          context: this.props?.context || '',
-          err: error?.message || String(error),
-          stack: (error?.stack || '').slice(0, 800),
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
   }
 
   handleReset = () => {

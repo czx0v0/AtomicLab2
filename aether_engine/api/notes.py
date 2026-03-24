@@ -181,6 +181,21 @@ def update_note(
             get_bm25_engine(session_id).invalidate()
         except Exception:
             pass
+        # 当 PATCH 写入原子字段/标签时，同步更新知识图谱节点，保持与 distill 路径一致
+        try:
+            axiom = str(merged.get("axiom") or "").strip()
+            method = str(merged.get("method") or "").strip()
+            boundary = str(merged.get("boundary") or "").strip()
+            tags_raw = merged.get("tags") or merged.get("keywords") or []
+            tags = []
+            if isinstance(tags_raw, list):
+                tags = [str(t).strip() for t in tags_raw if str(t).strip()][:8]
+            if axiom and (tags or method or boundary):
+                from service.knowledge_graph_store import upsert_note_node
+
+                upsert_note_node(session_id, note_id, axiom, method, boundary, tags)
+        except Exception as e:
+            logger.warning("PATCH 后图谱写入失败: %s", e)
 
     threading.Thread(target=_sync, daemon=True).start()
     return merged

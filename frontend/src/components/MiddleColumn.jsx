@@ -264,9 +264,6 @@ const NoteCard = ({ note, onDelete }) => {
 
   const handleCrush = async () => {
     if (!note.content || actionLoading) return;
-    // #region agent log
-    fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H2',location:'MiddleColumn.jsx:handleCrush:start',message:'crush clicked',data:{noteId:note.id||'',contentLen:(note.content||'').length,hasAtomic:!!(note.axiom||note.method||note.boundary)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     setActionLoading('crush');
     try {
       const resp = await api.decomposeNote(note.content, note.id, useStore.getState().activeDocId || '');
@@ -274,9 +271,6 @@ const NoteCard = ({ note, onDelete }) => {
       const axiom = (resp.axiom ?? firstAtom?.axiom ?? '').trim();
       const method = (resp.method ?? firstAtom?.methodology ?? '').trim();
       const boundary = (resp.boundary ?? firstAtom?.boundary ?? '').trim();
-      // #region agent log
-      fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H2',location:'MiddleColumn.jsx:handleCrush:resp',message:'decompose response',data:{noteId:note.id||'',axiomLen:axiom.length,methodLen:method.length,boundaryLen:boundary.length,hasMessage:!!resp.message},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       if (axiom || method || boundary) {
         const isDemoDoc = (useStore.getState().activeDocId || '') === GLOBAL_DEMO_DOC_ID;
         let idAfterPersist = note.id;
@@ -329,9 +323,6 @@ const NoteCard = ({ note, onDelete }) => {
             ));
           }
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'360e80'},body:JSON.stringify({sessionId:'360e80',runId:'pre-fix',hypothesisId:'H2',location:'MiddleColumn.jsx:handleCrush:setNotes',message:'set atomic fields to store note',data:{noteId:note.id||'',storeAtomicCount:(useStore.getState().notes||[]).filter(x=>x.axiom||x.method||x.boundary).length},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
       }
       if (!(axiom || method || boundary) && resp.message) {
         const notes = useStore.getState().notes;
@@ -2226,26 +2217,6 @@ const NexusPanel = () => {
     api.getNotes()
       .then((data) => {
         const list = Array.isArray(data.notes) ? data.notes : [];
-        // #region agent log
-        fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
-          body: JSON.stringify({
-            sessionId: '1d3683',
-            runId: 'post-fix',
-            hypothesisId: 'H3',
-            location: 'MiddleColumn.jsx:getNotes',
-            message: 'notes list loaded for organize tab',
-            data: {
-              total: list.length,
-              withScreenshot: list.filter((n) => !!n?.screenshot).length,
-              withBboxArray: list.filter((n) => Array.isArray(n?.bbox) && n.bbox.length === 4).length,
-              withBboxObject: list.filter((n) => n?.bbox && typeof n.bbox === 'object' && !Array.isArray(n.bbox)).length,
-            },
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         const local = useStore.getState().notes || [];
         const merged = mergeNotesForSync(local, list, activeDocId || '');
         setNotes(merged);

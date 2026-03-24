@@ -35,7 +35,7 @@ async def distill_note(body: DistillRequest, x_session_id: str = Header(default=
 
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
 
-    from service.note_distiller import distill_note_text
+    from service.atomic_engine import distill_note_text
 
     distilled = await distill_note_text(text)
     axiom = (distilled.get("axiom") or "").strip()

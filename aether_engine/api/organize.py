@@ -6,7 +6,6 @@ Organize 图谱/三元组 API
 import logging
 import json
 import re
-import time
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -43,28 +42,6 @@ def _filter_notes_by_domain(notes: List[dict], allowed: Set[str]) -> List[dict]:
 
 def _filter_chunks_by_domain(chunks: List[dict], allowed: Set[str]) -> List[dict]:
     return [c for c in chunks if (c.get("doc_id") or "").strip() in allowed]
-
-
-def _debug_log(hid: str, location: str, message: str, data: Dict) -> None:
-    try:
-        with open("debug-360e80.log", "a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "sessionId": "360e80",
-                        "runId": "pre-fix",
-                        "hypothesisId": hid,
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
 
 
 def _is_global_scope(doc_id: Optional[str]) -> bool:
@@ -396,19 +373,6 @@ def _build_graph(
     rel_counter: Dict[str, int] = defaultdict(int)
     for e in edges:
         rel_counter[e.get("relation", "unknown")] += 1
-    _debug_log(
-        "H3",
-        "organize.py:_build_graph:result",
-        "graph relation distribution",
-        {
-            "notes": len(notes),
-            "doc_chunks": len(doc_chunks),
-            "nodes": len(nodes),
-            "edges": len(edges),
-            "contains_edges": rel_counter.get("Contains", 0),
-            "mentions_edges": rel_counter.get("Mentions", 0),
-        },
-    )
     return g, nodes, edges
 
 

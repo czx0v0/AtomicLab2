@@ -9,7 +9,6 @@ import logging
 import os
 import re
 import threading
-import time
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -20,27 +19,6 @@ logger = logging.getLogger("aether")
 
 NOTES_FILE = Path("data/notes.json")
 
-
-def _debug_log(hid: str, location: str, message: str, data: Dict[str, Any]) -> None:
-    try:
-        with open("debug-360e80.log", "a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "sessionId": "360e80",
-                        "runId": "pre-fix",
-                        "hypothesisId": hid,
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
 
 # 检测是否在创空间环境
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
@@ -370,19 +348,6 @@ class BM25Engine:
                 return []
 
             scores = self._doc_bm25.get_scores(tokens)
-            _debug_log(
-                "H5",
-                "bm25_engine.py:search_docs:pre-loop",
-                "bm25 doc search dimensions",
-                {
-                    "query": query[:64],
-                    "token_count": len(tokens),
-                    "scores_len": len(scores),
-                    "doc_ids_len": len(self._doc_ids),
-                    "doc_meta_len": len(self._doc_meta),
-                },
-            )
-
             scored = [(i, s) for i, s in enumerate(scores) if s > 0]
             scored.sort(key=lambda x: x[1], reverse=True)
             scored = scored[:top_k]
@@ -394,16 +359,6 @@ class BM25Engine:
             results = []
             for idx, raw_score in scored:
                 if idx >= len(self._doc_meta) or idx >= len(self._doc_ids):
-                    _debug_log(
-                        "H5",
-                        "bm25_engine.py:search_docs:index-guard",
-                        "bm25 index out of range guard",
-                        {
-                            "idx": idx,
-                            "doc_ids_len": len(self._doc_ids),
-                            "doc_meta_len": len(self._doc_meta),
-                        },
-                    )
                     continue
                 meta = self._doc_meta[idx]
                 norm_score = raw_score / max_score if max_score > 0 else 0

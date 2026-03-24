@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { BookOpen, Cpu, Info, Layers, Loader2, Menu, PenLine, X } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { healthCheck, resetSession } from './api/client';
+import { getDocumentFileUrl, healthCheck, listDocuments, resetSession } from './api/client';
 import { AssistantFab } from './components/CopilotFab';
 import { MissionControlFab } from './components/MissionControlFab';
 import { AssistantSidebar } from './components/CopilotSidebar';
@@ -222,6 +222,7 @@ function App() {
     setStartDemoLoad,
     mobileReferenceOpen,
     setMobileReferenceOpen,
+    hydrateLocalLibrary,
   } = useStore();
   const handleStartOver = () => {
     resetSession().then(() => startOver()).catch(() => startOver());
@@ -239,6 +240,31 @@ function App() {
     const t = setInterval(check, 15000);
     return () => clearInterval(t);
   }, []);
+
+  // 启动时回填服务端文献列表（本地重启/刷新后恢复文献库显示）
+  useEffect(() => {
+    let cancelled = false;
+    listDocuments()
+      .then((resp) => {
+        if (cancelled) return;
+        const docs = Array.isArray(resp?.documents) ? resp.documents : [];
+        const mapped = docs.map((item) => ({
+          id: `local_${item.id}`,
+          docId: item.id,
+          fileUrl: getDocumentFileUrl(item.id),
+          name: item.name || item.original_filename || '未命名.pdf',
+          domain_id: item.domain_id ?? null,
+          addedAt: item.created_at || new Date().toISOString(),
+          source: 'local',
+          noteCount: 0,
+        }));
+        hydrateLocalLibrary(mapped);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrateLocalLibrary]);
 
   // View Mode + AI 助手 -> Panel Layout（助手展开时右侧占位，主内容收缩）
   useEffect(() => {
@@ -261,74 +287,6 @@ function App() {
       setMobileReferenceOpen(false);
     }
   }, [viewMode, mobileReferenceOpen, setMobileReferenceOpen]);
-
-  // #region agent log
-  useEffect(() => {
-    const onError = (event) => {
-      fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
-        body: JSON.stringify({
-          sessionId: '1d3683',
-          runId: 'post-fix',
-          hypothesisId: 'H1',
-          location: 'App.jsx:window.onerror',
-          message: 'runtime error captured',
-          data: {
-            viewMode: useStore.getState().viewMode,
-            message: event?.message || '',
-            filename: event?.filename || '',
-            lineno: event?.lineno || 0,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-    };
-    const onUnhandled = (event) => {
-      fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '1d3683' },
-        body: JSON.stringify({
-          sessionId: '1d3683',
-          runId: 'post-fix',
-          hypothesisId: 'H1',
-          location: 'App.jsx:window.unhandledrejection',
-          message: 'unhandled promise rejection',
-          data: {
-            viewMode: useStore.getState().viewMode,
-            reason: String(event?.reason || ''),
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-    };
-    window.addEventListener('error', onError);
-    window.addEventListener('unhandledrejection', onUnhandled);
-    return () => {
-      window.removeEventListener('error', onError);
-      window.removeEventListener('unhandledrejection', onUnhandled);
-    };
-  }, []);
-  // #endregion
-
-  // #region agent log
-  useEffect(() => {
-    if (viewMode !== 'write') return;
-    fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '360e80' },
-      body: JSON.stringify({
-        sessionId: '360e80',
-        runId: 'write-tab',
-        hypothesisId: 'H-header',
-        location: 'App.jsx:viewMode-write',
-        message: 'switched to write tab',
-        data: { isZenMode, headerRendered: !isZenMode, copilotOpen },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [viewMode, isZenMode, copilotOpen]);
-  // #endregion
 
   return (
     <div className="h-screen w-full flex flex-col font-sans antialiased overflow-hidden bg-slate-50 text-slate-900">

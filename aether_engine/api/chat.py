@@ -1054,7 +1054,7 @@ def _bucket_for_evidence(source: Optional[str]) -> str:
         return "document_chunks"
     if src in ("note_vector", "note_bm25", "screenshot_ocr"):
         return "atomic_notes"
-    if src in ("graph_1hop", "graph_2hop"):
+    if src in ("graph_1hop", "graph_2hop", "graph_dochop"):
         return "graph_relations"
     if src in ("arxiv", "zotero_library"):
         return "external_papers"

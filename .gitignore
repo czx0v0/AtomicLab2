@@ -24,6 +24,8 @@ frontend/dist/
 .cursor/*
 scripts/eval/*.csv
 scripts/eval/*.json
+scripts/eval/*.jsonl
+scripts/eval/*.md
 
 data/*
 *.log

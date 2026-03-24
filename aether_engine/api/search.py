@@ -50,6 +50,24 @@ class SearchResult(BaseModel):
     score: float = 1.0
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "")
+    if not raw:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _graph_rag_enabled() -> bool:
+    # 默认保持当前行为：开启 notes 图扩展
+    return _env_bool("SEARCH_ENABLE_GRAPH_RAG", True)
+
+
+def _graph_rag_mode() -> str:
+    # notes: 现有逻辑；unified: 实验性文档块+笔记扩展；off: 显式关闭
+    mode = (os.getenv("GRAPH_RAG_MODE", "notes") or "notes").strip().lower()
+    return mode if mode in ("notes", "unified", "off") else "notes"
+
+
 def _load_notes_for_session(session_id: Optional[str]) -> List[dict]:
     """复用 notes API 的存储层，读取会话笔记。"""
     try:
@@ -195,6 +213,70 @@ def _graph_two_hop_expand(
                 "score": round(0.58 - idx * 0.02, 4),
                 "source": "graph_2hop",
                 "graph_ref": f"[G2-{idx+1}]",
+            }
+        )
+    return out
+
+
+def _extract_terms(text: str) -> List[str]:
+    words = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}|[\u4e00-\u9fff]{2,8}", text or "")
+    out = []
+    seen = set()
+    for w in words:
+        k = w.strip().lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(k)
+    return out
+
+
+def _graph_doc_note_expand(
+    seed_doc_chunks: List[dict],
+    session_id: Optional[str],
+    max_graph_items: int = 8,
+) -> List[dict]:
+    """
+    实验模式：把文档块关键词与笔记 tags 做重叠配对，生成跨类型 GraphRAG 扩展。
+    仅在 GRAPH_RAG_MODE=unified 时启用，不影响默认路径。
+    """
+    if not seed_doc_chunks:
+        return []
+    notes = _load_notes_for_session(session_id)
+    if not notes:
+        return []
+
+    ranked = []
+    for d in seed_doc_chunks:
+        d_terms = set(_extract_terms((d.get("summary") or "") + " " + " ".join(d.get("keywords") or [])))
+        if not d_terms:
+            continue
+        for n in notes:
+            n_tags = set(_note_tags(n))
+            if not n_tags:
+                continue
+            overlap = sorted(d_terms & n_tags)
+            if not overlap:
+                continue
+            ranked.append((len(overlap), overlap[:6], d, n))
+
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    out = []
+    for idx, (_, overlap, d, n) in enumerate(ranked[:max_graph_items]):
+        note_id = n.get("id", "")
+        ref = f"[GD{idx+1}]"
+        out.append(
+            {
+                "note_id": f"graphdoc::{d.get('note_id','doc')}::{note_id}::{idx}",
+                "summary": f"{ref} {d.get('doc_title') or 'DocumentChunk'} -> {n.get('axiom') or n.get('content') or note_id}",
+                "concept": f"{ref} graph_dochop",
+                "keywords": overlap,
+                "doc_title": d.get("doc_title") or "KnowledgeGraph",
+                "page_num": int(n.get("page", 0) or 0),
+                "bbox": [],
+                "score": round(0.56 - idx * 0.02, 4),
+                "source": "graph_dochop",
+                "graph_ref": ref,
             }
         )
     return out
@@ -387,6 +469,8 @@ def _search_pipeline(
         q = query_variants[round_idx] if round_idx < len(query_variants) else query
         is_first_round = round_idx == 0
         fetch_k = max(top_k * 2, 12) if is_first_round else max(top_k, 8)
+        doc_vector: List[dict] = []
+        note_vector: List[dict] = []
 
         logger.info(
             "检索 Round %d: query='%s' fetch_k=%d", round_idx + 1, q[:60], fetch_k
@@ -436,9 +520,10 @@ def _search_pipeline(
                 channel_stats["note_vector"] = channel_stats.get(
                     "note_vector", 0
                 ) + len(note_vector)
-
-                # ── 通道 3.1: GraphRAG 1-hop（仅首轮，基于稠密 Top-5）────────────
-                if is_first_round:
+            # ── 通道 3.1: GraphRAG（默认 notes；可切 unified/off）───────────────
+            if is_first_round and _graph_rag_enabled():
+                mode = _graph_rag_mode()
+                if mode in ("notes", "unified"):
                     seed_notes = note_vector[:5]
                     graph_hits = _graph_one_hop_expand(seed_notes, session_id)
                     graph_hits = _dedup(graph_hits)
@@ -452,6 +537,13 @@ def _search_pipeline(
                         all_channels.append(graph_2)
                         channel_weights.append(0.85)
                         channel_stats["graph_2hop"] = len(graph_2)
+                if mode == "unified" and doc_vector:
+                    doc_graph = _graph_doc_note_expand(doc_vector[:6], session_id)
+                    doc_graph = _dedup(doc_graph)
+                    if doc_graph:
+                        all_channels.append(doc_graph)
+                        channel_weights.append(0.75)
+                        channel_stats["graph_dochop"] = len(doc_graph)
         except Exception as e:
             logger.warning("NoteRAG 检索失败 (round %d): %s", round_idx + 1, e)
 

@@ -629,6 +629,20 @@ export const LeftColumn = () => {
         applyFileAsUpload(file);
     }, [setNotification, applyFileAsUpload]);
 
+    const removeLibraryDocument = useCallback(async (doc) => {
+        const isLocal = doc?.source === 'local' && !!doc?.docId;
+        if (isLocal) {
+            try {
+                await api.deleteDocument(doc.docId);
+            } catch (e) {
+                setNotification(e?.message || '删除文献失败', 'error');
+                return;
+            }
+        }
+        removeFromLibrary(doc.id);
+        setNotification(isLocal ? '文献已删除，笔记保留。' : '已从文献库移除。');
+    }, [removeFromLibrary, setNotification]);
+
     const loadSharedDemo = useCallback(() => {
         setDemoLoading(true);
         setNotification('正在加载白皮书…');
@@ -1237,7 +1251,7 @@ export const LeftColumn = () => {
                                             <div className="px-2 pb-2 flex items-center gap-2 bg-amber-50/80 rounded-b border-b border-l border-r border-amber-200">
                                                 <span className="text-[9px] text-amber-800 flex-1">从文献库移除？笔记会保留。</span>
                                                 <button type="button" onClick={(e) => { e.stopPropagation(); setConfirmRemoveId(null); }} className="text-[9px] px-1.5 py-0.5 bg-gray-200 rounded hover:bg-gray-300">取消</button>
-                                                <button type="button" onClick={(e) => { e.stopPropagation(); removeFromLibrary(doc.id); setConfirmRemoveId(null); }} className="text-[9px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded hover:bg-red-200">确认移除</button>
+                                                <button type="button" onClick={async (e) => { e.stopPropagation(); await removeLibraryDocument(doc); setConfirmRemoveId(null); }} className="text-[9px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded hover:bg-red-200">确认移除</button>
                                             </div>
                                         )}
                                     </div>

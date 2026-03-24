@@ -373,6 +373,23 @@ export const useStore = create((set, get) => ({
           if (s.library.some((d) => d.id === doc.id)) return {};
           return { library: [...s.library, doc] };
         }),
+      hydrateLocalLibrary: (docs) =>
+        set((s) => {
+          const incoming = Array.isArray(docs) ? docs.filter((d) => d && d.id) : [];
+          const keepNonLocal = (s.library || []).filter((d) => d?.source !== 'local');
+          const merged = [...keepNonLocal];
+          const indexById = new Map(merged.map((d, idx) => [d.id, idx]));
+          for (const item of incoming) {
+            const idx = indexById.get(item.id);
+            if (idx == null) {
+              indexById.set(item.id, merged.length);
+              merged.push(item);
+            } else {
+              merged[idx] = { ...merged[idx], ...item };
+            }
+          }
+          return { library: merged };
+        }),
       removeFromLibrary: (id) =>
         set((s) => ({ library: s.library.filter((d) => d.id !== id) })),
       updateLibraryDocDomain: (docId, domainId) =>

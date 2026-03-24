@@ -86,6 +86,8 @@ cd frontend && npm install && npm run dev
 ```
 
 前端开发服务器默认 `http://localhost:5173`（代理至后端端口，与 `app.py` 监听一致即可）。
+应用启动时会自动调用 `GET /api/documents` 回填「文献库」列表；本地模式下只要 `data/documents/` 未删除，刷新页面或重启后端后文献仍可恢复显示。
+在文献库点击「确认移除」时，Local 文献会同步调用 `DELETE /api/documents/:id` 删除后端文件与元数据（笔记保留，可继续 CRUD）。
 
 ### 嵌入模型：Hugging Face 与 ModelScope
 
@@ -97,6 +99,14 @@ cd frontend && npm install && npm run dev
 | `MODELSCOPE_CACHE` | 可选；ModelScope 缓存目录，未设时默认用户目录下 `.cache/modelscope`。 |
 
 需已安装 **`modelscope`**（`pip install modelscope`）。创空间无需手动设 `EMBEDDING_USE_MODELSCOPE`。
+
+### 可选实验开关（默认不改现有行为）
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SEARCH_ENABLE_GRAPH_RAG` | `1` | 是否启用 GraphRAG 通道（默认保持当前开启）。 |
+| `GRAPH_RAG_MODE` | `notes` | `notes`=现有笔记图扩展；`unified`=实验性「文档块+笔记」跨类型扩展；`off`=关闭图扩展。 |
+| `ATOMIC_ENGINE` | `default` | 原子拆解/蒸馏引擎：`default` 走当前 LLM 路径；`heuristic` 走轻量规则模式（用于对照实验）。 |
 
 ---
 

@@ -467,27 +467,6 @@ export const RightColumn = () => {
   const writeScrollingRef = useRef(false);
   const writeScrollUnlockTimerRef = useRef(null);
 
-  // #region agent log
-  useLayoutEffect(() => {
-    if (isZenMode) return;
-    const el = editorWrapRef.current;
-    const h = el?.getBoundingClientRect?.().height ?? -1;
-    fetch('http://127.0.0.1:7911/ingest/d425475d-29d6-4d24-8a29-340d5c8049ce', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '360e80' },
-      body: JSON.stringify({
-        sessionId: '360e80',
-        runId: 'pre-fix',
-        hypothesisId: 'H-blank',
-        location: 'RightColumn.jsx:editorWrap',
-        message: 'write editor container layout',
-        data: { editorAreaH: h, markdownLen: (markdownContent || '').length, isZenMode },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [isZenMode, markdownContent]);
-  // #endregion
-
   // 根据当前光标或选区文本推荐卡片（词重叠打分，取 top5）
   const inlineRecommendedNotes = useMemo(() => {
     if (!inlineOpen || !notes?.length || !inlineScopeForCards.trim()) return [];

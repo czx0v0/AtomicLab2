@@ -6,7 +6,6 @@ Demo 白皮书：只读静态 bundle（demo_data/demo_static_bundle.json）+ PDF
 import asyncio
 import json
 import logging
-import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -27,28 +26,6 @@ DEMO_STATIC_BUNDLE = (DEMO_DIR / "demo_static_bundle.json").resolve()
 DATA_DIR = Path("data")
 DEMO_DOC_ID = "global_demo_official"
 _DEMO_LOCK = asyncio.Lock()
-
-
-def _debug_log(hid: str, location: str, message: str, data: Dict[str, Any]) -> None:
-    try:
-        with Path("debug-360e80.log").open("a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "sessionId": "360e80",
-                        "runId": "pre-fix",
-                        "hypothesisId": hid,
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
 
 
 def _find_demo_pdf() -> Optional[Path]:
@@ -195,17 +172,6 @@ async def load_demo(session_id: str = Depends(get_session_id)):
 
     markdown = cache.get("markdown") or ""
     indexed_before = _is_demo_indexed()
-    _debug_log(
-        "H1",
-        "demo.py:load_demo:pre-check",
-        "demo static bundle + index precheck",
-        {
-            "session_id": (session_id or "")[:16],
-            "has_markdown": bool(markdown.strip()),
-            "indexed": bool(indexed_before),
-        },
-    )
-
     if not indexed_before:
         async with _DEMO_LOCK:
             if not _is_demo_indexed():
@@ -215,17 +181,6 @@ async def load_demo(session_id: str = Depends(get_session_id)):
                     logger.warning("Demo 向量索引失败: %s", e)
 
     indexed_after = _is_demo_indexed()
-    _debug_log(
-        "H1",
-        "demo.py:load_demo:result",
-        "demo load static result",
-        {
-            "session_id": (session_id or "")[:16],
-            "indexed": bool(indexed_after),
-            "notes_count": len((cache.get("demo_notes") or [])),
-        },
-    )
-
     logger.info(
         "Demo 加载完成: session=%s static=True indexed=%s doc_id=%s",
         (session_id or "")[:16],
