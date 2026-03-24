@@ -7,6 +7,8 @@
 import json
 import logging
 import os
+import re
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -60,33 +62,98 @@ class NoteRAG:
             self.collection.count(),
         )
 
+    def _note_index_text(self, note: Dict[str, Any]) -> str:
+        """构建笔记索引文本：content + 原子字段 + tags + 轻量元信息。"""
+        content = str(note.get("content", "") or "").strip()
+        axiom = str(note.get("axiom", "") or "").strip()
+        method = str(note.get("method", "") or note.get("methodology", "") or "").strip()
+        boundary = str(note.get("boundary", "") or "").strip()
+
+        tags_raw = note.get("tags") or note.get("keywords") or []
+        tags: List[str] = []
+        if isinstance(tags_raw, list):
+            tags = [str(t).strip() for t in tags_raw if str(t).strip()]
+
+        doc_name = str(note.get("source_name", "") or "").strip()
+        doc_id = str(note.get("doc_id", "") or "").strip()
+        page = str(note.get("page", "") or "").strip()
+        note_type = str(note.get("type", "") or "").strip()
+
+        parts = [
+            content,
+            axiom and f"Axiom: {axiom}",
+            method and f"Method: {method}",
+            boundary and f"Boundary: {boundary}",
+            tags and f"Tags: {' '.join(tags[:16])}",
+            doc_name and f"Document: {doc_name}",
+            doc_id and f"DocID: {doc_id}",
+            page and f"Page: {page}",
+            note_type and f"Type: {note_type}",
+        ]
+        text = "\n".join([p for p in parts if p])
+        # 避免异常长文本拖慢 embedding
+        return text[:6000]
+
+    def _text_digest(self, text: str) -> str:
+        return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+    def _extract_keywords_from_text(self, text: str, limit: int = 8) -> List[str]:
+        words = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}|[\u4e00-\u9fff]{2,8}", text or "")
+        out: List[str] = []
+        seen = set()
+        for w in words:
+            k = w.strip().lower()
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            out.append(k)
+            if len(out) >= limit:
+                break
+        return out
+
     def sync_notes(self):
-        """从 notes.json 同步到 ChromaDB（增量）。"""
+        """从 notes.json 同步到 ChromaDB（增量+更新）。"""
         if not self.notes_file.exists():
             return 0
         try:
             notes = json.loads(self.notes_file.read_text(encoding="utf-8"))
         except Exception:
             return 0
-
-        existing_ids = (
-            set(self.collection.get()["ids"]) if self.collection.count() > 0 else set()
-        )
-        new_notes = [n for n in notes if n.get("id") and n["id"] not in existing_ids]
-
-        if not new_notes:
+        valid_notes = [n for n in notes if n.get("id")]
+        if not valid_notes:
             return 0
 
-        ids = []
-        documents = []
-        metadatas = []
-        for n in new_notes:
-            content = n.get("content", "").strip()
-            if not content:
+        note_ids = [str(n["id"]) for n in valid_notes]
+        existing_meta_by_id: Dict[str, Dict[str, Any]] = {}
+        try:
+            if self.collection.count() > 0:
+                existing = self.collection.get(ids=note_ids, include=["metadatas"])
+                ids_got = existing.get("ids") or []
+                metas_got = existing.get("metadatas") or []
+                for i, nid in enumerate(ids_got):
+                    if isinstance(nid, str):
+                        existing_meta_by_id[nid] = metas_got[i] if i < len(metas_got) else {}
+        except Exception:
+            existing_meta_by_id = {}
+
+        upsert_ids: List[str] = []
+        upsert_docs: List[str] = []
+        upsert_metas: List[Dict[str, Any]] = []
+
+        for n in valid_notes:
+            nid = str(n["id"])
+            index_text = self._note_index_text(n)
+            if not index_text.strip():
                 continue
-            ids.append(n["id"])
-            documents.append(content)
-            metadatas.append(
+            digest = self._text_digest(index_text)
+            old_digest = str((existing_meta_by_id.get(nid) or {}).get("digest", "") or "")
+            if digest == old_digest:
+                continue
+
+            keywords = self._extract_keywords_from_text(index_text, limit=8)
+            upsert_ids.append(nid)
+            upsert_docs.append(index_text)
+            upsert_metas.append(
                 {
                     "type": n.get("type", "other"),
                     "page": n.get("page", 0) or 0,
@@ -94,24 +161,37 @@ class NoteRAG:
                     "source_name": n.get("source_name", "") or "",
                     "bbox": json.dumps(n.get("bbox", [])),
                     "translation": n.get("translation", "") or "",
+                    "keywords": json.dumps(keywords, ensure_ascii=False),
+                    "digest": digest,
                 }
             )
 
-        if ids:
-            embeddings = self._embedding_fn(documents)
-            self.collection.add(
-                ids=ids,
-                documents=documents,
-                metadatas=metadatas,
+        if upsert_ids:
+            embeddings = self._embedding_fn(upsert_docs)
+            self.collection.upsert(
+                ids=upsert_ids,
+                documents=upsert_docs,
+                metadatas=upsert_metas,
                 embeddings=embeddings,
             )
             logger.info(
-                "[Session:%s] 同步 %d 条笔记到向量库",
+                "[Session:%s] 同步/更新 %d 条笔记到向量库",
                 self.session_id or "default",
-                len(ids),
+                len(upsert_ids),
             )
 
-        return len(ids)
+        # 清理已不存在于 notes.json 的脏索引
+        try:
+            if self.collection.count() > 0:
+                all_ids = set(self.collection.get().get("ids") or [])
+                live_ids = set(note_ids)
+                stale_ids = list(all_ids - live_ids)
+                if stale_ids:
+                    self.collection.delete(ids=stale_ids)
+        except Exception:
+            pass
+
+        return len(upsert_ids)
 
     def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """向量语义检索笔记。"""
@@ -147,7 +227,11 @@ class NoteRAG:
                     "note_id": note_id,
                     "summary": doc,
                     "concept": meta.get("type", "other"),
-                    "keywords": [],
+                    "keywords": (
+                        json.loads(meta.get("keywords", "[]"))
+                        if isinstance(meta.get("keywords"), str)
+                        else []
+                    ),
                     "doc_title": meta.get("source_name", ""),
                     "doc_id": meta.get("doc_id", ""),
                     "page_num": int(meta.get("page", 0)),

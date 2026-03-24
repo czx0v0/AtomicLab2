@@ -89,6 +89,12 @@ cd frontend && npm install && npm run dev
 应用启动时会自动调用 `GET /api/documents` 回填「文献库」列表；本地模式下只要 `data/documents/` 未删除，刷新页面或重启后端后文献仍可恢复显示。
 在文献库点击「确认移除」时，Local 文献会同步调用 `DELETE /api/documents/:id` 删除后端文件与元数据（笔记保留，可继续 CRUD）。
 
+### 环境变量配置位置
+
+- 本地运行：项目根目录 `modelspace-deploy/.env`
+- 创空间运行：控制台「设置 -> 环境变量」
+- 建议至少配置：`DEEPSEEK_API_KEY`、`DEEPSEEK_API_BASE`
+
 ### 嵌入模型：Hugging Face 与 ModelScope
 
 创空间内会检测 `/mnt/workspace` 并**默认从 ModelScope** 拉取 `paraphrase-multilingual-MiniLM-L12-v2`（见 `aether_engine/service/embedding.py`）。**本机直接运行 `python app.py` 时**，若未设置下面开关，则 `sentence-transformers` 会按模型名访问 **Hugging Face Hub**，日志里可能出现对 `huggingface.co` 的请求；网络不通或超时时，可改用魔搭源：
