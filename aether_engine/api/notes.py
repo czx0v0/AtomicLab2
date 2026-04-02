@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 logger = logging.getLogger("aether")
+_notes_lock = threading.RLock()
 
 # 检测是否在创空间环境
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
@@ -82,6 +83,8 @@ class NoteCreate(BaseModel):
     source: Optional[str] = None
     arxiv_id: Optional[str] = None
     arxiv_url: Optional[str] = None
+    client_id: Optional[str] = None
+    section_index: Optional[int] = None
 
 
 class NoteUpdate(BaseModel):
@@ -97,6 +100,26 @@ class NoteUpdate(BaseModel):
     screenshot: Optional[str] = None
     doc_id: Optional[str] = None
     source: Optional[str] = None
+    section_index: Optional[int] = None
+
+
+class NoteUpsert(BaseModel):
+    client_id: str
+    content: str
+    type: str = "idea"
+    page: Optional[int] = None
+    bbox: Optional[List[float]] = None
+    screenshot: Optional[str] = None
+    doc_id: Optional[str] = None
+    translation: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    axiom: Optional[str] = None
+    method: Optional[str] = None
+    boundary: Optional[str] = None
+    source: Optional[str] = None
+    arxiv_id: Optional[str] = None
+    arxiv_url: Optional[str] = None
+    section_index: Optional[int] = None
 
 
 @router.get("")
@@ -112,14 +135,15 @@ def list_notes(x_session_id: str = Header(default="")):
 def create_note(body: NoteCreate, x_session_id: str = Header(default="")):
     """创建新的原子笔记（会话隔离）。"""
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
-    notes = _load_notes(session_id)
-    raw = body.model_dump(exclude_none=True)
-    new_note = {
-        "id": str(uuid.uuid4()),
-        **raw,
-    }
-    notes.append(new_note)
-    _save_notes(notes, session_id)
+    with _notes_lock:
+        notes = _load_notes(session_id)
+        raw = body.model_dump(exclude_none=True)
+        new_note = {
+            "id": str(uuid.uuid4()),
+            **raw,
+        }
+        notes.append(new_note)
+        _save_notes(notes, session_id)
     logger.info(
         "[Session:%s] 创建笔记 id=%s page=%s",
         session_id or "default",
@@ -147,20 +171,76 @@ def create_note(body: NoteCreate, x_session_id: str = Header(default="")):
     return new_note
 
 
+@router.put("/upsert")
+def upsert_note(body: NoteUpsert, x_session_id: str = Header(default="")):
+    """按 client_id + doc_id + source 幂等写入笔记。"""
+    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    raw = body.model_dump(exclude_none=True)
+    client_id = str(raw.get("client_id") or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id 不能为空")
+    doc_id = str(raw.get("doc_id") or "").strip()
+    source = str(raw.get("source") or "").strip()
+
+    with _notes_lock:
+        notes = _load_notes(session_id)
+        idx = next(
+            (
+                i
+                for i, n in enumerate(notes)
+                if str(n.get("client_id") or "").strip() == client_id
+                and str(n.get("doc_id") or "").strip() == doc_id
+                and str(n.get("source") or "").strip() == source
+            ),
+            None,
+        )
+
+        if idx is None:
+            note = {
+                "id": str(uuid.uuid4()),
+                **raw,
+            }
+            notes.append(note)
+            action = "created"
+        else:
+            note = {**notes[idx], **raw}
+            notes[idx] = note
+            action = "updated"
+        _save_notes(notes, session_id)
+
+    def _sync():
+        try:
+            from service.note_rag import get_note_rag
+
+            get_note_rag(session_id).sync_notes()
+        except Exception as e:
+            logger.warning("向量库同步失败: %s", e)
+        try:
+            from service.bm25_engine import get_bm25_engine
+
+            get_bm25_engine(session_id).invalidate()
+        except Exception:
+            pass
+
+    threading.Thread(target=_sync, daemon=True).start()
+    return {"action": action, "note": note}
+
+
 @router.patch("/{note_id}")
 def update_note(
     note_id: str, body: NoteUpdate, x_session_id: str = Header(default="")
 ) -> Dict[str, Any]:
     """更新笔记（部分字段 PATCH）。前端粉碎/解构、同步截图等依赖此接口。"""
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
-    notes = _load_notes(session_id)
-    idx = next((i for i, n in enumerate(notes) if n.get("id") == note_id), None)
-    if idx is None:
-        raise HTTPException(status_code=404, detail=f"笔记 {note_id} 不存在")
-    patch = body.model_dump(exclude_none=True)
-    merged = {**notes[idx], **patch}
-    notes[idx] = merged
-    _save_notes(notes, session_id)
+    with _notes_lock:
+        notes = _load_notes(session_id)
+        idx = next((i for i, n in enumerate(notes) if n.get("id") == note_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail=f"笔记 {note_id} 不存在")
+        patch = body.model_dump(exclude_none=True)
+        merged = {**notes[idx], **patch}
+        notes[idx] = merged
+        _save_notes(notes, session_id)
     logger.info(
         "[Session:%s] 更新笔记 id=%s keys=%s",
         session_id or "default",
@@ -205,12 +285,13 @@ def update_note(
 def delete_note(note_id: str, x_session_id: str = Header(default="")):
     """删除指定笔记（会话隔离）。"""
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
-    notes = _load_notes(session_id)
-    original_len = len(notes)
-    notes = [n for n in notes if n["id"] != note_id]
-    if len(notes) == original_len:
-        raise HTTPException(status_code=404, detail=f"笔记 {note_id} 不存在")
-    _save_notes(notes, session_id)
+    with _notes_lock:
+        notes = _load_notes(session_id)
+        original_len = len(notes)
+        notes = [n for n in notes if n["id"] != note_id]
+        if len(notes) == original_len:
+            raise HTTPException(status_code=404, detail=f"笔记 {note_id} 不存在")
+        _save_notes(notes, session_id)
     logger.info("[Session:%s] 删除笔记 id=%s", session_id or "default", note_id)
 
     # 异步从向量库删除（不阻塞 HTTP 响应）

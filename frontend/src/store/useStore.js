@@ -891,9 +891,13 @@ export const useStore = create((set, get) => ({
         }),
       updateParsedSectionSummary: (title, summary) =>
         set((s) => {
-          const nextSections = s.parsedSections.map((it) =>
-            it.title === title ? { ...it, summary: summary || it.summary } : it
-          );
+          const idx = s.parsedSections.findIndex((it) => it.title === title);
+          const nextSections =
+            idx < 0
+              ? s.parsedSections
+              : s.parsedSections.map((it, i) =>
+                  i === idx ? { ...it, summary: summary || it.summary } : it
+                );
           const docId = s.activeDocId;
           const patch = { parsedSections: nextSections };
           if (docId) {

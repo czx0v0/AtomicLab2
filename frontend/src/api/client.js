@@ -141,6 +141,13 @@ export const createNote = (note) =>
     body: JSON.stringify(note),
   });
 
+/** 幂等写入：按 client_id + doc_id + source upsert */
+export const upsertNote = (note) =>
+  json('/notes/upsert', {
+    method: 'PUT',
+    body: JSON.stringify(note),
+  });
+
 export const distillNote = (text, docId = '', source = 'ugc', page = null) =>
   json('/note/distill', {
     method: 'POST',
@@ -181,6 +188,14 @@ export const searchGlobal = (query, topK = 16, maxRounds = 2) =>
 /** 建索引可能需加载嵌入模型 + 切块，易超过默认 30s；与 loadDemo 同级放宽。 */
 const INDEX_DOCUMENT_TIMEOUT_MS = 180000;
 const _indexDocumentInflight = new Map();
+
+/** 对整篇 Markdown 分节并逐节 LLM 摘要（需 DEEPSEEK_API_KEY） */
+export const llmSummarizeSections = (markdown) =>
+  json('/sections/llm-summarize', {
+    method: 'POST',
+    body: JSON.stringify({ markdown }),
+    timeout: 240000,
+  });
 
 export const indexDocument = (docId, docTitle, markdown) => {
   const existing = _indexDocumentInflight.get(docId);

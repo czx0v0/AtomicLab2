@@ -1,5 +1,7 @@
 /**
- * Local-First：高亮与原子笔记（含截图 Base64）仅存浏览器 IndexedDB，不经后端持久化。
+ * Local-First：文献级本地缓存（IndexedDB）。
+ * - highlights / notes：阅读与标注状态
+ * - markdown / sections：解析结果，避免切换/刷新后重复请求 MinerU
  */
 import localforage from 'localforage';
 
@@ -23,12 +25,16 @@ export function mergeNotesById(primary, secondary) {
   return Array.from(map.values());
 }
 
-export async function saveLocalDocState(docId, { highlights, notes }) {
+export async function saveLocalDocState(docId, { highlights, notes, markdown, sections, docName }) {
   if (!docId) return;
   try {
+    const prev = await store.getItem(keyFor(docId));
     await store.setItem(keyFor(docId), {
-      highlights: Array.isArray(highlights) ? highlights : [],
-      notes: Array.isArray(notes) ? notes : [],
+      highlights: Array.isArray(highlights) ? highlights : (Array.isArray(prev?.highlights) ? prev.highlights : []),
+      notes: Array.isArray(notes) ? notes : (Array.isArray(prev?.notes) ? prev.notes : []),
+      markdown: typeof markdown === 'string' ? markdown : (typeof prev?.markdown === 'string' ? prev.markdown : ''),
+      sections: Array.isArray(sections) ? sections : (Array.isArray(prev?.sections) ? prev.sections : []),
+      docName: typeof docName === 'string' ? docName : (typeof prev?.docName === 'string' ? prev.docName : ''),
       updatedAt: Date.now(),
     });
   } catch (e) {
@@ -37,16 +43,28 @@ export async function saveLocalDocState(docId, { highlights, notes }) {
 }
 
 export async function loadLocalDocState(docId) {
-  if (!docId) return { highlights: [], notes: [] };
+  if (!docId) return { highlights: [], notes: [], markdown: '', sections: [], docName: '' };
   try {
     const raw = await store.getItem(keyFor(docId));
-    if (!raw) return { highlights: [], notes: [] };
+    if (!raw) return { highlights: [], notes: [], markdown: '', sections: [], docName: '' };
     return {
       highlights: Array.isArray(raw.highlights) ? raw.highlights : [],
       notes: Array.isArray(raw.notes) ? raw.notes : [],
+      markdown: typeof raw.markdown === 'string' ? raw.markdown : '',
+      sections: Array.isArray(raw.sections) ? raw.sections : [],
+      docName: typeof raw.docName === 'string' ? raw.docName : '',
     };
   } catch (e) {
     console.warn('[Local-First] 读取失败', e);
-    return { highlights: [], notes: [] };
+    return { highlights: [], notes: [], markdown: '', sections: [], docName: '' };
+  }
+}
+
+export async function clearLocalDocState(docId) {
+  if (!docId) return;
+  try {
+    await store.removeItem(keyFor(docId));
+  } catch (e) {
+    console.warn('[Local-First] 清理失败', e);
   }
 }

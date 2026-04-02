@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -21,6 +22,17 @@ GLOBAL_DEMO_DOC_ID = "global_demo_official"
 
 # 检测是否在创空间环境
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+_index_doc_locks: Dict[str, threading.Lock] = {}
+_index_doc_locks_guard = threading.Lock()
+
+
+def _get_index_lock(doc_id: str) -> threading.Lock:
+    with _index_doc_locks_guard:
+        lock = _index_doc_locks.get(doc_id)
+        if lock is None:
+            lock = threading.Lock()
+            _index_doc_locks[doc_id] = lock
+        return lock
 
 
 # ── 请求 / 响应模型 ─────────────────────────────────────────────────────────
@@ -688,7 +700,9 @@ def index_document(body: IndexDocumentRequest, x_session_id: str = Header(defaul
 
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
 
+    lock = _get_index_lock(body.doc_id)
     try:
+        lock.acquire()
         from service.doc_rag import get_document_rag
 
         rag_session_id = None if body.doc_id == GLOBAL_DEMO_DOC_ID else session_id
@@ -711,3 +725,8 @@ def index_document(body: IndexDocumentRequest, x_session_id: str = Header(defaul
     except Exception as e:
         logger.error("索引文档失败: %s", e)
         raise HTTPException(status_code=500, detail=f"索引失败: {e}")
+    finally:
+        try:
+            lock.release()
+        except Exception:
+            pass

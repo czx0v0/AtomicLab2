@@ -92,6 +92,30 @@
 
 - 修复流式开始时 **SYNTHESIZER_BOT** 气泡空白、同时底部仍显示「思考/加载」的重复体验
 
+## 2026-04（文献切换与图谱一致性）
+
+### Added
+
+- **文献库「重解析」入口**
+  - 本地文献新增手动重解析按钮：清理该文献本地解析缓存后重新触发解析，便于修复异常状态
+- **Notes 幂等写入 API**
+  - 新增 `PUT /api/notes/upsert`，按 `client_id + doc_id + source` 幂等更新/创建，避免 Demo 种子与重复交互造成笔记膨胀
+
+### Changed
+
+- **本地缓存范围扩展**
+  - IndexedDB `localDocumentStore` 从仅缓存 `highlights/notes` 扩展为同时缓存 `markdown/sections/docName`
+  - 文献切换时优先恢复本地解析结果，减少重复请求 MinerU
+- **文档索引 doc_id 对齐**
+  - 上传文献后 `indexDocument` 使用真实 `doc.id`，修复 Organize 图谱中 section/note 缺失
+
+### Fixed
+
+- 修复切换文献后可能重复触发 MinerU 解析的问题
+- 修复新上传文献在 Organize 图谱缺少 section 节点的问题
+- 修复 Demo 种子笔记与图谱不同步的问题（支持后端 upsert 同步）
+- 修复 `index-document` 与 `notes` 并发场景下的部分竞态风险（加入进程内锁）
+
 ## 后续计划（建议）
 
 - 反馈日志改为 JSONL 逐行追加，便于离线训练样本抽取

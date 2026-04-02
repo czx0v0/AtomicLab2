@@ -102,6 +102,13 @@ cd frontend && npm install && npm run dev
 | `SECTION_SUMMARY_MODE` | `first_paragraph`（默认，首节文本，无额外 LLM）或 `llm`（每章在 SSE `chunk` 后再发 `summary` 事件，用 DeepSeek 生成短摘要；无 Key 或失败时仍为首段）。 |
 | `POST /api/parse-document` | Query：`section_summary_mode=first_paragraph` 或 `llm`，覆盖单次请求；前端左栏「章节摘要」下拉持久化到 `localStorage` 并传给该接口。 |
 
+### 文献切换与本地缓存（2026-04 修复）
+
+- **切换/刷新不重复请求 MinerU**：解析结果（`parsedMarkdown` + `parsedSections`）已落地到浏览器 IndexedDB（`localDocumentStore`），文献切换优先从本地恢复。
+- **文献库支持「重解析」**：对本地文献可一键清理该文献的本地解析缓存并重新触发解析，用于纠错与手动刷新。
+- **图谱 doc_id 一致性修复**：上传后索引写入使用真实后端 `doc.id`（不再使用文件名拼接 id），确保 Organize 图谱可稳定看到 `document/section/note` 节点。
+- **Demo 种子笔记可同步后端**：Demo 加载时 `demo_seed` 支持幂等 upsert 到后端 notes，便于图谱与前端章节树一致。
+
 ### 嵌入模型：Hugging Face 与 ModelScope
 
 创空间内会检测 `/mnt/workspace` 并**默认从 ModelScope** 拉取 `paraphrase-multilingual-MiniLM-L12-v2`（见 `aether_engine/service/embedding.py`）。**本机直接运行 `python app.py` 时**，若未设置下面开关，则 `sentence-transformers` 会按模型名访问 **Hugging Face Hub**，日志里可能出现对 `huggingface.co` 的请求；网络不通或超时时，可改用魔搭源：

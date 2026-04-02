@@ -11,7 +11,8 @@ import { AnimatePresence, motion } from 'framer-motion';
 import * as api from '../api/client';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
-import { loadLocalDocState, mergeNotesById, saveLocalDocState } from '../lib/localDocumentStore';
+import { clearLocalDocState, loadLocalDocState, mergeNotesById, saveLocalDocState } from '../lib/localDocumentStore';
+import { mergeSectionSummarySeeds } from '../lib/sectionSummarySeedNotes';
 
 // Load PDF worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -52,6 +53,8 @@ export const LeftColumn = () => {
     const [confirmRemoveId, setConfirmRemoveId] = useState(null); // 防误删：移除文献前二次确认
     const [popoverHighlight, setPopoverHighlight] = useState(null); // 点击高亮时弹窗显示原文
     const [demoLoading, setDemoLoading] = useState(false);
+    /** 文献库「智能摘要」请求中文献 id（library item id） */
+    const [llmSummarizeLoadingId, setLlmSummarizeLoadingId] = useState(null);
     const containerRef = useRef(null);
     const pageRef = useRef(null);
     const actionInFlightRef = useRef(false);
@@ -341,7 +344,14 @@ export const LeftColumn = () => {
                 const st = useStore.getState();
                 const h = st.highlights.filter((x) => (x.doc_id || '') === prev);
                 const n = st.notes.filter((x) => (x.doc_id || '') === prev);
-                await saveLocalDocState(prev, { highlights: h, notes: n });
+                const c = st.parseCacheByDocId?.[prev] || {};
+                await saveLocalDocState(prev, {
+                    highlights: h,
+                    notes: n,
+                    markdown: c.markdown || '',
+                    sections: c.sections || [],
+                    docName: c.docName || '',
+                });
             }
             if (cancelled) return;
 
@@ -369,12 +379,23 @@ export const LeftColumn = () => {
             if (cancelled) return;
             setHighlights((local.highlights || []).map((h) => ({ ...h, doc_id: docId })));
             setNotes(local.notes || []);
+            if (typeof local.markdown === 'string' && local.markdown.trim()) {
+                setParsedMarkdown(local.markdown, local.docName || pdfFileName || '');
+            }
+            if (Array.isArray(local.sections) && local.sections.length > 0) {
+                setParsedSections(local.sections);
+                setDocParseCache(docId, {
+                    sections: local.sections,
+                    markdown: local.markdown || '',
+                    docName: local.docName || pdfFileName || '',
+                });
+            }
         })();
 
         return () => {
             cancelled = true;
         };
-    }, [activeDocId, clearHighlights, setActiveReference, clearPendingScreenshotQueue, resetPdfRuntime, setHighlights, setNotes]);
+    }, [activeDocId, clearHighlights, setActiveReference, clearPendingScreenshotQueue, resetPdfRuntime, setHighlights, setNotes, setParsedMarkdown, setParsedSections, setDocParseCache, pdfFileName]);
 
     // 防抖：当前文献的高亮/笔记写入 IndexedDB
     useEffect(() => {
@@ -384,10 +405,16 @@ export const LeftColumn = () => {
             const st = useStore.getState();
             const h = st.highlights.filter((x) => (x.doc_id || '') === docId);
             const n = st.notes.filter((x) => (x.doc_id || '') === docId);
-            saveLocalDocState(docId, { highlights: h, notes: n });
+            saveLocalDocState(docId, {
+                highlights: h,
+                notes: n,
+                markdown: st.parsedMarkdown || '',
+                sections: st.parsedSections || [],
+                docName: st.parsedDocName || '',
+            });
         }, 400);
         return () => clearTimeout(t);
-    }, [highlights, notes, activeDocId]);
+    }, [highlights, notes, activeDocId, parsedMarkdown, parsedSections, parsedDocName]);
 
     const isNormalizedBbox = (bbox) => {
         if (!bbox) return false;
@@ -512,6 +539,9 @@ export const LeftColumn = () => {
             });
             if (useStore.getState().activeUploadTaskId === taskId) {
                 setPdfUrl(fileUrl, doc.name, doc.id);
+                // 防止 setPdfUrl 从旧缓存水合后，SSE 解析又追加导致“大纲/摘要重复”
+                setParsedSections([]);
+                setDocParseCache(doc.id, { sections: [], markdown: '', docName: file.name });
                 addParseLog(`开始解析: ${file.name}`);
             }
             addToLibrary({
@@ -567,13 +597,19 @@ export const LeftColumn = () => {
                 }
                 if (evt.status === 'success') {
                     const fullMd = evt.markdown || accumulatedMarkdownRef.current || '';
+                    {
+                        const st = useStore.getState();
+                        if (st.activeUploadTaskId === taskId && st.activeDocId === doc.id && st.parsedSections?.length) {
+                            setNotes((prev) => mergeSectionSummarySeeds(prev, doc.id, st.parsedSections));
+                        }
+                    }
                     patchUploadTask(taskId, { status: 'indexing', parseProgress: 98, appendLog: '解析成功，正在建立索引...' });
                     if (fullMd) {
                         setDocParseCache(doc.id, { markdown: fullMd, docName: file.name });
                         if (useStore.getState().activeUploadTaskId === taskId && useStore.getState().activeDocId === doc.id) {
                             setParsedMarkdown(fullMd, file.name);
                         }
-                        api.indexDocument(`doc_${file.name}`, file.name, fullMd)
+                        api.indexDocument(doc.id, file.name, fullMd)
                             .then(() => {
                                 patchUploadTask(taskId, { status: 'done', parseProgress: 100, appendLog: '知识库已索引，可检索。' });
                                 if (useStore.getState().activeUploadTaskId === taskId) {
@@ -630,6 +666,69 @@ export const LeftColumn = () => {
         applyFileAsUpload(file);
     }, [setNotification, applyFileAsUpload]);
 
+    const handleReparseLibraryDoc = useCallback(async (doc, e) => {
+        e?.stopPropagation?.();
+        if (doc?.source !== 'local' || !doc?.docId) return;
+        await clearLocalDocState(doc.docId);
+        setDocParseCache(doc.docId, { sections: [], markdown: '', docName: doc.name || '' });
+        const st = useStore.getState();
+        if (st.activeDocId === doc.docId) {
+            setParsedSections([]);
+            setParsedMarkdown('', doc.name || '');
+            setParseStatus('idle');
+            setNotification('已清理本地缓存，正在重新解析该文献。');
+        } else {
+            setNotification('已清理缓存，下次打开该文献将重新解析。');
+        }
+    }, [setDocParseCache, setParsedSections, setParsedMarkdown, setParseStatus, setNotification]);
+
+    const handleLlmSummarizeLibraryDoc = useCallback(async (doc, e) => {
+        e?.stopPropagation?.();
+        if (doc?.source !== 'local' || !doc?.docId) return;
+        if (doc.docId === GLOBAL_DEMO_DOC_ID) {
+            setNotification('Demo 白皮书已内置智能摘要，无需再次生成。', 'info');
+            return;
+        }
+        const st0 = useStore.getState();
+        let md = '';
+        if (st0.activeDocId === doc.docId) {
+            md = st0.parsedMarkdown || '';
+        } else {
+            md = (st0.parseCacheByDocId[doc.docId] || {}).markdown || '';
+        }
+        if (!md.trim()) {
+            setNotification('该文献暂无解析 Markdown，请先打开并等待解析完成。', 'warn');
+            return;
+        }
+        setLlmSummarizeLoadingId(doc.id);
+        try {
+            const resp = await api.llmSummarizeSections(md);
+            const sections = (resp.sections || []).map((s) => ({
+                title: s.title || 'Untitled',
+                summary: s.summary || '',
+                content: s.content || '',
+                imageRefs: s.image_refs || s.imageRefs || [],
+            }));
+            const st = useStore.getState();
+            setNotes((prev) => mergeSectionSummarySeeds(prev, doc.docId, sections));
+            if (st.activeDocId === doc.docId) {
+                setParsedSections(sections);
+            } else {
+                const c = st.parseCacheByDocId[doc.docId] || {};
+                setDocParseCache(doc.docId, {
+                    sections,
+                    markdown: c.markdown || md,
+                    docName: c.docName || doc.name || '',
+                });
+            }
+            setNotification('各章节已更新为 LLM 智能摘要。');
+        } catch (err) {
+            setNotification(err?.message || '智能摘要失败', 'error');
+        } finally {
+            setLlmSummarizeLoadingId(null);
+        }
+    }, [setNotification, setNotes, setParsedSections, setDocParseCache]);
+
     const removeLibraryDocument = useCallback(async (doc) => {
         const isLocal = doc?.source === 'local' && !!doc?.docId;
         if (isLocal) {
@@ -644,6 +743,25 @@ export const LeftColumn = () => {
         setNotification(isLocal ? '文献已删除，笔记保留。' : '已从文献库移除。');
     }, [removeFromLibrary, setNotification]);
 
+    const syncDemoSeedNotesToBackend = useCallback(async (docId, seededNotes) => {
+        if (!docId || !Array.isArray(seededNotes) || seededNotes.length === 0) return;
+        await Promise.allSettled(
+            seededNotes.map((n, idx) =>
+                api.upsertNote({
+                    client_id: n.id || `demo_seed_${idx}`,
+                    content: n.content || '',
+                    type: n.type || 'idea',
+                    page: n.page ?? null,
+                    bbox: n.bbox ?? null,
+                    keywords: n.keywords ?? [],
+                    source: n.source || 'demo_seed',
+                    doc_id: docId,
+                    section_index: Number.isInteger(n.section_index) ? n.section_index : idx,
+                })
+            )
+        );
+    }, []);
+
     const loadSharedDemo = useCallback(() => {
         setDemoLoading(true);
         setNotification('正在加载白皮书…');
@@ -654,7 +772,12 @@ export const LeftColumn = () => {
                 const title = resp?.title || 'demo_paper.pdf';
                 const docId = resp?.doc_id || GLOBAL_DEMO_DOC_ID;
                 const local = await loadLocalDocState(docId);
-                const seeded = (resp?.demo_notes || []).map((n) => ({ ...n, doc_id: n.doc_id || docId }));
+                const seeded = (resp?.demo_notes || []).map((n, idx) => ({
+                    ...n,
+                    doc_id: n.doc_id || docId,
+                    section_index: Number.isInteger(n.section_index) ? n.section_index : idx,
+                }));
+                await syncDemoSeedNotesToBackend(docId, seeded);
                 const mergedNotes = mergeNotesById(seeded, local.notes || []);
                 addToLibrary({ id: docId, name: title, addedAt: new Date().toISOString(), source: 'demo' });
                 setPdfUrl(fileUrl, title, docId);
@@ -690,6 +813,7 @@ export const LeftColumn = () => {
         setParsedSections,
         setParseStatus,
         setViewMode,
+        syncDemoSeedNotesToBackend,
     ]);
 
     // Header/其他处触发「加载白皮书」时，拉取 demo PDF 并当作用户上传解析
@@ -718,6 +842,24 @@ export const LeftColumn = () => {
 
         (async () => {
             try {
+                const local = await loadLocalDocState(docId);
+                if (cancelled) return;
+                if (Array.isArray(local.sections) && local.sections.length > 0) {
+                    const stLocal = useStore.getState();
+                    if (stLocal.parseInflightId !== runId || stLocal.activeDocId !== docId) return;
+                    if (typeof local.markdown === 'string' && local.markdown.trim()) {
+                        setParsedMarkdown(local.markdown, local.docName || pdfFileName || 'document.pdf');
+                    }
+                    setParsedSections(local.sections);
+                    setDocParseCache(docId, {
+                        sections: local.sections,
+                        markdown: local.markdown || '',
+                        docName: local.docName || pdfFileName || 'document.pdf',
+                    });
+                    setParseStatus('done');
+                    addParseLog('已从本地缓存恢复解析结果。');
+                    return;
+                }
                 const res = await fetch(url, { headers: { 'X-Session-ID': SESSION_ID } });
                 if (!res.ok) return;
                 const blob = await res.blob();
@@ -728,6 +870,9 @@ export const LeftColumn = () => {
                 if (st.parseInflightId !== runId || st.activeDocId !== docId) return;
 
                 accumulatedMarkdownRef.current = '';
+                // 避免切换/残留状态下 SSE 解析又追加到旧 parsedSections
+                setParsedSections([]);
+                setDocParseCache(docId, { sections: [], markdown: '', docName: name });
                 setParseStatus('parsing');
                 addParseLog(`开始解析: ${name}`);
                 await api.parsePDF(file, 'auto', (evt) => {
@@ -753,9 +898,15 @@ export const LeftColumn = () => {
                     }
                     if (evt.status === 'success') {
                         const fullMd = evt.markdown || accumulatedMarkdownRef.current || '';
+                        {
+                            const st = useStore.getState();
+                            if (st.parseInflightId === runId && st.activeDocId === docId && st.parsedSections?.length) {
+                                setNotes((prev) => mergeSectionSummarySeeds(prev, docId, st.parsedSections));
+                            }
+                        }
                         if (fullMd) {
                             setParsedMarkdown(fullMd, name);
-                            api.indexDocument(`doc_${name}`, name, fullMd)
+                            api.indexDocument(docId, name, fullMd)
                                 .then(() => addParseLog('知识库已索引，可检索。'))
                                 .catch((e) => {
                                     setNotification('知识库索引失败: ' + (e?.message || String(e)), 'error');
@@ -793,6 +944,8 @@ export const LeftColumn = () => {
         addParsedSection,
         updateParsedSectionSummary,
         setParsedMarkdown,
+        setParsedSections,
+        setDocParseCache,
         setNotification,
     ]);
 
@@ -1236,6 +1389,34 @@ export const LeftColumn = () => {
                                             <span className={`text-[9px] px-1 py-0.5 rounded shrink-0 ${doc.source === 'arxiv' ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
                                                 {doc.source === 'arxiv' ? 'ArXiv' : 'Local'}
                                             </span>
+                                            {doc.source === 'local' && doc.docId && (
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => handleReparseLibraryDoc(doc, e)}
+                                                    className="shrink-0 text-[9px] px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                                                    title="清理本地解析缓存并重新解析"
+                                                >
+                                                    重解析
+                                                </button>
+                                            )}
+                                            {doc.source === 'local' && doc.docId && (
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => handleLlmSummarizeLibraryDoc(doc, e)}
+                                                    disabled={llmSummarizeLoadingId === doc.id}
+                                                    className="shrink-0 text-[9px] px-1.5 py-0.5 rounded border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    title="提取 LLM 智能摘要（需后端 DEEPSEEK_API_KEY）"
+                                                >
+                                                    {llmSummarizeLoadingId === doc.id ? (
+                                                        <span className="inline-block w-2.5 h-2.5 border border-violet-500 border-t-transparent rounded-full animate-spin align-[-2px]" />
+                                                    ) : (
+                                                        <span className="inline-flex items-center gap-0.5">
+                                                            <Sparkles size={9} className="shrink-0" />
+                                                            智能摘要
+                                                        </span>
+                                                    )}
+                                                </button>
+                                            )}
                                             {confirmRemoveId === doc.id ? (
                                                 <span className="text-[9px] text-amber-600 shrink-0">确认中</span>
                                             ) : (

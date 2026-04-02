@@ -496,8 +496,30 @@ const assignNotesToSections = (notes, sections) => {
   const maxPage = Math.max(...notes.map(n => n.page || 0), 1);
   const perSection = Math.ceil(maxPage / sections.length) || 1;
   const map = {}; // sectionIdx -> [note, ...]
+  const getFixedSectionIndex = (n) => {
+    if (Number.isInteger(n?.section_index)) return n.section_index;
+    // 老缓存可能没写 section_index，但能从 id 还原（synthetic）
+    const id = n?.id || '';
+    if (typeof id === 'string') {
+      if (n?.source === 'section_summary') {
+        const m = id.match(/section_summary_.+_(\d+)$/);
+        if (m) return Number(m[1]);
+      }
+      if (n?.source === 'demo_seed') {
+        const m = id.match(/demo_seed_(\d+)$/);
+        if (m) return Number(m[1]);
+      }
+    }
+    return null;
+  };
   notes.forEach(n => {
     const pg = n.page || 1;
+    const fixedIdx = getFixedSectionIndex(n);
+    if (Number.isInteger(fixedIdx) && fixedIdx >= 0 && fixedIdx < sections.length) {
+      if (!map[fixedIdx]) map[fixedIdx] = [];
+      map[fixedIdx].push(n);
+      return;
+    }
     // try text-match first
     let bestIdx = -1;
     for (let i = 0; i < sections.length; i++) {
@@ -542,6 +564,21 @@ const TreeMapView = ({ notes, sections = [], docName = '', onSelectNote }) => {
                 const secId = `sec_${idx}`;
                 const isCollapsed = collapsed[secId];
                 const secNotes = secMap[idx] || secMap[sec.idx] || [];
+                const hasSeedInThisSection = secNotes.some((n) => {
+                  if (!n) return false;
+                  if (n.source !== 'section_summary' && n.source !== 'demo_seed') return false;
+                  if (Number.isInteger(n.section_index)) return n.section_index === idx;
+                  const id = n.id || '';
+                  if (n.source === 'section_summary') {
+                    const m = String(id).match(/section_summary_.+_(\d+)$/);
+                    if (m) return Number(m[1]) === idx;
+                  }
+                  if (n.source === 'demo_seed') {
+                    const m = String(id).match(/demo_seed_(\d+)$/);
+                    if (m) return Number(m[1]) === idx;
+                  }
+                  return false;
+                });
                 return (
                   <div key={secId} className="space-y-0.5">
                     <button
@@ -555,7 +592,7 @@ const TreeMapView = ({ notes, sections = [], docName = '', onSelectNote }) => {
                     </button>
                     {!isCollapsed && (
                       <div className="ml-4 space-y-0.5">
-                        {sec.summary && (
+                        {sec.summary && !hasSeedInThisSection && (
                           <p className="whitespace-pre-wrap break-words max-h-40 overflow-y-auto text-[9px] text-gray-400 italic mb-1">{sec.summary}</p>
                         )}
                         {secNotes.length === 0 && !sec.summary && (
@@ -2003,6 +2040,21 @@ const KnowledgeTree = ({ notes, sections = [], docName = '' }) => {
         sections.map((sec, idx) => {
           const key = `sec_${idx}`;
           const secNotes = secMap[idx] || [];
+          const hasSeedInThisSection = secNotes.some((n) => {
+            if (!n) return false;
+            if (n.source !== 'section_summary' && n.source !== 'demo_seed') return false;
+            if (Number.isInteger(n.section_index)) return n.section_index === idx;
+            const id = n.id || '';
+            if (n.source === 'section_summary') {
+              const m = String(id).match(/section_summary_.+_(\d+)$/);
+              if (m) return Number(m[1]) === idx;
+            }
+            if (n.source === 'demo_seed') {
+              const m = String(id).match(/demo_seed_(\d+)$/);
+              if (m) return Number(m[1]) === idx;
+            }
+            return false;
+          });
           const isOpen = !collapsed[key];
           return (
             <div key={key} className="mb-2">
@@ -2017,7 +2069,7 @@ const KnowledgeTree = ({ notes, sections = [], docName = '' }) => {
               </div>
               {isOpen && (
                 <div className="ml-5 border-l border-emerald-200 pl-3 mt-1 space-y-1">
-                  {sec.summary && (
+                  {sec.summary && !hasSeedInThisSection && (
                     <p className="text-[9px] text-gray-400 italic whitespace-pre-wrap break-words mb-1">【摘要】{sec.summary}</p>
                   )}
                   {secNotes.length > 0 ? secNotes.map(renderNote) : (
@@ -2437,6 +2489,7 @@ const NexusPanel = () => {
   const scopedNotes = React.useMemo(() => {
     const aid = activeDocId || '';
     if (!aid) return displayNotes.filter((n) => !n.doc_id);
+    // demo_seed 需特判 doc_id；section_summary 与普通笔记一样带 doc_id，随首条条件即可进入 Organize
     return displayNotes.filter((n) => (n.doc_id || '') === aid || (n.source === 'demo_seed' && aid === GLOBAL_DEMO_DOC_ID));
   }, [displayNotes, activeDocId]);
 
