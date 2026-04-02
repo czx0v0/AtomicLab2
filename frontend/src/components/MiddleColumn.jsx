@@ -753,6 +753,11 @@ const GraphView = ({ scope = 'global', docId = '', docName = '', domainFilterId 
 
   const handleNodeClick = useCallback(async (node) => {
     if (!node) return;
+    const nodeType = String(node?.type || node?.level || '').toLowerCase();
+    if (nodeType === 'tag' || nodeType === 'entity') {
+      setNotification('该节点是概念标签，不是可直接跳转的文档锚点。', 'info');
+      return;
+    }
     await jumpToKnowledgeSource(node, {
       setViewMode,
       setPdfUrl,

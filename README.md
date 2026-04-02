@@ -157,3 +157,5 @@ cd frontend && npm install && npm run dev
 - **助手**：Markdown、GFM 表格、KaTeX；可点击文献引用 `[n]`。  
 - **双库分工**：服务端 Chroma + BM25 + 图谱承担语义检索；浏览器 IndexedDB / `parseCacheByDocId` 存高亮、解析缓存等本地元数据（详见 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)）。  
 - **MinerU**：已配置 `MINERU_API_TOKEN` / `MINERU_API_KEY` 时走云 API；未配置时可回退本地 CLI（若已安装）。
+- **图谱跳转行为**：`document/section/note/atomic_note` 节点支持定位到阅读视图；`tag/entity` 为语义节点，不做 PDF 直接跳转，避免“缺少文档标识”误报。
+- **Demo 切换策略**：加载 Demo 不再执行全局 `startOver`，避免清空本地文献缓存；A→Demo→A 切换优先本地恢复，不重复触发 MinerU。

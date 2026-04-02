@@ -373,8 +373,6 @@ export const LeftColumn = () => {
             }
 
             if (!docId) return;
-            if (docId === GLOBAL_DEMO_DOC_ID) return;
-
             const local = await loadLocalDocState(docId);
             if (cancelled) return;
             setHighlights((local.highlights || []).map((h) => ({ ...h, doc_id: docId })));
@@ -765,7 +763,6 @@ export const LeftColumn = () => {
     const loadSharedDemo = useCallback(() => {
         setDemoLoading(true);
         setNotification('正在加载白皮书…');
-        startOver();
         api.loadDemo()
             .then(async (resp) => {
                 const fileUrl = resp?.file_url || '/api/demo/pdf';
@@ -804,7 +801,6 @@ export const LeftColumn = () => {
             .finally(() => setDemoLoading(false));
     }, [
         setNotification,
-        startOver,
         setPdfUrl,
         addToLibrary,
         setNotes,
