@@ -15,6 +15,11 @@ async def parse_document(
         pattern="^(auto|txt|ocr)$",
         description="auto=全模态(慢) | txt=纯文本(快) | ocr=OCR模式",
     ),
+    section_summary_mode: str = Query(
+        "first_paragraph",
+        pattern="^(first_paragraph|llm)$",
+        description="first_paragraph=首节文本 | llm=DEEPSEEK 短摘要（需 API Key）",
+    ),
 ):
     """
     Receives a PDF and streams extraction logs progressively, ending with the Markdown text.
@@ -30,6 +35,11 @@ async def parse_document(
         raise HTTPException(status_code=500, detail="Failed to read file.")
 
     return StreamingResponse(
-        parse_pdf_with_mineru(content, file.filename or "uploaded.pdf", method=method),
+        parse_pdf_with_mineru(
+            content,
+            file.filename or "uploaded.pdf",
+            method=method,
+            section_summary_mode=section_summary_mode,
+        ),
         media_type="text/event-stream",
     )

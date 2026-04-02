@@ -39,3 +39,6 @@ aether_engine/service/__pycache__/note_rag.cpython-312.pyc
 aether_engine/service/__pycache__/parser.cpython-312.pyc
 aether_engine/service/__pycache__/qdrant_client.cpython-312.pyc
 aether_engine/service/__pycache__/parser.cpython-312.pyc
+aether_engine/service/__pycache__/note_rag.cpython-310.pyc
+aether_engine/service/__pycache__/bm25_engine.cpython-310.pyc
+aether_engine/service/__pycache__/embedding.cpython-310.pyc

@@ -4,7 +4,7 @@
  */
 
 import { SESSION_ID } from '../store/useStore';
-import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
+import { GLOBAL_DEMO_DOC_ID, getStoredSectionSummaryMode } from '../lib/constants';
 
 const BASE_URL = '/api';
 
@@ -88,12 +88,19 @@ export async function getDemoPdfBlob() {
  * @param {File} file
  * @param {string} method  'auto' | 'txt' | 'ocr'
  * @param {(event: {status, message?, markdown?}) => void} onEvent
+ * @param {{ signal?: AbortSignal, sectionSummaryMode?: 'first_paragraph'|'llm' }} [options]
  */
 export async function parsePDF(file, method = 'auto', onEvent, options = {}) {
   const formData = new FormData();
   formData.append('file', file);
 
-  const res = await fetch(`${BASE_URL}/parse-document?method=${method}`, {
+  const sectionMode = options.sectionSummaryMode ?? getStoredSectionSummaryMode();
+  const qs = new URLSearchParams({
+    method: method || 'auto',
+    section_summary_mode: sectionMode,
+  });
+
+  const res = await fetch(`${BASE_URL}/parse-document?${qs.toString()}`, {
     method: 'POST',
     headers: { 'X-Session-ID': SESSION_ID },
     body: formData,

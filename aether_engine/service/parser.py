@@ -10,6 +10,10 @@ MinerU 云 API 工作流（本地文件上传）：
   3. 轮询 GET /api/v4/extract/task/{task_id} 直到 state=done
   4. 下载 full_zip_url 中的 zip，解压提取 full.md
 
+章节摘要模式（环境变量 SECTION_SUMMARY_MODE 或解析 API Query section_summary_mode）：
+  first_paragraph — 默认，首节文本，无额外 LLM 调用
+  llm — 每章 chunk 后再发 summary 事件，用 DEEPSEEK_API_KEY 生成短摘要（失败则保持首段）
+
 文档：https://mineru.net/doc/docs/
 """
 
@@ -130,6 +134,40 @@ else:
 # ══════════════════════════════════════════════════════════════
 # 公共工具
 # ══════════════════════════════════════════════════════════════
+_SECTION_SUMMARY_MAX_CHARS = 8000
+
+
+def _first_text_paragraph_summary(section_body: str) -> str:
+    """
+    取章节首节可见文字摘要：跳过段首空行与图片行，自第一条正文起收集至第一个空行；
+    若正文中再遇图片行则结束（摘要仅保留连续文本块）。总长上限 _SECTION_SUMMARY_MAX_CHARS。
+    """
+    lines = section_body.splitlines()
+    buf: list[str] = []
+    started = False
+    for line in lines:
+        clean = line.strip()
+        if not clean:
+            if started:
+                break
+            continue
+        if clean.startswith("!"):
+            if started:
+                break
+            continue
+        started = True
+        buf.append(clean)
+    text = "\n".join(buf).strip()
+    if len(text) <= _SECTION_SUMMARY_MAX_CHARS:
+        return text
+    cut = text[: _SECTION_SUMMARY_MAX_CHARS]
+    tail = cut[-200:]
+    sp = tail.rfind(" ")
+    if sp > 0:
+        cut = cut[: len(cut) - len(tail) + sp].rstrip()
+    return cut
+
+
 def _split_sections(md: str) -> list:
     """将 Markdown 拆分为章节列表"""
     sections = []
@@ -142,13 +180,7 @@ def _split_sections(md: str) -> list:
         text = "\n".join(buf).strip()
         if not text:
             return
-        summary = ""
-        for line in text.splitlines():
-            clean = line.strip()
-            if not clean or clean.startswith("!"):
-                continue
-            summary = clean[:160]
-            break
+        summary = _first_text_paragraph_summary(text)
         image_refs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text)
         sections.append(
             {
@@ -183,6 +215,74 @@ def _make_event(status: str, msg: str = "", markdown: str = "", **extra) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _resolved_section_summary_mode(explicit: Optional[str]) -> str:
+    """单次请求 Query 优先，否则环境变量 SECTION_SUMMARY_MODE，默认 first_paragraph。"""
+    raw = (explicit or os.environ.get("SECTION_SUMMARY_MODE", "first_paragraph") or "").strip().lower()
+    return "llm" if raw == "llm" else "first_paragraph"
+
+
+def _llm_enhance_summary(title: str, content: str, fallback: str) -> str:
+    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    if not api_key:
+        return fallback
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url=api_base)
+        resp = client.chat.completions.create(
+            model=os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是学术文献摘要助手，请输出一句简洁中文摘要（不超过70字）。",
+                },
+                {
+                    "role": "user",
+                    "content": f"章节标题: {title}\n\n章节内容:\n{content[:1200]}",
+                },
+            ],
+            max_tokens=120,
+            temperature=0.2,
+        )
+        ans = (resp.choices[0].message.content or "").strip()
+        return ans or fallback
+    except Exception as e:
+        logger.warning("[parser] LLM 章节摘要失败，使用首段 fallback: %s", e)
+        return fallback
+
+
+async def _yield_chunks_and_summaries(
+    sections: list,
+    section_summary_mode: str,
+) -> AsyncGenerator[str, None]:
+    """先为每章发 chunk；若 mode 为 llm 再发 summary 事件覆盖摘要。"""
+    n = len(sections)
+    for idx, sec in enumerate(sections):
+        yield _make_event(
+            "chunk",
+            msg=f"分段 {idx + 1}/{n}: {sec['title']}",
+            markdown_chunk=sec["content"],
+            section_title=sec["title"],
+            section_summary=sec["summary"],
+            image_refs=sec.get("image_refs", []),
+        )
+        if section_summary_mode != "llm":
+            continue
+        enhanced = await asyncio.to_thread(
+            _llm_enhance_summary,
+            sec["title"],
+            sec["content"],
+            sec["summary"],
+        )
+        yield _make_event(
+            "summary",
+            msg=f"章节摘要: {sec['title']}",
+            section_title=sec["title"],
+            section_summary=enhanced,
+        )
+
+
 # ══════════════════════════════════════════════════════════════
 # MinerU 云 API 解析
 # ══════════════════════════════════════════════════════════════
@@ -190,6 +290,7 @@ async def _parse_via_cloud_api(
     file_content: bytes,
     filename: str,
     method: str = "auto",
+    section_summary_mode: str = "first_paragraph",
 ) -> AsyncGenerator[str, None]:
     """通过 MinerU 云 API 解析 PDF，流式 yield SSE 事件"""
     token = _get_mineru_api_token()
@@ -379,17 +480,10 @@ async def _parse_via_cloud_api(
             stem = Path(filename).stem
             parsed_content = _persist_and_rewrite_images(parsed_content, stem, img_data)
 
-            # 流式输出章节
+            # 流式输出章节（可选 LLM 摘要）
             sections = _split_sections(parsed_content)
-            for idx, sec in enumerate(sections):
-                yield _make_event(
-                    "chunk",
-                    msg=f"分段 {idx + 1}/{len(sections)}: {sec['title']}",
-                    markdown_chunk=sec["content"],
-                    section_title=sec["title"],
-                    section_summary=sec["summary"],
-                    image_refs=sec.get("image_refs", []),
-                )
+            async for ev in _yield_chunks_and_summaries(sections, section_summary_mode):
+                yield ev
 
             yield _make_event("success", markdown=parsed_content)
             return
@@ -409,6 +503,7 @@ async def _parse_via_local_cli(
     file_content: bytes,
     filename: str,
     method: str = "auto",
+    section_summary_mode: str = "first_paragraph",
 ) -> AsyncGenerator[str, None]:
     """调用本地 mineru/magic-pdf CLI 解析"""
     if not _MAGIC_PDF_BIN:
@@ -496,15 +591,8 @@ async def _parse_via_local_cli(
         parsed_content = _persist_and_rewrite_images(parsed_content, stem, src_img_dir)
 
         sections = _split_sections(parsed_content)
-        for idx, sec in enumerate(sections):
-            yield _make_event(
-                "chunk",
-                msg=f"分段 {idx + 1}/{len(sections)}: {sec['title']}",
-                markdown_chunk=sec["content"],
-                section_title=sec["title"],
-                section_summary=sec["summary"],
-                image_refs=sec.get("image_refs", []),
-            )
+        async for ev in _yield_chunks_and_summaries(sections, section_summary_mode):
+            yield ev
 
         yield _make_event("success", markdown=parsed_content)
 
@@ -513,17 +601,27 @@ async def _parse_via_local_cli(
 # 统一入口
 # ══════════════════════════════════════════════════════════════
 async def parse_pdf_with_mineru(
-    file_content: bytes, filename: str, method: str = "auto"
+    file_content: bytes,
+    filename: str,
+    method: str = "auto",
+    section_summary_mode: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """
     解析 PDF，优先云 API，回退本地 CLI。
+    section_summary_mode: 显式传入覆盖环境变量；见 _resolved_section_summary_mode。
     """
     if method not in ("auto", "txt", "ocr"):
         method = "auto"
 
+    mode = _resolved_section_summary_mode(section_summary_mode)
+
     if _get_mineru_api_token():
-        async for event in _parse_via_cloud_api(file_content, filename, method):
+        async for event in _parse_via_cloud_api(
+            file_content, filename, method, mode
+        ):
             yield event
     else:
-        async for event in _parse_via_local_cli(file_content, filename, method):
+        async for event in _parse_via_local_cli(
+            file_content, filename, method, mode
+        ):
             yield event

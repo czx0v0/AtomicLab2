@@ -74,6 +74,8 @@ const AgentPipelineHud = () => {
 
 const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const sectionSummaryMode = useStore((s) => s.sectionSummaryMode);
+  const setSectionSummaryMode = useStore((s) => s.setSectionSummaryMode);
   const NavButton = ({ mode, icon: Icon, label }) => (
     <button 
       onClick={() => setViewMode(mode)}
@@ -111,8 +113,23 @@ const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo 
             <NavButton mode="write" icon={PenLine} label="Write" />
         </nav>
 
-        {/* Right: Local-First + 加载 Demo / 重新开始 + Backend Status */}
-        <div className="hidden md:flex items-center gap-3">
+        {/* Right: 章节摘要模式 + Local-First + 加载 Demo / 重新开始 + Backend Status */}
+        <div className="hidden md:flex items-center gap-2 md:gap-3 flex-wrap justify-end">
+            <label className="flex items-center gap-1.5 text-[10px] text-slate-600 shrink-0">
+              <span className="hidden xl:inline whitespace-nowrap">章节摘要</span>
+              <select
+                aria-label="章节摘要模式"
+                className="text-[10px] border border-slate-200 rounded px-1.5 py-0.5 bg-white max-w-[9rem]"
+                value={sectionSummaryMode}
+                onChange={(e) =>
+                  setSectionSummaryMode(e.target.value === 'llm' ? 'llm' : 'first_paragraph')
+                }
+                title="首节=完整首节文本；LLM=短摘要（需服务端 DEEPSEEK_API_KEY）"
+              >
+                <option value="first_paragraph">首节（快）</option>
+                <option value="llm">LLM 短摘要</option>
+              </select>
+            </label>
             <LocalFirstBadge variant="header" />
             {onLoadDemo && (
               <button
@@ -180,6 +197,23 @@ const Header = ({ viewMode, setViewMode, backendOnline, onStartOver, onLoadDemo 
                 >
                   Write
                 </button>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
+                  <span>章节摘要</span>
+                  <select
+                    aria-label="章节摘要模式"
+                    className="text-[11px] border border-slate-200 rounded px-2 py-1 bg-white flex-1 min-w-0 max-w-[12rem]"
+                    value={sectionSummaryMode}
+                    onChange={(e) =>
+                      setSectionSummaryMode(e.target.value === 'llm' ? 'llm' : 'first_paragraph')
+                    }
+                  >
+                    <option value="first_paragraph">首节（快）</option>
+                    <option value="llm">LLM 短摘要</option>
+                  </select>
+                </label>
+                <p className="text-[9px] text-slate-400">LLM 需服务端 Key</p>
               </div>
               <div className="flex items-center gap-2">
                 {onLoadDemo && (

@@ -95,6 +95,13 @@ cd frontend && npm install && npm run dev
 - 创空间运行：控制台「设置 -> 环境变量」
 - 建议至少配置：`DEEPSEEK_API_KEY`、`DEEPSEEK_API_BASE`
 
+### PDF 解析：章节摘要模式
+
+| 变量 / 参数 | 说明 |
+|-------------|------|
+| `SECTION_SUMMARY_MODE` | `first_paragraph`（默认，首节文本，无额外 LLM）或 `llm`（每章在 SSE `chunk` 后再发 `summary` 事件，用 DeepSeek 生成短摘要；无 Key 或失败时仍为首段）。 |
+| `POST /api/parse-document` | Query：`section_summary_mode=first_paragraph` 或 `llm`，覆盖单次请求；前端左栏「章节摘要」下拉持久化到 `localStorage` 并传给该接口。 |
+
 ### 嵌入模型：Hugging Face 与 ModelScope
 
 创空间内会检测 `/mnt/workspace` 并**默认从 ModelScope** 拉取 `paraphrase-multilingual-MiniLM-L12-v2`（见 `aether_engine/service/embedding.py`）。**本机直接运行 `python app.py` 时**，若未设置下面开关，则 `sentence-transformers` 会按模型名访问 **Hugging Face Hub**，日志里可能出现对 `huggingface.co` 的请求；网络不通或超时时，可改用魔搭源：

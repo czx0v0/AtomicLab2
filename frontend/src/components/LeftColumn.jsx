@@ -33,6 +33,7 @@ export const LeftColumn = () => {
         clearHighlights, setHighlights, clearPendingScreenshotQueue,
         bumpParseInflight,
         uploadTasks, activeUploadTaskId, setActiveUploadTask, upsertUploadTask, patchUploadTask, setDocParseCache,
+        sectionSummaryMode,
     } = useStore();
     const accumulatedMarkdownRef = useRef('');
     const [pdfLoadError, setPdfLoadError] = useState(null);
@@ -594,7 +595,7 @@ export const LeftColumn = () => {
                     patchUploadTask(taskId, { status: 'error', error: evt?.message || '解析失败', appendLog: '解析失败' });
                     if (useStore.getState().activeUploadTaskId === taskId) setParseStatus('error');
                 }
-            }, { signal: parseAbort.signal }).catch((e) => {
+            }, { signal: parseAbort.signal, sectionSummaryMode }).catch((e) => {
                 const msg = e instanceof Error ? e.message : String(e);
                 patchUploadTask(taskId, { status: 'error', error: msg, appendLog: `解析失败: ${msg}` });
                 if (useStore.getState().activeUploadTaskId === taskId) {
@@ -613,7 +614,7 @@ export const LeftColumn = () => {
                 addParseLog(`上传失败: ${msg}`);
             }
         });
-    }, [setNotes, resetParseUiState, setPdfFile, setPdfUrl, addToLibrary, setParseStatus, addParseLog, addParsedSection, updateParsedSectionSummary, setParsedMarkdown, setNotification, bumpParseInflight, upsertUploadTask, patchUploadTask, setActiveUploadTask, setDocParseCache]);
+    }, [setNotes, resetParseUiState, setPdfFile, setPdfUrl, addToLibrary, setParseStatus, addParseLog, addParsedSection, updateParsedSectionSummary, setParsedMarkdown, setNotification, bumpParseInflight, upsertUploadTask, patchUploadTask, setActiveUploadTask, setDocParseCache, sectionSummaryMode]);
 
     const onFileChange = (event) => {
         const file = event.target.files[0];
@@ -767,7 +768,7 @@ export const LeftColumn = () => {
                     if (evt.status === 'error') {
                         setParseStatus('error');
                     }
-                });
+                }, { sectionSummaryMode });
             } catch (e) {
                 if (cancelled) return;
                 const s = useStore.getState();
@@ -785,6 +786,7 @@ export const LeftColumn = () => {
         pdfUrl,
         pdfFile,
         pdfFileName,
+        sectionSummaryMode,
         bumpParseInflight,
         setParseStatus,
         addParseLog,
@@ -1501,8 +1503,12 @@ export const LeftColumn = () => {
                                         className="w-full text-left border-l-2 border-emerald-100 pl-2 hover:bg-emerald-50/50"
                                     >
                                         <p className="text-xs font-semibold text-gray-800">{item.title}</p>
-                                        {item.summary && <p className="text-[11px] text-gray-500">{item.summary}</p>}
-                                        {!item.summary && item.content && <p className="text-[11px] text-gray-400">{renderTextWithHighlights(item.content.slice(0, 120))}</p>}
+                                        {item.summary && (
+                                            <p className="whitespace-pre-wrap break-words max-h-48 overflow-y-auto text-[11px] text-gray-500">{item.summary}</p>
+                                        )}
+                                        {!item.summary && item.content && (
+                                            <p className="whitespace-pre-wrap break-words max-h-48 overflow-y-auto text-[11px] text-gray-400">{renderTextWithHighlights(item.content)}</p>
+                                        )}
                                         <p className="text-[10px] text-gray-400 mt-0.5">
                                             原子卡片: {notes.filter((n) => (n.content || '').toLowerCase().includes((item.title || '').toLowerCase().slice(0, 10))).length}
                                             {' · '}引用: {(item.content.match(/\[[0-9]+\]|\[@/g) || []).length}

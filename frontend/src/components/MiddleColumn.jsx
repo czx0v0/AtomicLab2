@@ -6,6 +6,7 @@ import {
     BookOpen,
     Bot,
     Brain,
+    ChevronLeft,
     ChevronRight,
     Download, ExternalLink,
     FileSearch,
@@ -555,7 +556,7 @@ const TreeMapView = ({ notes, sections = [], docName = '', onSelectNote }) => {
                     {!isCollapsed && (
                       <div className="ml-4 space-y-0.5">
                         {sec.summary && (
-                          <p className="text-[9px] text-gray-400 italic line-clamp-2 mb-1">{sec.summary}</p>
+                          <p className="whitespace-pre-wrap break-words max-h-40 overflow-y-auto text-[9px] text-gray-400 italic mb-1">{sec.summary}</p>
                         )}
                         {secNotes.length === 0 && !sec.summary && (
                           <p className="text-[10px] text-gray-400 py-1">暂无笔记</p>
@@ -2152,6 +2153,73 @@ const NexusPanel = () => {
   const [distillText, setDistillText] = useState('');
   const [distilling, setDistilling] = useState(false);
 
+  const DOMAIN_RAIL_LS = 'organize-domain-rail-expanded';
+  const [domainRailExpanded, setDomainRailExpanded] = useState(() => {
+    try {
+      const v = localStorage.getItem(DOMAIN_RAIL_LS);
+      if (v === '0') return false;
+      if (v === '1') return true;
+    } catch {
+      /* ignore */
+    }
+    return true;
+  });
+  const [domainCollapsedMenuOpen, setDomainCollapsedMenuOpen] = useState(false);
+  const [mobileDomainManageOpen, setMobileDomainManageOpen] = useState(false);
+  const desktopDomainWrapRef = useRef(null);
+  const mobileDomainSheetRef = useRef(null);
+
+  const persistDomainRailExpanded = useCallback((next) => {
+    try {
+      localStorage.setItem(DOMAIN_RAIL_LS, next ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const toggleDomainRail = useCallback(() => {
+    setDomainRailExpanded((e) => {
+      const next = !e;
+      persistDomainRailExpanded(next);
+      if (next) setDomainCollapsedMenuOpen(false);
+      return next;
+    });
+  }, [persistDomainRailExpanded]);
+
+  useEffect(() => {
+    if (!domainCollapsedMenuOpen) return;
+    const onDocMouseDown = (ev) => {
+      if (desktopDomainWrapRef.current && !desktopDomainWrapRef.current.contains(ev.target)) {
+        setDomainCollapsedMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [domainCollapsedMenuOpen]);
+
+  useEffect(() => {
+    if (!mobileDomainManageOpen) return;
+    const onDocMouseDown = (ev) => {
+      if (mobileDomainSheetRef.current && !mobileDomainSheetRef.current.contains(ev.target)) {
+        setMobileDomainManageOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [mobileDomainManageOpen]);
+
+  useEffect(() => {
+    if (!mobileDomainManageOpen && !domainCollapsedMenuOpen) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        setMobileDomainManageOpen(false);
+        setDomainCollapsedMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileDomainManageOpen, domainCollapsedMenuOpen]);
+
   useEffect(() => {
     api.listDomains()
       .then((res) => setDomains(res?.domains || []))
@@ -2379,65 +2447,258 @@ const NexusPanel = () => {
 
   const domainFilterForGraph = graphScope === 'global' ? (activeDomainId || '') : '';
 
+  const domainFullControls = (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setActiveDomainId(null);
+          setDomainCollapsedMenuOpen(false);
+        }}
+        className={clsx(
+          'flex items-center gap-2 w-full text-left px-2.5 py-2 rounded-lg border text-xs transition-colors',
+          activeDomainId == null
+            ? 'border-blue-400 bg-blue-50 text-blue-800'
+            : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+        )}
+      >
+        <Globe size={14} className="shrink-0 opacity-80" />
+        全部文献
+      </button>
+      <div className="flex flex-col gap-1">
+        {domains.map((d) => (
+          <button
+            key={d.id}
+            type="button"
+            onClick={() => {
+              setActiveDomainId(d.id);
+              setDomainCollapsedMenuOpen(false);
+            }}
+            className={clsx(
+              'w-full text-left px-2.5 py-1.5 rounded-lg border text-xs truncate transition-colors',
+              activeDomainId === d.id
+                ? 'border-violet-400 bg-violet-50 text-violet-900'
+                : 'border-transparent text-slate-600 hover:bg-slate-100'
+            )}
+            title={d.name}
+          >
+            {d.name}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={handleCreateDomain}
+        className="flex items-center gap-2 w-full text-left px-2.5 py-2 rounded-lg border border-dashed border-slate-300 text-xs text-slate-600 hover:bg-slate-50 hover:border-slate-400"
+      >
+        <Plus size={14} />
+        新建领域
+      </button>
+      <div className="border-t border-slate-200 pt-3 mt-1 space-y-1.5">
+        <p className="text-[10px] text-slate-500 leading-snug">将当前文献归入领域（仅本地上传）</p>
+        <select
+          value={currentDocDomainId || ''}
+          onChange={(e) => handleAssignCurrentDocDomain(e.target.value)}
+          className="w-full text-xs border border-slate-200 rounded-lg px-2 py-2 bg-white text-slate-800"
+        >
+          <option value="">未分类</option>
+          {domains.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+      </div>
+    </>
+  );
+
   return (
-    <div className="flex flex-row h-full min-h-0">
-      <aside className="w-56 shrink-0 border-r border-slate-200 bg-white flex flex-col gap-2 p-3 overflow-y-auto custom-scrollbar">
-        <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">领域</p>
-        <button
-          type="button"
-          onClick={() => setActiveDomainId(null)}
+    <div className="flex flex-col md:flex-row h-full min-h-0">
+      {/* 移动端：横向领域筛选 + 管理抽屉 */}
+      <div className="md:hidden shrink-0 border-b border-slate-200 bg-white px-2 py-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider shrink-0">领域</span>
+          <div className="flex-1 min-w-0 flex gap-1.5 overflow-x-auto pb-0.5 custom-scrollbar touch-pan-x">
+            <button
+              type="button"
+              onClick={() => setActiveDomainId(null)}
+              className={clsx(
+                'shrink-0 whitespace-nowrap px-2.5 py-1 rounded-full border text-[11px] transition-colors',
+                activeDomainId == null
+                  ? 'border-blue-400 bg-blue-50 text-blue-800'
+                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+              )}
+            >
+              全部
+            </button>
+            {domains.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => setActiveDomainId(d.id)}
+                className={clsx(
+                  'shrink-0 max-w-[140px] truncate px-2.5 py-1 rounded-full border text-[11px] transition-colors',
+                  activeDomainId === d.id
+                    ? 'border-violet-400 bg-violet-50 text-violet-900'
+                    : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                )}
+                title={d.name}
+              >
+                {d.name}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setMobileDomainManageOpen(true)}
+            className="shrink-0 px-2 py-1 text-[11px] rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50"
+            aria-haspopup="dialog"
+            aria-expanded={mobileDomainManageOpen}
+          >
+            管理
+          </button>
+        </div>
+      </div>
+
+      {mobileDomainManageOpen && (
+        <div className="fixed inset-0 z-[100] md:hidden flex items-end justify-center">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/40 border-0 cursor-default"
+            aria-label="关闭领域管理"
+            onClick={() => setMobileDomainManageOpen(false)}
+          />
+          <div
+            ref={mobileDomainSheetRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="organize-domain-manage-title"
+            className="relative w-full max-h-[72vh] rounded-t-2xl bg-white p-4 shadow-2xl border-t border-slate-200 overflow-y-auto custom-scrollbar"
+          >
+            <div className="flex justify-between items-center mb-3 gap-2">
+              <h2 id="organize-domain-manage-title" className="text-sm font-semibold text-slate-800">
+                领域管理
+              </h2>
+              <button
+                type="button"
+                onClick={() => setMobileDomainManageOpen(false)}
+                className="p-1 rounded-md hover:bg-slate-100 text-slate-600"
+                aria-label="关闭"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                handleCreateDomain();
+              }}
+              className="flex items-center gap-2 w-full text-left px-2.5 py-2 rounded-lg border border-dashed border-slate-300 text-xs text-slate-600 hover:bg-slate-50 mb-3"
+            >
+              <Plus size={14} />
+              新建领域
+            </button>
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-slate-500 leading-snug">将当前文献归入领域（仅本地上传）</p>
+              <select
+                value={currentDocDomainId || ''}
+                onChange={(e) => handleAssignCurrentDocDomain(e.target.value)}
+                className="w-full text-xs border border-slate-200 rounded-lg px-2 py-2 bg-white text-slate-800"
+              >
+                <option value="">未分类</option>
+                {domains.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 桌面端：可折叠领域侧栏 */}
+      <div ref={desktopDomainWrapRef} className="hidden md:block relative shrink-0">
+        <aside
+          aria-label="领域筛选"
           className={clsx(
-            'flex items-center gap-2 w-full text-left px-2.5 py-2 rounded-lg border text-xs transition-colors',
-            activeDomainId == null
-              ? 'border-blue-400 bg-blue-50 text-blue-800'
-              : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+            'border-r border-slate-200 bg-white flex flex-col gap-2 overflow-y-auto custom-scrollbar transition-[width,padding] duration-200 ease-out',
+            domainRailExpanded ? 'w-56 p-3' : 'w-12 py-2 px-1 items-center'
           )}
         >
-          <Globe size={14} className="shrink-0 opacity-80" />
-          全部文献
-        </button>
-        <div className="flex flex-col gap-1">
-          {domains.map((d) => (
-            <button
-              key={d.id}
-              type="button"
-              onClick={() => setActiveDomainId(d.id)}
-              className={clsx(
-                'w-full text-left px-2.5 py-1.5 rounded-lg border text-xs truncate transition-colors',
-                activeDomainId === d.id
-                  ? 'border-violet-400 bg-violet-50 text-violet-900'
-                  : 'border-transparent text-slate-600 hover:bg-slate-100'
-              )}
-              title={d.name}
-            >
-              {d.name}
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={handleCreateDomain}
-          className="flex items-center gap-2 w-full text-left px-2.5 py-2 rounded-lg border border-dashed border-slate-300 text-xs text-slate-600 hover:bg-slate-50 hover:border-slate-400"
-        >
-          <Plus size={14} />
-          新建领域
-        </button>
-        <div className="border-t border-slate-200 pt-3 mt-1 space-y-1.5">
-          <p className="text-[10px] text-slate-500 leading-snug">将当前文献归入领域（仅本地上传）</p>
-          <select
-            value={currentDocDomainId || ''}
-            onChange={(e) => handleAssignCurrentDocDomain(e.target.value)}
-            className="w-full text-xs border border-slate-200 rounded-lg px-2 py-2 bg-white text-slate-800"
+          {domainRailExpanded ? (
+            <>
+              <div className="flex items-center justify-between gap-1 min-h-[28px]">
+                <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">领域</p>
+                <button
+                  type="button"
+                  onClick={toggleDomainRail}
+                  className="p-1 rounded-md hover:bg-slate-100 text-slate-600 shrink-0"
+                  aria-expanded={domainRailExpanded}
+                  title="收起领域栏"
+                  aria-label="收起领域栏"
+                >
+                  <ChevronLeft size={16} strokeWidth={2} />
+                </button>
+              </div>
+              {domainFullControls}
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={toggleDomainRail}
+                className="p-1.5 rounded-md hover:bg-slate-100 text-slate-600"
+                aria-expanded={domainRailExpanded}
+                title="展开领域栏"
+                aria-label="展开领域栏"
+              >
+                <ChevronRight size={16} strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveDomainId(null)}
+                className={clsx(
+                  'p-1.5 rounded-md transition-colors',
+                  activeDomainId == null
+                    ? 'bg-blue-50 text-blue-800 ring-1 ring-blue-300'
+                    : 'text-slate-600 hover:bg-slate-100'
+                )}
+                title="全部文献"
+                aria-label="全部文献"
+                aria-pressed={activeDomainId == null}
+              >
+                <Globe size={16} className="opacity-90" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setDomainCollapsedMenuOpen((v) => !v)}
+                className={clsx(
+                  'p-1.5 rounded-md transition-colors',
+                  domainCollapsedMenuOpen || (activeDomainId != null && activeDomainId !== '')
+                    ? 'bg-violet-50 text-violet-900 ring-1 ring-violet-300'
+                    : 'text-slate-600 hover:bg-slate-100'
+                )}
+                title="选择领域"
+                aria-label="选择领域"
+                aria-expanded={domainCollapsedMenuOpen}
+                aria-haspopup="true"
+              >
+                <Tag size={16} />
+              </button>
+            </>
+          )}
+        </aside>
+        {domainCollapsedMenuOpen && !domainRailExpanded && (
+          <div
+            className="absolute left-full top-0 ml-1 z-50 w-56 max-h-[min(80vh,520px)] overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 shadow-xl custom-scrollbar"
+            role="region"
+            aria-label="领域列表与管理"
           >
-            <option value="">未分类</option>
-            {domains.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      </aside>
+            {domainFullControls}
+          </div>
+        )}
+      </div>
 
       <div className="flex flex-col flex-1 min-h-0 min-w-0">
       {/* 搜索框 */}
@@ -3158,7 +3419,9 @@ const ReferencePanel = () => {
                   className="w-full text-left py-1.5 px-2 rounded hover:bg-emerald-50 text-[11px] text-gray-700 border-l-2 border-transparent hover:border-emerald-400"
                 >
                   <span className="font-medium">{item.title}</span>
-                  {item.summary && <p className="text-[9px] text-gray-400 mt-0.5 line-clamp-1">{item.summary}</p>}
+                  {item.summary && (
+                    <p className="whitespace-pre-wrap break-words max-h-40 overflow-y-auto text-[9px] text-gray-400 mt-0.5">{item.summary}</p>
+                  )}
                 </button>
               ))
             )}
