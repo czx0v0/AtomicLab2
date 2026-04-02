@@ -1,5 +1,15 @@
 import { create } from 'zustand';
+import { SECTION_SUMMARY_MODE_KEY } from '../lib/constants';
 import * as writingSnapshots from '../lib/writingSnapshots';
+
+function readSectionSummaryMode() {
+  try {
+    const v = localStorage.getItem(SECTION_SUMMARY_MODE_KEY);
+    return v === 'llm' ? 'llm' : 'first_paragraph';
+  } catch {
+    return 'first_paragraph';
+  }
+}
 
 // 生成或恢复会话 ID
 function getOrCreateSessionId() {
@@ -249,6 +259,16 @@ export const useStore = create((set, get) => ({
       setWriteRefTab: (tab) => set({ writeRefTab: tab }),
       mobileReferenceOpen: false, // 移动端写作参考资料半屏抽屉
       setMobileReferenceOpen: (v) => set({ mobileReferenceOpen: v }),
+
+      /** PDF 解析章节摘要：首节 | LLM（与 /api/parse-document section_summary_mode 一致） */
+      sectionSummaryMode: readSectionSummaryMode(),
+      setSectionSummaryMode: (mode) => {
+        const v = mode === 'llm' ? 'llm' : 'first_paragraph';
+        try {
+          localStorage.setItem(SECTION_SUMMARY_MODE_KEY, v);
+        } catch { /* ignore */ }
+        set({ sectionSummaryMode: v });
+      },
 
       // ── PDF 状态 ────────────────────────────────────────────────────────────
       pdfFile: null,          // File 对象（不持久化）
