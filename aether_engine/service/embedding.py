@@ -18,6 +18,21 @@ _model_lock = threading.Lock()
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
 
+# ── 限制 CPU 线程数，避免 torch CPU 内存分配器耗尽（DefaultCPUAllocator OOM）────
+# 单线程对 MiniLM 这种小模型足够快，且内存更稳定；可用 RAG_TORCH_THREADS 覆盖。
+_RAG_TORCH_THREADS = os.getenv("RAG_TORCH_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", _RAG_TORCH_THREADS)
+os.environ.setdefault("MKL_NUM_THREADS", _RAG_TORCH_THREADS)
+
+
+def _limit_torch_threads() -> None:
+    try:
+        import torch
+
+        torch.set_num_threads(int(os.getenv("RAG_TORCH_THREADS", "1")))
+    except Exception:
+        pass
+
 
 def _use_modelscope_download() -> bool:
     """创空间默认走 ModelScope；本地也可设 EMBEDDING_USE_MODELSCOPE=1 避免直连 HuggingFace。"""
@@ -62,6 +77,7 @@ def _get_model():
     if _model is None:
         with _model_lock:
             if _model is None:
+                _limit_torch_threads()
                 logger.info("加载 SentenceTransformer 模型 (%s)...", MODEL_NAME)
                 from sentence_transformers import SentenceTransformer
 
@@ -93,10 +109,11 @@ def _get_model():
                             "或将模型完整放入 HF_HOME/TRANSFORMERS_CACHE 后重试。"
                         ) from e
                     raise
-                logger.info(
-                    "SentenceTransformer 加载完成 (dim=%d)",
-                    _model.get_sentence_embedding_dimension(),
-                )
+                try:
+                    _dim = _model.get_embedding_dimension()
+                except AttributeError:
+                    _dim = _model.get_sentence_embedding_dimension()
+                logger.info("SentenceTransformer 加载完成 (dim=%d)", _dim)
     return _model
 
 

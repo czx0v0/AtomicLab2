@@ -17,8 +17,10 @@ from chromadb.config import Settings as ChromaSettings
 
 logger = logging.getLogger("aether")
 
-NOTES_FILE = Path("data/notes.json")
-CHROMA_DIR = "data/chroma_store"
+from core.paths import data_path
+
+NOTES_FILE = data_path("notes.json")
+CHROMA_DIR = str(data_path("chroma_store"))
 
 # 检测是否在创空间环境
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")

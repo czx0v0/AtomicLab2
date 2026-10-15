@@ -41,6 +41,38 @@ def token_f1(answer: str, ground_truth: str) -> float:
     return 2 * precision * recall / (precision + recall)
 
 
+def _lcs_len(a: List[str], b: List[str]) -> int:
+    """最长公共子序列长度（O(len(a)*len(b)) 内存 O(len(b))）。"""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    for x in a:
+        cur = [0] * (len(b) + 1)
+        for j, y in enumerate(b, start=1):
+            if x == y:
+                cur[j] = prev[j - 1] + 1
+            else:
+                cur[j] = max(prev[j], cur[j - 1])
+        prev = cur
+    return prev[len(b)]
+
+
+def rouge_l(answer: str, ground_truth: str) -> float:
+    """字符级 ROUGE-L（LCS F1），衡量答案与标准答案的序列重合，比 bag-of-char F1 更有判别力。"""
+    a = _char_tokens(answer)
+    g = _char_tokens(ground_truth)
+    if not a and not g:
+        return 1.0
+    if not a or not g:
+        return 0.0
+    lcs = _lcs_len(a, g)
+    p = lcs / len(a)
+    r = lcs / len(g)
+    if p + r == 0:
+        return 0.0
+    return 2 * p * r / (p + r)
+
+
 def _to_float(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)
@@ -113,24 +145,44 @@ def compute_metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         if n == 0:
             return {
                 "n": 0,
-                "accuracy_cp_pct": 0.0,
+                "correctness_pct": 0.0,
+                "hit_at_k_pct": 0.0,
+                "context_precision_pct": 0.0,
+                "context_recall_pct": 0.0,
                 "faithfulness_avg_pct": 0.0,
+                "hallucination_rate_pct": 0.0,
+                "citation_accuracy_pct": 0.0,
                 "success_rate_pct": 0.0,
                 "em_pct": 0.0,
                 "token_f1_pct": 0.0,
+                "rouge_l_pct": 0.0,
             }
+        corr = [_to_float(r.get("correctness"), 0.0) for r in rows]
+        hit = [1.0 if int(_to_float(r.get("retrieval_hit"), 0.0)) == 1 else 0.0 for r in rows]
         cp = [1.0 if int(_to_float(r.get("context_precision"), 0.0)) == 1 else 0.0 for r in rows]
+        recall = [_to_float(r.get("context_recall"), 0.0) for r in rows]
         faith = [_to_float(r.get("faithfulness"), 0.0) for r in rows]
+        hallu = [1.0 if int(_to_float(r.get("hallucinated"), 0.0)) == 1 else 0.0 for r in rows]
+        cite = [_to_float(r.get("citation_accuracy"), 1.0) for r in rows]
         succ = [1.0 if _status_ok(r) else 0.0 for r in rows]
         em = [exact_match(str(r.get("answer", "")), str(r.get("ground_truth", ""))) for r in rows]
         f1 = [token_f1(str(r.get("answer", "")), str(r.get("ground_truth", ""))) for r in rows]
+        rl = [rouge_l(str(r.get("answer", "")), str(r.get("ground_truth", ""))) for r in rows]
         return {
             "n": n,
-            "accuracy_cp_pct": round(sum(cp) / n * 100.0, 2),
+            # 主指标：答案正确性（judge 对比 ground_truth）
+            "correctness_pct": round(sum(corr) / n * 100.0, 2),
+            # Top-K 命中率（judge 判定检索上下文命中 ground_truth 核心事实的比例）
+            "hit_at_k_pct": round(sum(hit) / n * 100.0, 2),
+            "context_precision_pct": round(sum(cp) / n * 100.0, 2),
+            "context_recall_pct": round(sum(recall) / n * 100.0, 2),
             "faithfulness_avg_pct": round(sum(faith) / n * 100.0, 2),
+            "hallucination_rate_pct": round(sum(hallu) / n * 100.0, 2),
+            "citation_accuracy_pct": round(sum(cite) / n * 100.0, 2),
             "success_rate_pct": round(sum(succ) / n * 100.0, 2),
             "em_pct": round(sum(em) / n * 100.0, 2),
             "token_f1_pct": round(sum(f1) / n * 100.0, 2),
+            "rouge_l_pct": round(sum(rl) / n * 100.0, 2),
         }
 
     by_type = {t: _calc(rows) for t, rows in sorted(buckets.items(), key=lambda x: x[0])}
@@ -177,22 +229,30 @@ def render_markdown(metrics: Dict[str, Any], source_path: Path, dedupe: str) -> 
     lines.extend(
         [
             f"| n | {ov['n']} |",
-            f"| accuracy_cp_pct | {ov['accuracy_cp_pct']:.2f} |",
+            f"| correctness_pct (主指标) | {ov['correctness_pct']:.2f} |",
+            f"| hit_at_k_pct (Top-K 命中率) | {ov['hit_at_k_pct']:.2f} |",
+            f"| context_precision_pct | {ov['context_precision_pct']:.2f} |",
+            f"| context_recall_pct | {ov['context_recall_pct']:.2f} |",
             f"| faithfulness_avg_pct | {ov['faithfulness_avg_pct']:.2f} |",
+            f"| hallucination_rate_pct | {ov['hallucination_rate_pct']:.2f} |",
+            f"| citation_accuracy_pct | {ov['citation_accuracy_pct']:.2f} |",
             f"| success_rate_pct | {ov['success_rate_pct']:.2f} |",
             f"| em_pct | {ov['em_pct']:.2f} |",
             f"| token_f1_pct | {ov['token_f1_pct']:.2f} |",
+            f"| rouge_l_pct | {ov['rouge_l_pct']:.2f} |",
             "",
             "## By Type",
             "",
-            "| type | n | accuracy_cp_pct | faithfulness_avg_pct | success_rate_pct | em_pct | token_f1_pct |",
-            "|---|---:|---:|---:|---:|---:|---:|",
+            "| type | n | correctness | hit@k | context_precision | context_recall | faithfulness | hallucination | citation | rouge_l |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for t, m in metrics["by_type"].items():
         lines.append(
-            f"| {t} | {m['n']} | {m['accuracy_cp_pct']:.2f} | {m['faithfulness_avg_pct']:.2f} | "
-            f"{m['success_rate_pct']:.2f} | {m['em_pct']:.2f} | {m['token_f1_pct']:.2f} |"
+            f"| {t} | {m['n']} | {m['correctness_pct']:.2f} | {m['hit_at_k_pct']:.2f} | "
+            f"{m['context_precision_pct']:.2f} | {m['context_recall_pct']:.2f} | "
+            f"{m['faithfulness_avg_pct']:.2f} | {m['hallucination_rate_pct']:.2f} | "
+            f"{m['citation_accuracy_pct']:.2f} | {m['rouge_l_pct']:.2f} |"
         )
     lines.append("")
     return "\n".join(lines)

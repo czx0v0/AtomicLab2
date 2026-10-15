@@ -15,9 +15,11 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
+from core.paths import data_path
+
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger("aether")
-NOTES_FILE = Path("data/notes.json")
+NOTES_FILE = data_path("notes.json")
 GLOBAL_DEMO_DOC_ID = "global_demo_official"
 
 # 检测是否在创空间环境
@@ -43,6 +45,8 @@ class SearchRequest(BaseModel):
     top_k: int = 8
     doc_id: Optional[str] = None
     max_rounds: int = 2  # 最多几轮查询扩展
+    retrieval_mode: str = "full"  # 评测/消融实验：full/closed_book/bm25_only/vector_only/...
+    rerank_mode: str = "none"  # 重排序：none/cross_encoder/llm
 
 
 class IndexDocumentRequest(BaseModel):
@@ -332,6 +336,119 @@ def _rrf_fuse(
     return fused[:top_k]
 
 
+# ── 重排序（Rerank）──────────────────────────────────────────────────────────
+
+_RERANK_MODES = {"none", "cross_encoder", "llm"}
+_cross_encoder_cache: Dict[str, Any] = {}
+
+
+def _candidate_text(item: Dict[str, Any]) -> str:
+    """构造候选文本用于重排序打分。"""
+    title = str(item.get("doc_title", "") or "")
+    concept = str(item.get("concept", "") or "")
+    summary = str(item.get("summary", "") or "")
+    return f"{title} {concept} {summary}"[:2000].strip()
+
+
+def _rerank_cross_encoder(query: str, candidates: List[dict], top_k: int) -> List[dict]:
+    """本地 cross-encoder 重排序（免费、确定性、可复现）。"""
+    try:
+        from sentence_transformers import CrossEncoder
+    except Exception as e:
+        logger.warning("CrossEncoder 不可用，跳过重排序: %s", e)
+        return candidates[:top_k]
+
+    model_name = os.getenv("RERANK_CROSS_ENCODER", "BAAI/bge-reranker-base")
+    model = _cross_encoder_cache.get(model_name)
+    if model is None:
+        logger.info("加载 cross-encoder 重排序模型: %s", model_name)
+        model = CrossEncoder(model_name, max_length=512)
+        _cross_encoder_cache[model_name] = model
+
+    pairs = [(query, _candidate_text(c)) for c in candidates]
+    scores = model.predict(pairs)
+    scored = sorted(zip(candidates, scores), key=lambda x: float(x[1]), reverse=True)
+    out: List[dict] = []
+    for c, s in scored[:top_k]:
+        nc = dict(c)
+        nc["rerank_score"] = round(float(s), 6)
+        nc["reranked"] = True
+        out.append(nc)
+    return out
+
+
+def _rerank_llm(query: str, candidates: List[dict], top_k: int) -> List[dict]:
+    """LLM listwise 重排序（用 DEEPSEEK_API_KEY，适合中文学术语义）。"""
+    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        logger.warning("无 DEEPSEEK_API_KEY，跳过 LLM 重排序")
+        return candidates[:top_k]
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url=os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
+        )
+        listing = "\n".join(
+            f"[{i}] {_candidate_text(c)[:400]}" for i, c in enumerate(candidates)
+        )
+        prompt = (
+            "你是检索重排序器。给定 query 与候选段落，按与 query 的相关性从高到低排序。\n"
+            "只输出一个 JSON 对象，形如 {\"ranking\": [3,0,5,...]}，ranking 是候选编号（整数）数组，"
+            "必须包含所有候选编号且不重复。\n"
+            f"query: {query}\n候选:\n{listing}\n"
+        )
+        resp = client.chat.completions.create(
+            model=os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        parsed = json.loads(content)
+        order = parsed.get("ranking") if isinstance(parsed, dict) else parsed
+        if not isinstance(order, list):
+            order = [
+                int(x)
+                for x in re.findall(r"\d+", str(content))
+            ]
+        idx_map = {str(i): c for i, c in enumerate(candidates)}
+        out: List[dict] = []
+        for rid in order:
+            c = idx_map.get(str(rid))
+            if c is not None and c not in out:
+                out.append(c)
+        for c in candidates:  # 兜底：LLM 漏掉的按原顺序补齐
+            if c not in out:
+                out.append(c)
+        for i, c in enumerate(out[:top_k]):
+            nc = dict(c)
+            nc["rerank_score"] = round(1.0 - i * 0.01, 6)
+            nc["reranked"] = True
+            out[i] = nc
+        return out[:top_k]
+    except Exception as e:
+        logger.warning("LLM 重排序失败，回退原始排序: %s", e)
+        return candidates[:top_k]
+
+
+def _rerank_candidates(
+    query: str, candidates: List[dict], mode: str, top_k: int
+) -> List[dict]:
+    """对候选池重排序后取 top_k。mode: none / cross_encoder / llm。"""
+    m = (mode or "none").strip().lower()
+    if m == "none" or len(candidates) <= 1:
+        return candidates[:top_k]
+    pool = candidates[: max(top_k * 2, top_k)]
+    if m == "cross_encoder":
+        return _rerank_cross_encoder(query, pool, top_k)
+    if m == "llm":
+        return _rerank_llm(query, pool, top_k)
+    logger.warning("未知 rerank_mode=%s，回退 none", mode)
+    return candidates[:top_k]
+
+
 # ── 查询扩展 ────────────────────────────────────────────────────────────────
 
 
@@ -419,6 +536,41 @@ def _extract_screenshot_texts(session_id: Optional[str] = None) -> List[Dict[str
     return screenshots
 
 
+# ── 检索模式开关（供评测/消融实验使用）────────────────────────────────────────
+
+_RETRIEVAL_MODES = {
+    "full",          # 全量管线（默认）
+    "closed_book",   # 闭卷：不检索，直接 LLM 作答（衡量固有知识/幻觉上界）
+    "bm25_only",     # 仅 BM25 词法通道（doc_bm25 + note_bm25）
+    "vector_only",   # 仅向量语义通道（doc_vector + note_vector）
+    "naive_hybrid",  # 朴素混合：向量+BM25，无图谱、无查询扩展、无截图
+    "no_graph",      # 全量但关图谱（graph_1hop/2hop/dochop）
+    "no_expansion",  # 全量但关查询扩展（仅第 1 轮）
+    "doc_only",      # 仅文档原文通道
+    "note_only",     # 仅笔记/图谱通道
+}
+
+
+def _mode_enabled(mode: str, channel: str) -> bool:
+    """判断某检索通道在指定模式下是否启用。"""
+    m = (mode or "full").strip().lower()
+    if m == "closed_book":
+        return False
+    if m == "bm25_only":
+        return channel in ("doc_bm25", "note_bm25")
+    if m == "vector_only":
+        return channel in ("doc_vector", "note_vector")
+    if m == "naive_hybrid":
+        return channel in ("doc_vector", "doc_bm25", "note_vector", "note_bm25")
+    if m == "no_graph":
+        return channel not in ("graph_1hop", "graph_2hop", "graph_dochop")
+    if m == "doc_only":
+        return channel in ("doc_vector", "doc_bm25")
+    if m == "note_only":
+        return channel in ("note_vector", "note_bm25", "graph_1hop", "graph_2hop", "graph_dochop")
+    return True  # full 或未知模式默认全开
+
+
 # ── 多源检索管线 ─────────────────────────────────────────────────────────────
 
 
@@ -428,14 +580,40 @@ def _search_pipeline(
     doc_id: Optional[str] = None,
     max_rounds: int = 2,
     session_id: Optional[str] = None,
+    retrieval_mode: str = "full",
+    rerank_mode: str = "none",
 ) -> Dict[str, Any]:
     """
     多源多轮检索管线（文档原文优先，支持会话隔离）：
     Round 1: 原始查询 → [文档原文向量(1.8) + 文档BM25(1.5)] + [笔记向量(0.9) + 笔记BM25(0.7)] + [截图OCR(0.5)]
     Round 2+: 查询变体 → 补充检索，去重合并
-    最终 RRF 加权融合。文档原文块 > 用户卡片 > 截图。
+    最终 RRF 加权融合，可选再叠加重排序（rerank）。
+
+    retrieval_mode 用于评测/消融实验：
+      full / closed_book / bm25_only / vector_only / naive_hybrid /
+      no_graph / no_expansion / doc_only / note_only
+    rerank_mode 用于重排序消融：
+      none / cross_encoder / llm
     """
     from service.bm25_engine import get_bm25_engine, tokenize_zh
+
+    mode = (retrieval_mode or "full").strip().lower()
+
+    # 闭卷：不做任何检索
+    if mode == "closed_book":
+        return {
+            "results": [],
+            "total": 0,
+            "query": query,
+            "rounds": 0,
+            "channels": {},
+            "context": "",
+            "retrieval_mode": mode,
+        }
+
+    # 朴素混合 / 关查询扩展：仅第 1 轮
+    if mode in ("naive_hybrid", "no_expansion"):
+        max_rounds = 1
 
     bm25 = get_bm25_engine(session_id)
 
@@ -471,89 +649,106 @@ def _search_pipeline(
         )
 
         # ── 通道 1: 文档原文向量检索（PRIMARY - 权重最高）──────────────────
-        try:
-            from service.doc_rag import get_document_rag
+        if _mode_enabled(mode, "doc_vector"):
+            try:
+                from service.doc_rag import get_document_rag
 
-            rag_session_id = None if doc_id == GLOBAL_DEMO_DOC_ID else session_id
-            doc_rag = get_document_rag(rag_session_id)
-            doc_vector = doc_rag.search(q, top_k=fetch_k)
-            doc_vector = _dedup(doc_vector)
-            if doc_vector:
-                all_channels.append(doc_vector)
-                # 文档原文权重最高（用户要求先搜原文）
-                channel_weights.append(1.8 if is_first_round else 1.2)
-                channel_stats["doc_vector"] = channel_stats.get("doc_vector", 0) + len(
-                    doc_vector
-                )
-        except Exception as e:
-            logger.warning("DocumentRAG 检索失败 (round %d): %s", round_idx + 1, e)
+                rag_session_id = None if doc_id == GLOBAL_DEMO_DOC_ID else session_id
+                doc_rag = get_document_rag(rag_session_id)
+                doc_vector = doc_rag.search(q, top_k=fetch_k)
+                doc_vector = _dedup(doc_vector)
+                if doc_vector:
+                    all_channels.append(doc_vector)
+                    # 文档原文权重最高（用户要求先搜原文）
+                    channel_weights.append(1.8 if is_first_round else 1.2)
+                    channel_stats["doc_vector"] = channel_stats.get("doc_vector", 0) + len(
+                        doc_vector
+                    )
+            except Exception as e:
+                logger.warning("DocumentRAG 检索失败 (round %d): %s", round_idx + 1, e)
 
         # ── 通道 2: 文档原文 BM25 关键词检索 ─────────────────────────────────
-        try:
-            doc_bm25 = bm25.search_docs(q, top_k=fetch_k)
-            doc_bm25 = _dedup(doc_bm25)
-            if doc_bm25:
-                all_channels.append(doc_bm25)
-                channel_weights.append(1.5 if is_first_round else 1.0)
-                channel_stats["doc_bm25"] = channel_stats.get("doc_bm25", 0) + len(
-                    doc_bm25
-                )
-        except Exception as e:
-            logger.warning("BM25 文档检索失败 (round %d): %s", round_idx + 1, e)
+        if _mode_enabled(mode, "doc_bm25"):
+            try:
+                doc_bm25 = bm25.search_docs(q, top_k=fetch_k)
+                doc_bm25 = _dedup(doc_bm25)
+                if doc_bm25:
+                    all_channels.append(doc_bm25)
+                    channel_weights.append(1.5 if is_first_round else 1.0)
+                    channel_stats["doc_bm25"] = channel_stats.get("doc_bm25", 0) + len(
+                        doc_bm25
+                    )
+            except Exception as e:
+                logger.warning("BM25 文档检索失败 (round %d): %s", round_idx + 1, e)
 
         # ── 通道 3: 笔记卡片向量检索 ────────────────────────────────────────
-        try:
-            from service.note_rag import get_note_rag
+        if _mode_enabled(mode, "note_vector"):
+            try:
+                from service.note_rag import get_note_rag
 
-            note_rag = get_note_rag(session_id)
-            note_vector = note_rag.search(q, top_k=fetch_k)
-            note_vector = _dedup(note_vector)
-            if note_vector:
-                all_channels.append(note_vector)
-                channel_weights.append(0.9)
-                channel_stats["note_vector"] = channel_stats.get(
-                    "note_vector", 0
-                ) + len(note_vector)
-            # ── 通道 3.1: GraphRAG（默认全量：1-hop + 2-hop + 跨类型 doc-note）──
-            if is_first_round:
-                seed_notes = note_vector[:5]
-                graph_hits = _graph_one_hop_expand(seed_notes, session_id)
-                graph_hits = _dedup(graph_hits)
-                if graph_hits:
-                    all_channels.append(graph_hits)
-                    channel_weights.append(1.0)
-                    channel_stats["graph_1hop"] = len(graph_hits)
-                graph_2 = _graph_two_hop_expand(seed_notes, session_id)
-                graph_2 = _dedup(graph_2)
-                if graph_2:
-                    all_channels.append(graph_2)
-                    channel_weights.append(0.85)
-                    channel_stats["graph_2hop"] = len(graph_2)
-                if doc_vector:
-                    doc_graph = _graph_doc_note_expand(doc_vector[:6], session_id)
-                    doc_graph = _dedup(doc_graph)
-                    if doc_graph:
-                        all_channels.append(doc_graph)
-                        channel_weights.append(0.75)
-                        channel_stats["graph_dochop"] = len(doc_graph)
-        except Exception as e:
-            logger.warning("NoteRAG 检索失败 (round %d): %s", round_idx + 1, e)
+                note_rag = get_note_rag(session_id)
+                note_vector = note_rag.search(q, top_k=fetch_k)
+                note_vector = _dedup(note_vector)
+                if note_vector:
+                    all_channels.append(note_vector)
+                    channel_weights.append(0.9)
+                    channel_stats["note_vector"] = channel_stats.get(
+                        "note_vector", 0
+                    ) + len(note_vector)
+            except Exception as e:
+                logger.warning("NoteRAG 检索失败 (round %d): %s", round_idx + 1, e)
+
+        # ── 通道 3.1: GraphRAG（默认全量：1-hop + 2-hop + 跨类型 doc-note）──
+        if is_first_round:
+            seed_notes = note_vector[:5]
+            if _mode_enabled(mode, "graph_1hop"):
+                try:
+                    graph_hits = _graph_one_hop_expand(seed_notes, session_id)
+                    graph_hits = _dedup(graph_hits)
+                    if graph_hits:
+                        all_channels.append(graph_hits)
+                        channel_weights.append(1.0)
+                        channel_stats["graph_1hop"] = len(graph_hits)
+                except Exception as e:
+                    logger.warning("图谱 1-hop 检索失败: %s", e)
+            if _mode_enabled(mode, "graph_2hop"):
+                try:
+                    graph_2 = _graph_two_hop_expand(seed_notes, session_id)
+                    graph_2 = _dedup(graph_2)
+                    if graph_2:
+                        all_channels.append(graph_2)
+                        channel_weights.append(0.85)
+                        channel_stats["graph_2hop"] = len(graph_2)
+                except Exception as e:
+                    logger.warning("图谱 2-hop 检索失败: %s", e)
+            if _mode_enabled(mode, "graph_dochop"):
+                try:
+                    if doc_vector:
+                        doc_graph = _graph_doc_note_expand(doc_vector[:6], session_id)
+                        doc_graph = _dedup(doc_graph)
+                        if doc_graph:
+                            all_channels.append(doc_graph)
+                            channel_weights.append(0.75)
+                            channel_stats["graph_dochop"] = len(doc_graph)
+                except Exception as e:
+                    logger.warning("图谱 doc-note 扩展失败: %s", e)
 
         # ── 通道 4: 笔记卡片 BM25 关键词检索 ────────────────────────────────
-        try:
-            note_bm25 = bm25.search_notes(q, top_k=fetch_k)
-            note_bm25 = _dedup(note_bm25)
-            if note_bm25:
-                all_channels.append(note_bm25)
-                channel_weights.append(0.7)
-                channel_stats["note_bm25"] = channel_stats.get("note_bm25", 0) + len(
-                    note_bm25
-                )
-        except Exception as e:
-            logger.warning("BM25 笔记检索失败 (round %d): %s", round_idx + 1, e)
+        if _mode_enabled(mode, "note_bm25"):
+            try:
+                note_bm25 = bm25.search_notes(q, top_k=fetch_k)
+                note_bm25 = _dedup(note_bm25)
+                if note_bm25:
+                    all_channels.append(note_bm25)
+                    channel_weights.append(0.7)
+                    channel_stats["note_bm25"] = channel_stats.get("note_bm25", 0) + len(
+                        note_bm25
+                    )
+            except Exception as e:
+                logger.warning("BM25 笔记检索失败 (round %d): %s", round_idx + 1, e)
 
         # ── 通道 5: 截图 OCR 文本检索（仅首轮）──────────────────────────────
-        if is_first_round:
+        if is_first_round and _mode_enabled(mode, "screenshot_ocr"):
             try:
                 screenshot_items = _extract_screenshot_texts(session_id)
                 if screenshot_items:
@@ -575,11 +770,16 @@ def _search_pipeline(
             except Exception as e:
                 logger.warning("截图 OCR 检索失败: %s", e)
 
-    # ── RRF 加权融合 ─────────────────────────────────────────────────────────
-    merged = _rrf_fuse(all_channels, weights=channel_weights, top_k=top_k)
+    # ── RRF 加权融合 + 可选重排序 ─────────────────────────────────────────────
+    # 开启重排序时，先融合出更大的候选池（3 倍 top_k），再重排回 top_k，提升命中率。
+    rerank_m = (rerank_mode or "none").strip().lower()
+    pool_k = max(top_k * 3, 10) if rerank_m in _RERANK_MODES and rerank_m != "none" else top_k
+    merged = _rrf_fuse(all_channels, weights=channel_weights, top_k=pool_k)
     # doc_id 过滤（图谱项无 doc_id 时保持）
     if doc_id:
         merged = [x for x in merged if (not x.get("doc_id")) or x.get("doc_id") == doc_id]
+    if rerank_m != "none" and len(merged) > top_k:
+        merged = _rerank_candidates(query, merged, rerank_m, top_k)
 
     # 给上层（chat/router）用的融合上下文
     context_parts = []
@@ -607,6 +807,8 @@ def _search_pipeline(
         "rounds": rounds,
         "channels": channel_stats,
         "context": fused_context,
+        "retrieval_mode": mode,
+        "rerank_mode": rerank_m,
     }
 
 
@@ -639,6 +841,8 @@ def search_notes(body: SearchRequest, x_session_id: str = Header(default="")):
         doc_id=body.doc_id,
         max_rounds=body.max_rounds,
         session_id=session_id,
+        retrieval_mode=body.retrieval_mode,
+        rerank_mode=body.rerank_mode,
     )
 
     if result["results"]:
@@ -678,6 +882,8 @@ def search_global(body: SearchRequest, x_session_id: str = Header(default="")):
         doc_id=None,
         max_rounds=body.max_rounds,
         session_id=session_id,
+        retrieval_mode=body.retrieval_mode,
+        rerank_mode=body.rerank_mode,
     )
 
     if result["results"]:

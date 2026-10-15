@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 
 import networkx as nx
 
+from core.paths import data_path
+
 logger = logging.getLogger("aether")
 
 IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
@@ -24,7 +26,7 @@ def _graph_file(session_id: Optional[str]) -> Path:
 
         init_session(session_id)
         return get_session_path(session_id, "knowledge_graph.json")
-    root = Path("data")
+    root = data_path()
     root.mkdir(parents=True, exist_ok=True)
     return root / f"knowledge_graph_{key}.json"
 

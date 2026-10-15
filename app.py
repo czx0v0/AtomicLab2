@@ -10,6 +10,11 @@ from dotenv import load_dotenv
 # 添加项目路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "aether_engine"))
 
+# 锚定工作目录到仓库根（modelspace-deploy）。代码中大量使用 CWD 相对路径 data/...，
+# 若不锚定，从其他目录启动时会读到空知识库，导致每次都要重新上传文献建库。
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+os.chdir(_REPO_ROOT)
+
 # 尽早加载 .env，避免模块导入时读不到关键环境变量（如 MINERU_API_TOKEN）
 # 优先 modelspace-deploy/.env，回退仓库根 .env；不覆盖已存在环境变量
 _MS_ENV = os.path.join(os.path.dirname(__file__), ".env")
@@ -204,8 +209,30 @@ if IN_MODELSCOPE_SPACE:
     # 启动定时清理（每5分钟检查一次）
     start_cleanup_scheduler(interval_seconds=300)
 
+def _log_kb_health() -> None:
+    """启动时打印知识库持久化状态，便于判断是否需要重新上传建库。"""
+    try:
+        import json
+        from pathlib import Path
+
+        docs_meta = Path("data/documents/documents.json")
+        n_docs = len(json.loads(docs_meta.read_text(encoding="utf-8"))) if docs_meta.exists() else 0
+        notes = Path("data/notes.json")
+        n_notes = len(json.loads(notes.read_text(encoding="utf-8"))) if notes.exists() else 0
+        chroma_sqlite = Path("data/chroma_store/chroma.sqlite3")
+        print(
+            f"[KB] 知识库状态: 文献 {n_docs} 篇, 笔记 {n_notes} 条, "
+            f"向量库 {'已持久化' if chroma_sqlite.exists() else '未建立'} "
+            f"({'data/chroma_store' if chroma_sqlite.exists() else '首次查询时自动构建'})"
+        )
+    except Exception as e:  # 仅诊断日志，失败不影响启动
+        print(f"[KB] 知识库状态读取失败（忽略）: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
+
+    _log_kb_health()
 
     # 从环境变量获取配置
     host = os.getenv("UVICORN_HOST", "0.0.0.0")

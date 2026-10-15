@@ -73,7 +73,9 @@ class DocumentRAG:
             init_session(session_id)
             chroma_dir = str(get_session_path(session_id, "chroma"))
         else:
-            chroma_dir = "data/chroma_store"
+            from core.paths import data_path
+
+            chroma_dir = str(data_path("chroma_store"))
 
         self.client = chromadb.Client(
             ChromaSettings(persist_directory=chroma_dir, is_persistent=True)
@@ -119,7 +121,11 @@ class DocumentRAG:
                 }
             )
 
-        embeddings = self._embedding_fn(docs)
+        # 分批编码，避免大文档一次性编码导致内存峰值 / 原生崩溃
+        embeddings = []
+        _BATCH = 32
+        for i in range(0, len(docs), _BATCH):
+            embeddings.extend(self._embedding_fn(docs[i : i + _BATCH]))
         self.collection.add(
             ids=ids,
             documents=docs,

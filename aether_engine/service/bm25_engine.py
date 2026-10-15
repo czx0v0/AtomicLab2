@@ -7,6 +7,7 @@ BM25 关键词检索引擎
 import json
 import logging
 import os
+import pickle
 import re
 import threading
 from pathlib import Path
@@ -15,9 +16,11 @@ from typing import List, Dict, Any, Tuple, Optional
 import jieba
 from rank_bm25 import BM25Okapi
 
+from core.paths import data_path
+
 logger = logging.getLogger("aether")
 
-NOTES_FILE = Path("data/notes.json")
+NOTES_FILE = data_path("notes.json")
 
 
 # 检测是否在创空间环境
@@ -168,12 +171,87 @@ class BM25Engine:
 
         self._note_id_set: set = set()
         self._doc_id_set: set = set()
+        self._cache_sig: Optional[Dict[str, Any]] = None
+
+    # ── 缓存持久化（避免每次重启重新 jieba 分词构建）────────────────────────
+
+    def _cache_file(self) -> Path:
+        key = (self.session_id or "default").replace("/", "_").replace("\\", "_")
+        return data_path(f"bm25_cache_{key}.pkl")
+
+    def _signature(self) -> Dict[str, Any]:
+        sig: Dict[str, Any] = {"v": 2}
+        if self.notes_file.exists():
+            st = self.notes_file.stat()
+            sig["notes_mtime"] = st.st_mtime
+            sig["notes_size"] = st.st_size
+        else:
+            sig["notes_mtime"] = 0.0
+        chroma_db = data_path("chroma_store/chroma.sqlite3")
+        if chroma_db.exists():
+            sig["chroma_mtime"] = chroma_db.stat().st_mtime
+        return sig
+
+    def _try_load_cache(self) -> bool:
+        """若缓存签名新鲜，加载 tokenized 语料并重建 BM25Okapi（省去 jieba 分词）。"""
+        try:
+            sig = self._signature()
+            cache_file = self._cache_file()
+            if not cache_file.exists():
+                logger.info("BM25 无缓存（首次运行），将重建索引")
+                return False
+            data = pickle.loads(cache_file.read_bytes())
+            if data.get("signature") != sig:
+                logger.info("BM25 缓存已过期，将重建索引")
+                return False
+            self._note_ids = data.get("note_ids", [])
+            self._note_corpus = data.get("note_corpus", [])
+            self._note_meta = data.get("note_meta", [])
+            self._doc_ids = data.get("doc_ids", [])
+            self._doc_corpus = data.get("doc_corpus", [])
+            self._doc_meta = data.get("doc_meta", [])
+            self._note_id_set = set(self._note_ids)
+            self._doc_id_set = set(self._doc_ids)
+            self._note_bm25 = BM25Okapi(self._note_corpus) if self._note_corpus else None
+            self._doc_bm25 = BM25Okapi(self._doc_corpus) if self._doc_corpus else None
+            self._cache_sig = sig
+            logger.info(
+                "BM25 缓存已加载: notes=%d docs=%d", len(self._note_ids), len(self._doc_ids)
+            )
+            return True
+        except Exception as e:
+            logger.warning("BM25 缓存加载失败（异常，将重建）: %s", e)
+            return False
+
+    def _save_cache(self) -> None:
+        try:
+            sig = self._cache_sig or self._signature()
+            payload = {
+                "signature": sig,
+                "note_ids": self._note_ids,
+                "note_corpus": self._note_corpus,
+                "note_meta": self._note_meta,
+                "doc_ids": self._doc_ids,
+                "doc_corpus": self._doc_corpus,
+                "doc_meta": self._doc_meta,
+            }
+            self._cache_file().parent.mkdir(parents=True, exist_ok=True)
+            self._cache_file().write_bytes(pickle.dumps(payload))
+            logger.info(
+                "BM25 缓存已保存: notes=%d docs=%d", len(self._note_ids), len(self._doc_ids)
+            )
+        except Exception as e:
+            logger.warning("BM25 缓存保存失败（忽略）: %s", e)
 
     # ── Notes 索引 ───────────────────────────────────────────────────────────
 
     def build_notes_index(self):
-        """从 notes.json 构建/重建 BM25 索引。"""
+        """从 notes.json 构建/重建 BM25 索引（优先加载磁盘缓存）。"""
         with self._lock:
+            if self._note_bm25 is not None and self._note_ids:
+                return len(self._note_ids)
+            if self._try_load_cache() and self._note_bm25 is not None:
+                return len(self._note_ids)
             if not self.notes_file.exists():
                 return 0
 
@@ -221,13 +299,15 @@ class BM25Engine:
             )
             self._note_id_set.add(nid)
 
-            if self._note_corpus:
-                self._note_bm25 = BM25Okapi(self._note_corpus)
-                logger.info("BM25 Notes 索引构建完成: %d 条", len(self._note_ids))
-            else:
-                self._note_bm25 = None
-
-            return len(self._note_ids)
+        # FIX：原逻辑把下面这段写在 for 循环内，导致只索引第一条就 return；
+        # 现移到循环外，保证全量笔记都进 BM25。
+        if self._note_corpus:
+            self._note_bm25 = BM25Okapi(self._note_corpus)
+        else:
+            self._note_bm25 = None
+        logger.info("BM25 Notes 索引构建完成: %d 条", len(self._note_ids))
+        self._save_cache()
+        return len(self._note_ids)
 
     def search_notes(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """BM25 检索笔记，返回带分数的结果列表。"""
@@ -278,8 +358,12 @@ class BM25Engine:
     # ── Document Chunks 索引 ─────────────────────────────────────────────────
 
     def build_doc_index_from_chromadb(self):
-        """从 DocumentRAG ChromaDB 读取所有切块构建 BM25 索引。"""
+        """从 DocumentRAG ChromaDB 读取所有切块构建 BM25 索引（优先加载磁盘缓存）。"""
         with self._lock:
+            if self._doc_bm25 is not None and self._doc_ids:
+                return len(self._doc_ids)
+            if self._try_load_cache() and self._doc_bm25 is not None:
+                return len(self._doc_ids)
             try:
                 from service.doc_rag import get_document_rag
 
@@ -326,13 +410,15 @@ class BM25Engine:
             )
             self._doc_id_set.add(cid)
 
-            if self._doc_corpus:
-                self._doc_bm25 = BM25Okapi(self._doc_corpus)
-                logger.info("BM25 DocChunks 索引构建完成: %d 条", len(self._doc_ids))
-            else:
-                self._doc_bm25 = None
-
-            return len(self._doc_ids)
+        # FIX：原逻辑把下面这段写在 for 循环内，导致只索引第一条就 return；
+        # 现移到循环外，保证全量文档分块都进 BM25。
+        if self._doc_corpus:
+            self._doc_bm25 = BM25Okapi(self._doc_corpus)
+        else:
+            self._doc_bm25 = None
+        logger.info("BM25 DocChunks 索引构建完成: %d 条", len(self._doc_ids))
+        self._save_cache()
+        return len(self._doc_ids)
 
     def search_docs(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """BM25 检索文档切块。"""
@@ -383,8 +469,15 @@ class BM25Engine:
         """标记索引需要重建（当笔记或文档发生变化时调用）。"""
         self._note_bm25 = None
         self._note_ids = []
+        self._note_corpus = []
+        self._note_meta = []
+        self._note_id_set = set()
         self._doc_bm25 = None
         self._doc_ids = []
+        self._doc_corpus = []
+        self._doc_meta = []
+        self._doc_id_set = set()
+        self._cache_sig = None
 
 
 # per-session 实例字典

@@ -70,6 +70,10 @@ class ChatRequest(BaseModel):
     max_rounds: int = 2
     # peer_review：审稿；writer：强制写作工具落编辑器（与 peer_review 互斥，由前端保证）。
     mode: Optional[str] = None
+    # 检索模式开关（评测/消融实验）：full/closed_book/bm25_only/vector_only/naive_hybrid/no_graph/no_expansion/doc_only/note_only
+    retrieval_mode: Optional[str] = None
+    # 重排序开关（评测/消融实验）：none/cross_encoder/llm
+    rerank_mode: Optional[str] = None
     # 课题与状态（Goal Map / 原子助手）
     project_context: Optional[Dict[str, Any]] = None
     user_state: Optional[Dict[str, Any]] = None
@@ -690,12 +694,14 @@ def _search_arxiv_external(query: str, limit: int = 3) -> List[dict]:
     return out
 
 
-def _tool_search_local(query: str, top_k: int, session_id: Optional[str]) -> dict:
+def _tool_search_local(query: str, top_k: int, session_id: Optional[str], retrieval_mode: str = "full", rerank_mode: str = "none") -> dict:
     return _search_pipeline(
         query=query,
         top_k=max(3, top_k),
         max_rounds=2,
         session_id=session_id,
+        retrieval_mode=retrieval_mode,
+        rerank_mode=rerank_mode,
     )
 
 
@@ -704,15 +710,23 @@ def _global_search_for_chat(
     top_k: int,
     session_id: Optional[str],
     max_rounds: int = 2,
+    retrieval_mode: str = "full",
+    rerank_mode: str = "none",
 ) -> dict:
-    """与 POST /search/global 一致：全库混合检索，供 Chat 基线合并。"""
-    eff_k = max(8, top_k, 12)
+    """与 POST /search/global 一致：全库混合检索，供 Chat 基线合并。
+
+    top_k 真实透传（仅保底 3），保证评测中 --top-k 扫描有效；
+    此前 eff_k = max(8, top_k, 12) 会把 top_k 架空到至少 12。
+    """
+    eff_k = max(3, top_k)
     return _search_pipeline(
         query=query,
         top_k=eff_k,
         doc_id=None,
         max_rounds=max_rounds,
         session_id=session_id,
+        retrieval_mode=retrieval_mode,
+        rerank_mode=rerank_mode,
     )
 
 
@@ -722,10 +736,14 @@ def _route_with_tools(
     session_id: Optional[str],
     max_rounds: int = 2,
     header_session_id: str = "",
+    retrieval_mode: str = "full",
+    rerank_mode: str = "none",
 ) -> Tuple[List[dict], List[str], str]:
     """
     返回：(sources, tool_logs, local_context)。
     约束：事实型问题必须调用 tools；若本地为空，需要决定 arXiv 或诚实告知。
+    retrieval_mode: 见 search._RETRIEVAL_MODES；closed_book 时直接返回空。
+    rerank_mode: 见 search._RERANK_MODES。
     """
     api_key = os.getenv("DEEPSEEK_API_KEY")
     api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
@@ -734,11 +752,16 @@ def _route_with_tools(
     tool_logs: List[str] = []
     local_context = ""
 
+    mode = (retrieval_mode or "full").strip().lower()
+    if mode == "closed_book":
+        tool_logs.append("closed_book：跳过检索，直接闭卷作答。")
+        return sources, tool_logs, local_context
+
     detail_mode = _is_research_detail_question(question)
 
     # 无 API key 时，降级路由：细节问题优先本地；通用问题不强制外部检索
     if not api_key:
-        local = _global_search_for_chat(question, top_k, session_id, max_rounds)
+        local = _global_search_for_chat(question, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
         local_hits = local.get("results", [])
         local_context = local.get("context", "")
         if local_hits:
@@ -895,7 +918,7 @@ def _route_with_tools(
 
         # 细节问题且未调用 tool，则强制本地检索
         if not tool_calls and detail_mode:
-            local = _global_search_for_chat(question, top_k, session_id, max_rounds)
+            local = _global_search_for_chat(question, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
             local_hits = local.get("results", [])
             local_context = local.get("context", "")
             sources.extend(local_hits[: max(top_k, 6)])
@@ -921,7 +944,7 @@ def _route_with_tools(
             keywords = (args.get("keywords") or question).strip()
 
             if name == "search_local_knowledge":
-                local = _global_search_for_chat(keywords, top_k, session_id, max_rounds)
+                local = _global_search_for_chat(keywords, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
                 local_hits = local.get("results", [])
                 local_context = local.get("context", local_context)
                 sources.extend(local_hits[: max(top_k, 6)])
@@ -1023,7 +1046,7 @@ def _route_with_tools(
     # 与 /search/global 对齐：始终再合并一次全库混合检索，避免 Router 漏调工具时缺少 PDF 分块/笔记/图谱
     if api_key:
         try:
-            bl = _global_search_for_chat(question, top_k, session_id, max_rounds)
+            bl = _global_search_for_chat(question, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
             bl_hits = bl.get("results") or []
             for it in bl_hits:
                 sources.append(it)
@@ -1237,6 +1260,8 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             session_id=session_id,
             max_rounds=body.max_rounds,
             header_session_id=x_session_id,
+            retrieval_mode=body.retrieval_mode or "full",
+            rerank_mode=body.rerank_mode or "none",
         )
     sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(body.question)
@@ -1342,6 +1367,8 @@ def _chat_stream_generator(
     header_session_id: str = "",
     project_context: Optional[Dict[str, Any]] = None,
     user_state: Optional[Dict[str, Any]] = None,
+    retrieval_mode: str = "full",
+    rerank_mode: str = "none",
 ) -> Generator[str, None, None]:
     t0 = time.perf_counter()
     prefix = _mentor_context_prefix(project_context, user_state)
@@ -1406,6 +1433,8 @@ def _chat_stream_generator(
             session_id=session_id,
             max_rounds=max_rounds,
             header_session_id=header_session_id,
+            retrieval_mode=retrieval_mode,
+            rerank_mode=rerank_mode,
         )
     sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(question)
@@ -1577,6 +1606,8 @@ def chat_stream(body: ChatRequest, x_session_id: str = Header(default="")):
             header_session_id=x_session_id,
             project_context=body.project_context,
             user_state=body.user_state,
+            retrieval_mode=body.retrieval_mode or "full",
+            rerank_mode=body.rerank_mode or "none",
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
