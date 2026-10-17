@@ -46,7 +46,7 @@ class SearchRequest(BaseModel):
     doc_id: Optional[str] = None
     max_rounds: int = 2  # 最多几轮查询扩展
     retrieval_mode: str = "full"  # 评测/消融实验：full/closed_book/bm25_only/vector_only/...
-    rerank_mode: str = "none"  # 重排序：none/cross_encoder/llm
+    rerank_mode: str = ""  # 重排序：空=auto(hybrid自动cross_encoder) / none / cross_encoder / llm
 
 
 class IndexDocumentRequest(BaseModel):
@@ -322,8 +322,8 @@ def _rrf_fuse(
     fused = []
     for nid, rrf_score in score_map.items():
         base = item_map[nid]
-        original_score = float(base.get("score", 0))
-        merged_score = round(0.65 * rrf_score + 0.35 * original_score, 6)
+        # 纯 RRF：只按排名融合，不混入不同量纲的原始分（BM25 归一化 1.0 vs 向量余弦 0.3~0.9 不可比）
+        merged_score = round(rrf_score, 6)
         fused.append(
             {
                 **base,
@@ -581,7 +581,7 @@ def _search_pipeline(
     max_rounds: int = 2,
     session_id: Optional[str] = None,
     retrieval_mode: str = "full",
-    rerank_mode: str = "none",
+    rerank_mode: str = "",
 ) -> Dict[str, Any]:
     """
     多源多轮检索管线（文档原文优先，支持会话隔离）：
@@ -598,6 +598,8 @@ def _search_pipeline(
     from service.bm25_engine import get_bm25_engine, tokenize_zh
 
     mode = (retrieval_mode or "full").strip().lower()
+    # BM25 融合权重（可调，用于权重消融/调参）：默认 1.0，向量固定 1.8
+    _bm25_w = float(os.getenv("RAG_BM25_WEIGHT", "1.0") or 1.0)
 
     # 闭卷：不做任何检索
     if mode == "closed_book":
@@ -674,7 +676,8 @@ def _search_pipeline(
                 doc_bm25 = _dedup(doc_bm25)
                 if doc_bm25:
                     all_channels.append(doc_bm25)
-                    channel_weights.append(1.5 if is_first_round else 1.0)
+                    # 纯 RRF 下 BM25 权重：可调（RAG_BM25_WEIGHT，默认 1.0），向量 1.8 主导
+                    channel_weights.append(_bm25_w if is_first_round else _bm25_w * 0.6)
                     channel_stats["doc_bm25"] = channel_stats.get("doc_bm25", 0) + len(
                         doc_bm25
                     )
@@ -772,7 +775,18 @@ def _search_pipeline(
 
     # ── RRF 加权融合 + 可选重排序 ─────────────────────────────────────────────
     # 开启重排序时，先融合出更大的候选池（3 倍 top_k），再重排回 top_k，提升命中率。
-    rerank_m = (rerank_mode or "none").strip().lower()
+    # 默认（rerank_mode 未指定时）：hybrid 多通道模式自动叠加重排，用大候选池 +
+    # cross-encoder 过滤噪声，避免 BM25 噪声把向量结果挤出 top-K；
+    # 单通道/闭卷模式保持纯净，不重排。
+    rerank_m = (rerank_mode or "").strip().lower()
+    if rerank_m == "":
+        rerank_m = (
+            "cross_encoder"
+            if mode not in ("vector_only", "bm25_only", "closed_book")
+            else "none"
+        )
+    elif rerank_m == "cross_encoder" and mode in ("vector_only", "bm25_only", "closed_book"):
+        rerank_m = "none"
     pool_k = max(top_k * 3, 10) if rerank_m in _RERANK_MODES and rerank_m != "none" else top_k
     merged = _rrf_fuse(all_channels, weights=channel_weights, top_k=pool_k)
     # doc_id 过滤（图谱项无 doc_id 时保持）

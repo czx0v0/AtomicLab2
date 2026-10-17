@@ -210,20 +210,21 @@ if IN_MODELSCOPE_SPACE:
     start_cleanup_scheduler(interval_seconds=300)
 
 def _log_kb_health() -> None:
-    """启动时打印知识库持久化状态，便于判断是否需要重新上传建库。"""
+    """启动时打印知识库持久化状态（尊重 DATA_DIR 隔离）。"""
     try:
         import json
-        from pathlib import Path
+        from aether_engine.core.paths import data_root
 
-        docs_meta = Path("data/documents/documents.json")
+        root = data_root().resolve()
+        docs_meta = root / "documents" / "documents.json"
         n_docs = len(json.loads(docs_meta.read_text(encoding="utf-8"))) if docs_meta.exists() else 0
-        notes = Path("data/notes.json")
+        notes = root / "notes.json"
         n_notes = len(json.loads(notes.read_text(encoding="utf-8"))) if notes.exists() else 0
-        chroma_sqlite = Path("data/chroma_store/chroma.sqlite3")
+        chroma_sqlite = root / "chroma_store" / "chroma.sqlite3"
         print(
             f"[KB] 知识库状态: 文献 {n_docs} 篇, 笔记 {n_notes} 条, "
             f"向量库 {'已持久化' if chroma_sqlite.exists() else '未建立'} "
-            f"({'data/chroma_store' if chroma_sqlite.exists() else '首次查询时自动构建'})"
+            f"({root / 'chroma_store' if chroma_sqlite.exists() else '首次查询时自动构建'})"
         )
     except Exception as e:  # 仅诊断日志，失败不影响启动
         print(f"[KB] 知识库状态读取失败（忽略）: {e}")

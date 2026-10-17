@@ -51,6 +51,8 @@ CSV_FIELDNAMES = [
     "hallucinated",
     "citation_accuracy",
     "judge_reason",
+    "judge_reasoning",
+    "answer_reasoning",
     "retrieved_contexts_json",
     "agent_traces_json",
     "elapsed_ms",
@@ -145,6 +147,7 @@ def ask_local_backend(
     retry_wait_max: int,
     retrieval_mode: str = "full",
     rerank_mode: str = "none",
+    agent_mode: str = "full",
 ) -> Dict[str, Any]:
     payload = {
         "question": question,
@@ -152,6 +155,7 @@ def ask_local_backend(
         "max_rounds": max_rounds,
         "retrieval_mode": retrieval_mode,
         "rerank_mode": rerank_mode,
+        "agent_mode": agent_mode,
     }
     attempts = max(1, int(max_retries))
     wait_max = max(1, int(retry_wait_max))
@@ -175,18 +179,33 @@ def ask_local_backend(
     raise last_exc
 
 
-def _synthesize_direct(question: str, contexts: List[Dict[str, Any]]) -> str:
-    """进程内直连时的答案合成：严格基于检索资料，用 deepseek-chat 生成。"""
-    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if not api_key:
-        return "（无 DEEPSEEK_API_KEY，跳过合成）"
+def _get_candidate_config(provider: str) -> Dict[str, str]:
+    """根据 provider 返回考生模型配置（deepseek / aliyun）。"""
+    p = (provider or "deepseek").strip().lower()
+    if p == "aliyun":
+        return {
+            "api_key": os.getenv("ALIYUN_API_KEY", ""),
+            "base_url": os.getenv("ALIYUN_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            "model": os.getenv("ALIYUN_MODEL", "qwen3.7-flash"),
+            "provider": "aliyun",
+        }
+    return {
+        "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
+        "base_url": os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
+        "model": os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+        "provider": "deepseek",
+    }
+
+
+def _synthesize_direct(question: str, contexts: List[Dict[str, Any]], llm_provider: str = "deepseek") -> tuple:
+    """进程内直连时的答案合成：严格基于检索资料，考生模型可切 deepseek/aliyun。返回 (answer, reasoning)。"""
+    cfg = _get_candidate_config(llm_provider)
+    if not cfg["api_key"]:
+        return f"（无 {cfg['provider']} API KEY，跳过合成）", ""
     try:
         from openai import OpenAI
 
-        client = OpenAI(
-            api_key=api_key,
-            base_url=os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
-        )
+        client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
         ctx = "\n\n".join(
             f"[{i+1}] {c.get('summary','')}" for i, c in enumerate(contexts[:12])
         ) or "（无检索资料）"
@@ -196,14 +215,17 @@ def _synthesize_direct(question: str, contexts: List[Dict[str, Any]]) -> str:
             f"【资料】\n{ctx}\n\n【问题】{question}"
         )
         resp = client.chat.completions.create(
-            model=os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+            model=cfg["model"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=1200,
         )
-        return (resp.choices[0].message.content or "").strip()
+        msg = resp.choices[0].message
+        answer = (msg.content or "").strip()
+        reasoning = (getattr(msg, "reasoning_content", None) or "").strip()
+        return answer, reasoning
     except Exception as e:
-        return f"（合成失败: {type(e).__name__}）"
+        return f"（合成失败: {type(e).__name__}）", ""
 
 
 def _direct_chat(
@@ -212,6 +234,7 @@ def _direct_chat(
     max_rounds: int,
     retrieval_mode: str,
     rerank_mode: str,
+    llm_provider: str = "deepseek",
 ) -> Dict[str, Any]:
     """进程内直连后端检索管线 + 合成，不起 HTTP 服务。
 
@@ -237,9 +260,10 @@ def _direct_chat(
         rerank_mode=rerank_mode,
     )
     contexts = result.get("results") or []
-    answer = _synthesize_direct(question, contexts)
+    answer, answer_reasoning = _synthesize_direct(question, contexts, llm_provider=llm_provider)
     return {
         "answer": answer,
+        "answer_reasoning": answer_reasoning,
         "retrieved_contexts": contexts,
         "agent_traces": [],
         "elapsed_ms": -1,
@@ -284,7 +308,9 @@ def judge_with_r1(
         temperature=0,
         response_format={"type": "json_object"},
     )
-    content = (resp.choices[0].message.content or "").strip()
+    msg = resp.choices[0].message
+    content = (msg.content or "").strip()
+    reasoning = (getattr(msg, "reasoning_content", None) or "").strip()
     parsed = json.loads(content)
 
     def _clamp(v: Any, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -305,6 +331,7 @@ def judge_with_r1(
         "hallucinated": hallu,
         "citation_accuracy": _clamp(parsed.get("citation_accuracy", 1.0)),
         "reason": str(parsed.get("reason", "")).strip(),
+        "reasoning": reasoning,  # 裁判思考链（deepseek-reasoner 的 reasoning_content）
     }
 
 
@@ -439,7 +466,10 @@ def _print_markdown_summary(csv_path: Path) -> None:
 def main() -> None:
     _load_env_with_fallback()
 
-    parser = argparse.ArgumentParser(description="工业级量化评测流水线（Qwen考生 + R1裁判）")
+    parser = argparse.ArgumentParser(
+        description="工业级量化评测流水线（deepseek-chat 考生 + deepseek-reasoner 裁判；"
+        "http 模式可通过 CHAT_LLM_PROVIDER=aliyun 切换 Qwen 考生）"
+    )
     parser.add_argument(
         "--dataset",
         default=str(Path(__file__).parent / "dataset.json"),
@@ -478,9 +508,23 @@ def main() -> None:
     )
     parser.add_argument(
         "--rerank-mode",
-        default="none",
-        help="重排序（评测/消融）：none / cross_encoder / llm",
+        default="",
+        help="重排序（评测/消融）：空=auto(hybrid自动重排) / none / cross_encoder / llm",
     )
+    parser.add_argument(
+        "--agent-mode",
+        default="full",
+        help="multi-agent 消融（仅 http 模式生效）：full / no_router / no_arxiv / no_merge / retrieval_only",
+    )
+    parser.add_argument(
+        "--llm-provider",
+        choices=["deepseek", "aliyun"],
+        default="deepseek",
+        help="考生模型厂商（direct 模式）：deepseek=deepseek-chat / aliyun=qwen（需 ALIYUN_API_KEY）",
+    )
+    parser.add_argument("--judge-model", default="deepseek-reasoner", help="裁判模型名")
+    parser.add_argument("--judge-base-url", default="https://api.deepseek.com/v1", help="裁判 API base_url")
+    parser.add_argument("--judge-api-key", default="", help="裁判 API key（空=用 DEEPSEEK_API_KEY）")
     parser.add_argument(
         "--no-sys-instr",
         action="store_true",
@@ -577,12 +621,12 @@ def main() -> None:
         os.environ["DATA_DIR"] = args.data_root
         _check_direct_kb(Path(args.data_root))
 
-    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if not deepseek_api_key:
-        raise RuntimeError("缺少 DEEPSEEK_API_KEY，无法调用 deepseek-reasoner 进行裁判打分。")
+    judge_api_key = (args.judge_api_key or os.getenv("DEEPSEEK_API_KEY", "")).strip()
+    if not judge_api_key:
+        raise RuntimeError("缺少裁判 API key（--judge-api-key 或 DEEPSEEK_API_KEY），无法裁判打分。")
 
-    judge_client = OpenAI(api_key=deepseek_api_key, base_url="https://api.deepseek.com/v1")
-    judge_model = "deepseek-reasoner"
+    judge_client = OpenAI(api_key=judge_api_key, base_url=args.judge_base_url)
+    judge_model = args.judge_model
 
     _ensure_csv_header(report_path)
     completed = _load_completed_questions(report_path, count_failed_as_done=bool(args.count_failed_as_done))
@@ -631,6 +675,7 @@ def main() -> None:
                     max_rounds=args.max_rounds,
                     retrieval_mode=args.retrieval_mode,
                     rerank_mode=args.rerank_mode,
+                    llm_provider=args.llm_provider,
                 )
             else:
                 chat_resp = ask_local_backend(
@@ -643,8 +688,10 @@ def main() -> None:
                     retry_wait_max=args.chat_retry_wait_max,
                     retrieval_mode=args.retrieval_mode,
                     rerank_mode=args.rerank_mode,
+                    agent_mode=args.agent_mode,
                 )
             answer = str(chat_resp.get("answer", "")).strip()
+            answer_reasoning = str(chat_resp.get("answer_reasoning") or "").strip()
             retrieved_contexts = _normalize_contexts(chat_resp)
             agent_traces = chat_resp.get("agent_traces") or chat_resp.get("steps") or []
             elapsed_ms = chat_resp.get("elapsed_ms")
@@ -675,6 +722,8 @@ def main() -> None:
                 "hallucinated": judge["hallucinated"],
                 "citation_accuracy": f"{judge['citation_accuracy']:.4f}",
                 "judge_reason": judge["reason"],
+                "judge_reasoning": (judge["reasoning"] or "")[:2000],
+                "answer_reasoning": answer_reasoning[:2000],
                 "retrieved_contexts_json": json.dumps(retrieved_contexts, ensure_ascii=False),
                 "agent_traces_json": json.dumps(agent_traces, ensure_ascii=False),
                 "elapsed_ms": elapsed_ms,
@@ -699,6 +748,8 @@ def main() -> None:
                         "hallucinated": judge["hallucinated"],
                         "citation_accuracy": judge["citation_accuracy"],
                         "judge_reason": judge["reason"],
+                        "judge_reasoning": judge["reasoning"],
+                        "answer_reasoning": answer_reasoning,
                         "retrieved_contexts": retrieved_contexts,
                         "agent_traces": agent_traces,
                         "elapsed_ms": elapsed_ms,
@@ -731,6 +782,8 @@ def main() -> None:
                 "hallucinated": 0,
                 "citation_accuracy": f"{0.0:.4f}",
                 "judge_reason": f"执行失败: {err_type}: {exc}",
+                "judge_reasoning": "",
+                "answer_reasoning": "",
                 "retrieved_contexts_json": "[]",
                 "agent_traces_json": "[]",
                 "elapsed_ms": -1,
@@ -755,6 +808,8 @@ def main() -> None:
                         "hallucinated": 0,
                         "citation_accuracy": 0.0,
                         "judge_reason": row["judge_reason"],
+                        "judge_reasoning": "",
+                        "answer_reasoning": "",
                         "retrieved_contexts": [],
                         "agent_traces": [],
                         "elapsed_ms": -1,
@@ -794,6 +849,8 @@ def main() -> None:
         "max_rounds": args.max_rounds,
         "retrieval_mode": args.retrieval_mode,
         "rerank_mode": args.rerank_mode,
+        "agent_mode": args.agent_mode,
+        "llm_provider": args.llm_provider,
         "no_sys_instr": bool(args.no_sys_instr),
         "judge_model": judge_model,
         "timeout": args.timeout,

@@ -6,6 +6,7 @@ Demo 白皮书：只读静态 bundle（demo_data/demo_static_bundle.json）+ PDF
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -121,6 +122,10 @@ async def warm_demo_global_assets() -> None:
     启动时预热：从 demo_static_bundle.json 读取 Markdown，写入 global_demo_official 向量索引（无 MinerU）。
     不触碰任何用户 session。
     """
+    # 评测隔离模式（DATA_DIR 非默认）下跳过 Demo 预热，避免 demo 白皮书污染干净评测库
+    if os.getenv("DATA_DIR", "data") != "data":
+        logger.info("DATA_DIR 非默认（评测隔离模式），跳过 Demo 预热")
+        return
     if not _find_demo_pdf():
         logger.warning("Demo 预热跳过：未找到 demo_paper.pdf")
         return

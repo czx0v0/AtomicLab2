@@ -74,6 +74,8 @@ class ChatRequest(BaseModel):
     retrieval_mode: Optional[str] = None
     # 重排序开关（评测/消融实验）：none/cross_encoder/llm
     rerank_mode: Optional[str] = None
+    # multi-agent 消融开关：full/no_router/no_arxiv/no_merge/retrieval_only
+    agent_mode: Optional[str] = None
     # 课题与状态（Goal Map / 原子助手）
     project_context: Optional[Dict[str, Any]] = None
     user_state: Optional[Dict[str, Any]] = None
@@ -597,7 +599,7 @@ def _get_chat_llm_config() -> dict:
             "base_url": os.getenv(
                 "ALIYUN_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"
             ),
-            "model": os.getenv("ALIYUN_MODEL", "qwen3.5-flash"),
+            "model": os.getenv("ALIYUN_MODEL", "qwen3.7-flash"),
         }
     return {
         "provider": "deepseek",
@@ -738,12 +740,19 @@ def _route_with_tools(
     header_session_id: str = "",
     retrieval_mode: str = "full",
     rerank_mode: str = "none",
+    agent_mode: str = "full",
 ) -> Tuple[List[dict], List[str], str]:
     """
     返回：(sources, tool_logs, local_context)。
     约束：事实型问题必须调用 tools；若本地为空，需要决定 arXiv 或诚实告知。
     retrieval_mode: 见 search._RETRIEVAL_MODES；closed_book 时直接返回空。
     rerank_mode: 见 search._RERANK_MODES。
+    agent_mode: multi-agent 消融开关：
+      full=Router(function calling)+arXiv+baseline merge（默认）；
+      no_router=跳过 Router 直连本地检索；
+      no_arxiv=保留 Router 但不调外部 arXiv；
+      no_merge=保留 Router 但不做 baseline_global_merge；
+      retrieval_only=no_router+no_arxiv+no_merge（纯本地检索）。
     """
     api_key = os.getenv("DEEPSEEK_API_KEY")
     api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
@@ -753,8 +762,23 @@ def _route_with_tools(
     local_context = ""
 
     mode = (retrieval_mode or "full").strip().lower()
+    agent = (agent_mode or "full").strip().lower()
+    skip_router = agent in ("no_router", "retrieval_only")
+    skip_arxiv = agent in ("no_arxiv", "retrieval_only")
+    skip_merge = agent in ("no_merge", "retrieval_only")
+
     if mode == "closed_book":
         tool_logs.append("closed_book：跳过检索，直接闭卷作答。")
+        return sources, tool_logs, local_context
+
+    # multi-agent 消融：跳过 Router function-calling，直接本地检索（干净基线）
+    if skip_router:
+        local = _global_search_for_chat(question, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
+        local_hits = local.get("results", [])
+        local_context = local.get("context", "")
+        if local_hits:
+            tool_logs.append(f"search_local_knowledge(no_router) -> {len(local_hits)}")
+            sources.extend(local_hits[: max(top_k, 6)])
         return sources, tool_logs, local_context
 
     detail_mode = _is_research_detail_question(question)
@@ -963,10 +987,14 @@ def _route_with_tools(
                     ],
                 }
             elif name == "search_arxiv":
-                arxiv_hits = _search_arxiv_external(keywords, limit=3)
-                sources.extend(arxiv_hits)
-                tool_logs.append(f"search_arxiv('{keywords[:40]}...') -> {len(arxiv_hits)}")
-                tool_result = {"total": len(arxiv_hits), "hits": arxiv_hits[:3]}
+                if skip_arxiv:
+                    tool_result = {"total": 0, "hits": [], "skipped": "no_arxiv"}
+                    tool_logs.append("search_arxiv -> skipped (no_arxiv)")
+                else:
+                    arxiv_hits = _search_arxiv_external(keywords, limit=3)
+                    sources.extend(arxiv_hits)
+                    tool_logs.append(f"search_arxiv('{keywords[:40]}...') -> {len(arxiv_hits)}")
+                    tool_result = {"total": len(arxiv_hits), "hits": arxiv_hits[:3]}
             elif name == "fetch_arxiv_recommendations":
                 from service.arxiv_secretary import run_fetch_and_filter
 
@@ -1036,15 +1064,16 @@ def _route_with_tools(
             )
 
     # 细节问题的兜底：本地为空时可补 arXiv
-    has_local = any(s.get("source") != "arxiv" for s in sources)
-    if not has_local and detail_mode:
-        arxiv_hits = _search_arxiv_external(question, limit=3)
-        if arxiv_hits:
-            sources.extend(arxiv_hits)
-            tool_logs.append(f"search_arxiv('{question[:40]}...') -> {len(arxiv_hits)} [fallback]")
+    if not skip_arxiv:
+        has_local = any(s.get("source") != "arxiv" for s in sources)
+        if not has_local and detail_mode:
+            arxiv_hits = _search_arxiv_external(question, limit=3)
+            if arxiv_hits:
+                sources.extend(arxiv_hits)
+                tool_logs.append(f"search_arxiv('{question[:40]}...') -> {len(arxiv_hits)} [fallback]")
 
     # 与 /search/global 对齐：始终再合并一次全库混合检索，避免 Router 漏调工具时缺少 PDF 分块/笔记/图谱
-    if api_key:
+    if api_key and not skip_merge:
         try:
             bl = _global_search_for_chat(question, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
             bl_hits = bl.get("results") or []
@@ -1262,6 +1291,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             header_session_id=x_session_id,
             retrieval_mode=body.retrieval_mode or "full",
             rerank_mode=body.rerank_mode or "none",
+            agent_mode=body.agent_mode or "full",
         )
     sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(body.question)
@@ -1369,6 +1399,7 @@ def _chat_stream_generator(
     user_state: Optional[Dict[str, Any]] = None,
     retrieval_mode: str = "full",
     rerank_mode: str = "none",
+    agent_mode: str = "full",
 ) -> Generator[str, None, None]:
     t0 = time.perf_counter()
     prefix = _mentor_context_prefix(project_context, user_state)
@@ -1435,6 +1466,7 @@ def _chat_stream_generator(
             header_session_id=header_session_id,
             retrieval_mode=retrieval_mode,
             rerank_mode=rerank_mode,
+            agent_mode=agent_mode,
         )
     sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(question)
@@ -1608,6 +1640,7 @@ def chat_stream(body: ChatRequest, x_session_id: str = Header(default="")):
             user_state=body.user_state,
             retrieval_mode=body.retrieval_mode or "full",
             rerank_mode=body.rerank_mode or "none",
+            agent_mode=body.agent_mode or "full",
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

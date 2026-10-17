@@ -25,29 +25,48 @@ _instance = None
 _instances: Dict[str, "DocumentRAG"] = {}
 
 
-def _split_markdown(md: str, max_chunk_chars: int = 800) -> List[Dict[str, str]]:
+def _split_markdown(md: str, max_chunk_chars: int = 800, overlap_chars: int = 0) -> List[Dict[str, str]]:
+    """按标题/段落切块；单段超长时按 max_chunk_chars 硬切（带 overlap），解决超长文本不处理的问题。"""
     sections: List[Dict[str, str]] = []
     title = "Preamble"
     buf: List[str] = []
+    overlap_chars = max(0, min(int(overlap_chars), max_chunk_chars // 2))
 
-    def flush():
+    def _append(text: str) -> None:
+        text = text.strip()
+        if text:
+            sections.append({"title": title, "content": text})
+
+    def _hard_split(long_text: str) -> None:
+        step = max(1, max_chunk_chars - overlap_chars)
+        for i in range(0, len(long_text), step):
+            seg = long_text[i : i + max_chunk_chars].strip()
+            if seg:
+                sections.append({"title": title, "content": seg})
+
+    def flush() -> None:
         if not buf:
             return
         text = "\n".join(buf).strip()
         if not text:
             return
-        # 按段落继续切成小块，避免单条过长
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
         current = ""
         for p in paragraphs:
+            if len(p) > max_chunk_chars:  # 单段超长 → 硬切
+                if current:
+                    _append(current)
+                    current = ""
+                _hard_split(p)
+                continue
             if len(current) + len(p) + 2 <= max_chunk_chars:
                 current = f"{current}\n\n{p}".strip()
             else:
                 if current:
-                    sections.append({"title": title, "content": current})
+                    _append(current)
                 current = p
         if current:
-            sections.append({"title": title, "content": current})
+            _append(current)
 
     for line in md.splitlines():
         m = re.match(r"^(#{1,6})\s+(.*)$", line)
@@ -95,7 +114,16 @@ class DocumentRAG:
         if not markdown.strip():
             return 0
 
-        chunks = _split_markdown(markdown)
+        # 分块参数可用环境变量覆盖（评测扫描用）：RAG_CHUNK_SIZE / RAG_CHUNK_OVERLAP
+        try:
+            chunk_size = int(os.getenv("RAG_CHUNK_SIZE", "800"))
+        except (TypeError, ValueError):
+            chunk_size = 800
+        try:
+            overlap = int(os.getenv("RAG_CHUNK_OVERLAP", "0"))
+        except (TypeError, ValueError):
+            overlap = 0
+        chunks = _split_markdown(markdown, max_chunk_chars=chunk_size, overlap_chars=overlap)
         if not chunks:
             return 0
 
