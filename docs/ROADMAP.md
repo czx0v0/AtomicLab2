@@ -1,7 +1,21 @@
 # 项目执行总规划（Roadmap）
 
-> 原则：**先文档后代码、小增量修改、谨慎防 bug**。分四条线并行推进。
-> 更新时间：2026-10-18（qwen3.8-flash + MinerU + 纯 RRF 口径）。
+> 原则：**先文档后代码、小增量修改、谨慎防 bug、兼容安全规范、简洁全局一致**。
+> 更新时间：2026-10-19（+ 记忆层 Phase 1 完成 + Pydantic 强类型 + 审查改进计划）。
+
+## 下一步计划（当前焦点）
+
+| 优先级 | 任务 | 说明 |
+|---|---|---|
+| ✅ 立即 | 历史窗口 → `RAG_HISTORY_TURNS`（默认 4 对话轮，可配） | 追问指代上一轮，4 轮够、少噪声 |
+| ✅ 立即 | 参数单点化（`RAG_HISTORY_TURNS`/`RAG_MAX_TOKENS`/`RAG_CONTEXT_BUDGET`） | 收口 env，符合「单一事实来源」 |
+| ✅ P0 | #3 笔记路径统一（`core.paths.notes_file()`） | 已修「本地重置失效」真 bug（7 文件收敛） |
+| **P0** | #6 LLM 客户端统一（`core/llm.py`） | 修「ALIYUN 路由失效」真 bug |
+| 可选 | 3b-ii embedding 兜底（复用现有 embedding） | 防「换话题误判」 |
+| 可选 | Pydantic `validate_assignment=True` | 赋值时也强校验 |
+| P1-P3 | 单一事实来源收敛 + 死代码删除 | 见 `IMPROVEMENT_PLAN.md` |
+
+> 建议顺序：**先提交当前干净改动（稳定基线）→ 立即项（已 ✅）→ P0（开分支修 bug）→ P1-P3（逐项收敛）**。
 
 ## 线 1：评测收尾（✅ 全部完成）
 

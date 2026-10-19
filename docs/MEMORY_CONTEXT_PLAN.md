@@ -54,9 +54,23 @@ class ConversationState:
 
 ## 3. 上下文管理设计
 
+### 3.0 窗口大小全局限制（6 层预算表）
+
+| # | 限制 | 值 | 位置 |
+|---|---|---|---|
+| ① | history 轮次 | **4 轮**（`RAG_HISTORY_TURNS`，可调）+ 旧轮摘要 | `history[-_MAX_HISTORY_TURNS:]` |
+| ② | 证据摘要长度 | **800 字符/条** | `summary[:800]` |
+| ③ | 证据条数 | **16 条** | `sources[:16]` + `out_cap` |
+| ④ | local_context | **2000 字符** | `local_context[:2000]` |
+| ⑤ | **token 预算（兜底）** | **6000**（`RAG_CONTEXT_BUDGET`） | `_estimate_tokens` 裁剪证据 |
+| ⑥ | 输出上限 | **10000 tokens**（`RAG_MAX_TOKENS`） | `max_tokens=_MAX_TOKENS` |
+
+> **超长兜底链**：① 4 轮 + 摘要 → ② 800 字/条 → ③ 16 条 → ⑤ token 预算 6000 裁剪 body（保留问题 + 要求）。
+> **输入 vs 模型窗口**：总输入 ≈ 系统提示(~500) + prompt(≤6000) ≈ 6500 token，远小于 deepseek 64K / qwen 128K；6000 是**自设预算**（控制成本+延迟+相关性），非模型硬限制。
+
 ### 3.1 token 预算（防截断）
 
-给「系统提示 + 历史 + 检索证据 + 用户问题」设总预算（如 6000 tokens），超限按优先级裁剪：
+给「系统提示 + 历史 + 检索证据 + 用户问题」设总预算（6000 tokens），超限按优先级裁剪：
 
 ```
 系统提示 > 最新轮用户问题 > 最近证据 > 较新历史 > 旧历史
@@ -64,7 +78,7 @@ class ConversationState:
 
 ### 3.2 滑动窗口
 
-对话历史只保留最近 N 轮（如 8 轮，已实现）；超过的直接丢弃最旧轮。
+对话历史只保留最近 N 轮（`RAG_HISTORY_TURNS`，默认 **4**；追问通常指代上一轮，4 轮足够、少噪声）。超过的旧轮 → 摘要卸载。
 
 ### 3.3 摘要卸载
 
@@ -72,12 +86,33 @@ class ConversationState:
 - 摘要写入原子笔记（长期记忆，复用 `note_rag` 写入口）；
 - 从工作上下文移除原始旧轮，只留摘要。
 
+### 3.4 参考规范方案（对齐 MemGPT / LangGraph）
+
+我们的「3-5 轮历史 + 摘要压缩 + 状态管理」对齐主流 Agent 记忆分层：
+
+| 规范方案 | 分层 | 我们的对应 | 实现 |
+|---|---|---|---|
+| **MemGPT / Letta** | Core memory（系统提示） | 系统提示 + mentor 前缀 | ✅ |
+| | Main context（工作记忆） | 4 轮历史 + 检索证据 | ✅ `RAG_HISTORY_TURNS=4` |
+| | Archival memory（长期） | `concluded` 摘要 + 原子笔记 | ✅ 5b 写 `concluded` |
+| **LangGraph** | Typed state | `ConversationState`（Pydantic） | ✅ |
+| | Checkpointing | `save_state`/`load_state`（JSON 落盘） | ✅ |
+| | 可恢复（resume） | `load_state` 跨轮恢复 | ✅ |
+
+**设计定案**：
+- **滑动窗口 3-5 轮**（默认 4，`RAG_HISTORY_TURNS`）+ **摘要压缩**（超窗口旧轮 → 「已确认结论」）；
+- **状态管理**：`ConversationState`（Pydantic）承载 `last_question`/`evidence_cache`/`concluded`/`turn`；
+- **手动清空**：reset 端点清掉 ConversationState（「重新开始」），而非靠 embedding 兜底防误判。
+
+> ✅ **已优化**：摘要「双 LLM 调用」已修复——`pre_summary` 参数让旧轮摘要只算一次，供 prompt 与 `concluded` 复用（`summary_cache` 闭包共享）。
+> ⚠️ **剩余（Phase 2，非 bug）**：`concluded` 目前仍「只写不读」——累积的已确认结论尚未回读进 prompt（跨会话长期记忆读回）。这是「长期记忆」的后续增强，不阻塞当前功能。
+
 ## 4. 分阶段实现（小增量，每步独立）
 
 | 步骤 | 内容 | 改动量 | 状态 |
 |---|---|---|---|
 | 1 | 接入 history（拼进 prompt） | ~20 行 | ✅ 完成 |
-| 2 | `ConversationState` 落盘 + 加载 | ~40 行 | ✅ 完成（`core/conversation_state.py`） |
+| 2 | `ConversationState` 落盘 + 加载 | ~40 行 | ✅ 完成（`core/conversation_state.py`，**Pydantic 强类型**） |
 | 3a | 最小状态追踪（load/save 接入 chat + chat_stream） | ~30 行 | ✅ 完成（2026-10-18） |
 | 3b-i | 复用证据（追问跳过检索，用 evidence_cache） | ~30 行 | ✅ 完成（2026-10-18） |
 | 3b-ii | 增量检索（追问时补检索新实体 + embedding 兜底） | ~40 行 | ⏳ 待做 |
