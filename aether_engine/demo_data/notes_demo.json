@@ -2,7 +2,7 @@
   {
     "id": "demo_seed_0",
     "type": "idea",
-    "content": "Interstellar Office Team Product R&D Division",
+    "content": "Interstellar Ofice Team Product R&D Division",
     "keywords": [],
     "tags": [],
     "source": "demo_seed",
@@ -13,7 +13,7 @@
   {
     "id": "demo_seed_1",
     "type": "idea",
-    "content": "Welcome to Atomic Lab. This document serves as both a technical whitepaper and an interactive demo file for our system. The exponential growth of scientific lit",
+    "content": "Welcome to Atomic Lab. This document serves as both a technical whitepaper and an interactive demo file for our system. The exponential growth of scientific literature presents a dual crisis: the fragmentation of reading inspirations and th",
     "keywords": [],
     "tags": [],
     "source": "demo_seed",
@@ -24,7 +24,7 @@
   {
     "id": "demo_seed_2",
     "type": "idea",
-    "content": "Traditional document-centric reading models trap knowledge within isolated PDFs. We advocate for ”Knowledge Atomization.” Every core argument, experimental resu",
+    "content": "Traditional document-centric reading models trap knowledge within isolated PDFs. We advocate for “Knowledge Atomization.” Every core argument, experimental result, or methodology is extracted as a semantically self-consistent “Atomic Card.”",
     "keywords": [],
     "tags": [],
     "source": "demo_seed",
@@ -35,7 +35,7 @@
   {
     "id": "demo_seed_3",
     "type": "idea",
-    "content": "Academic literature parsing is notoriously difficult due to dual-column layouts and complex mathematical embeddings. Atomic Lab integrates the advanced MinerU p",
+    "content": "Academic literature parsing is notoriously difficult due to dual-column layouts and complex mathematical embeddings. Atomic Lab integrates the advanced MinerU parsing engine.",
     "keywords": [],
     "tags": [],
     "source": "demo_seed",
@@ -46,7 +46,7 @@
   {
     "id": "demo_seed_4",
     "type": "idea",
-    "content": "To balance retrieval precision (finding specific terms) and breadth (understanding context), Atomic Lab utilizes a Hybrid Retrieval architecture. We combine den",
+    "content": "To balance retrieval precision (finding specific terms) and breadth (understanding context), Atomic Lab utilizes a Hybrid Retrieval architecture. We combine dense semantic vectors (via the embedded ChromaDB vector store) with sparse lexical",
     "keywords": [],
     "tags": [],
     "source": "demo_seed",
@@ -57,7 +57,7 @@
   {
     "id": "demo_seed_5",
     "type": "idea",
-    "content": "Knowledge in Atomic Lab is not flat. Atoms are stored in a dual-track architecture. When a user queries a concept, the system retrieves direct matches and perfo",
+    "content": "Knowledge in Atomic Lab is not flat. Atoms are stored in a dual-track architecture. When a user queries a concept, the system retrieves direct matches and performs a 1/2-hop expansion along the knowledge graph (following shared tags or cita",
     "keywords": [],
     "tags": [],
     "source": "demo_seed",
@@ -68,7 +68,7 @@
   {
     "id": "demo_seed_6",
     "type": "idea",
-    "content": "The chat interface of Atomic Lab is not a simple Q&A bot; it simulates a multi-agent ”virtual research group” meeting:",
+    "content": "The chat interface of Atomic Lab is not a simple Q&A bot; it simulates a multi-agent “virtual research group” meeting of four roles:",
     "keywords": [],
     "tags": [],
     "source": "demo_seed",
@@ -79,7 +79,7 @@
   {
     "id": "demo_seed_7",
     "type": "idea",
-    "content": "By integrating deep document parsing, GraphRAG, and Agentic workflows, Atomic Lab provides a seamless Read-Organize- Write loop. We invite you to explore the sy",
+    "content": "We evaluate on a self-built 100-question academic QA set (single-hop / multi-hop / comparative / adversarial, 25 each), judged by a fixed reasoning model with 95% confidence intervals.",
     "keywords": [],
     "tags": [],
     "source": "demo_seed",

@@ -14,6 +14,17 @@
 | ✅ P3 | #15 硬编码路径、#22 mock | 整洁度 |
 | ✅ | #17 chat 编排合并（`_prepare_chat_context`） | 结构优化 |
 | ✅ | 前端 demo「跳转原文」404 | `getDocumentFileUrl` 统一 demo 映射 |
+| ✅ | 文档上传去重（content_hash）+ 清理脚本 | `scripts/cleanup_duplicate_docs.py`（34→3） |
+| ✅ | 解析结果持久化（后端） | `{doc_id}.md` + `parsed` 标记 + `GET /documents/{id}/markdown` |
+| ✅ | demo 白皮书更新 | 4 处修复 + 评测结论 + 架构（markdown 更新 + regen bundle） |
+| ✅ | pdf.js worker 本地化 | `overrides` 锁 `pdfjs-dist@5.4.296`（不再依赖 unpkg CDN） |
+| ✅ | demo 摘要重复 | `mergeNotesById` 按 `client_id` 去重 |
+| ✅ | 检索范围可配置（单个/多个，默认全局） | `scope_doc_ids` 参数贯穿 search/chat（默认 None=全局） |
+| ✅ | Markdown mermaid 图支持 | `MarkdownRenderer` 加 `MermaidBlock`（`language-mermaid` → SVG） |
+| ✅ | PDF 删除同步清 RAG | `delete_document` 删向量 chunks + 失效 BM25 |
+| ✅ | 笔记/引用跨文档跳转 | `NoteCard.jumpToSource` 先切 PDF 再跳页 |
+| ⏸️ backlog | 前端「跳过重解析」（查 parsed + 调 GET markdown） | 后端已就绪，前端待接 |
+| ⏸️ backlog | 检索范围前端 UI（scope 选择器） | 后端已支持 `scope_doc_ids`，前端待接 |
 | ⏸️ backlog | #21 HTTP 风格统一（async/thread） | 低价值高改造成本，明确跳过 |
 | 可选 | 3b-ii embedding 兜底 | 已降级（手动清空覆盖） |
 

@@ -6,6 +6,8 @@
 \usepackage{geometry}
 % \usepackage{graphicx}
 \geometry{a4paper, margin=1in}
+\raggedbottom
+\usepackage{flushend}
 
 % 如果需要编译中文，请解除下面一行的注释，并使用 XeLaTeX 编译
 % \usepackage[UTF8]{ctex} 
@@ -25,7 +27,7 @@ Welcome to Atomic Lab. This document serves as both a technical whitepaper and a
 Traditional document-centric reading models trap knowledge within isolated PDFs. We advocate for ``Knowledge Atomization.'' Every core argument, experimental result, or methodology is extracted as a semantically self-consistent ``Atomic Card.'' 
 
 By passing extracted text through our \textit{note distiller} and \textit{atomic decomposer} agents, non-structured text is automatically distilled into an axiom--method--boundary triple and tagged with AI-generated keywords.
-\begin{figure}[htbp]
+\begin{figure}[t]
     \centering
     \includegraphics[width=\columnwidth]{demo.png}
     \caption{Atomic Lab}
@@ -39,7 +41,7 @@ Academic literature parsing is notoriously difficult due to dual-column layouts 
 
 As demonstrated in Table \ref{tab:parsing}, this approach guarantees the purity of the data fed into our Large Language Models (LLMs), reconstructing cross-page tables into HTML and formulas into LaTeX.
 
-\begin{table}[h]
+\begin{table}[t]
 \centering
 \begin{tabular}{p{2cm} p{2.2cm} p{2.5cm}}
 \toprule
@@ -65,7 +67,7 @@ where $k=60$ acts as a smoothing constant. We use a \emph{pure RRF} fusion (rank
 
 An optional cross-encoder re-ranker further amplifies semantic relevance. Our ablation shows the re-ranking gain is \emph{conditional on the BM25 weight}: on multi-hop questions a high BM25 weight ($1.5$) plus re-ranking yields $+11.9$ points, whereas on abstract comparative questions re-ranking hurts regardless of weight (see Table \ref{tab:eval}).
 
-\begin{figure}[htbp]
+\begin{figure}[t]
     \centering
     \includegraphics[width=\columnwidth]{two_group_rerank_bm_color.png}
     \caption{Re-ranking gain depends on the BM25 weight (multi-hop).}
@@ -86,7 +88,7 @@ The chat interface of Atomic Lab is not a simple Q\&A bot; it simulates a multi-
 
 Ablating this orchestration (full vs. retrieval-only) on our benchmark shows the multi-agent chain adds \textbf{$+12.8$ points} on single-hop and \textbf{$+14.9$ points} on multi-hop correctness, while also reducing hallucination (single-hop $4\%\to0\%$, multi-hop $36\%\to20\%$).
 
-\begin{figure}[htbp]
+\begin{figure}[t]
     \centering
     \includegraphics[width=\columnwidth]{two_group_multiagent_color.png}
     \caption{Multi-agent orchestration ablation (full vs. retrieval-only).}
@@ -96,7 +98,7 @@ Ablating this orchestration (full vs. retrieval-only) on our benchmark shows the
 \section{Evaluation Results}
 We evaluate on a self-built 100-question academic QA set (single-hop / multi-hop / comparative / adversarial, 25 each), judged by a fixed reasoning model with $95\%$ confidence intervals.
 
-\begin{table}[h]
+\begin{table}[t]
 \centering
 \begin{tabular}{lccc}
 \toprule
@@ -116,7 +118,7 @@ Overall & 66.1\% & 71.4\% & $+5.3$ \\
 
 Generation quality: faithfulness $\approx93\%$, hallucination rate $\leq8\%$. These results demonstrate that the hybrid retrieval pipeline delivers the largest gains on difficult multi-hop and comparative questions, where a single vector channel alone is insufficient.
 
-\begin{figure}[htbp]
+\begin{figure}[t]
     \centering
     \includegraphics[width=\columnwidth]{two_group_delta_color.png}
     \caption{Per-type correctness improvement (hybrid vs. vector-only).}

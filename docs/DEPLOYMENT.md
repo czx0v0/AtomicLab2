@@ -205,25 +205,37 @@ git push origin master
 
 > 索引**不是从 PDF 建**，是从 `demo_static_bundle.json` 的 markdown 建（`_ensure_demo_index` → `rag.index_document(DEMO_DOC_ID, "demo_paper.pdf", markdown)`）。PDF 只用于「跳转原文」。
 
-### 6.2 更新流程
+> ⚠️ **MinerU 关系（准确说法）**：`demo_markdown.md` 的**准确内容由 MinerU 解析 `demo_paper.pdf` 生成一次**（保留表格/公式/排版），缓存下来后，demo **加载时**不再跑 MinerU（直接复用 markdown → 切块 → 向量/BM25 索引，秒级）。即「MinerU 跑一次生成 md，之后运行时复用」。
+
+### 6.2 更新流程（4 步，含 MinerU 生成 md + 清旧笔记）
 
 ```powershell
-# ① 备份旧文件
-cd aether_engine\demo_data
-Copy-Item demo_paper.pdf demo_paper.pdf.bak
-Copy-Item demo_markdown.md demo_markdown.md.bak
-Copy-Item demo_static_bundle.json demo_static_bundle.json.bak
+cd D:\Coding\agent\AtomicLab\modelspace-deploy
 
-# ② 编译新白皮书 → 重命名 → 放进来
-Copy-Item D:\Coding\resume-main\article.pdf demo_paper.pdf
+# ① 复制编译好的新 PDF（article.pdf → demo_paper.pdf）
+Copy-Item D:\Coding\resume-main\article.pdf aether_engine\demo_data\demo_paper.pdf
 
-# ③ 更新 markdown（demo_markdown.md，手动编辑或 tex→md 转换）
+# ② MinerU 解析 demo_paper.pdf → 生成准确的 demo_markdown.md + demo_static_bundle.json
+cd aether_engine
+$env:MINERU_API_TOKEN = "<你的 MinerU token>"   # 云端 API（或本地装 magic-pdf 走 CLI）
+set PYTHONPATH=.
+D:\anaconda3\envs\modelspace\python.exe tools\export_demo_static.py --from-pdf
+cd ..
 
-# ④ 重新生成 bundle
-cd ..\..   # 回 aether_engine/
-D:\anaconda3\envs\modelspace\python.exe tools\regen_bundle_from_markdown.py
+# ③ 清旧 demo 笔记（notes.json 里 source=demo_seed 的残留，避免重复/显示旧中文）
+D:\anaconda3\envs\modelspace\python.exe -c "import json; p='data/notes.json'; d=json.load(open(p,encoding='utf-8')); n=[x for x in d if x.get('source')!='demo_seed']; json.dump(n, open(p,'w',encoding='utf-8'), ensure_ascii=False, indent=2); print(f'cleared demo_seed, {len(n)} left')"
 
-# ⑤ 重启服务 → warm_demo_global_assets() 自动重建索引
+# ④ 重启后端 → warm_demo_global_assets() 自动重建向量索引 + BM25；浏览器 Ctrl+F5 强刷
+D:\anaconda3\envs\modelspace\python.exe app.py
 ```
 
-> 更新版 `.tex` 在 `docs/demo_whitepaper_updated.tex`（已修 4 处不一致 + 加 3 图 + 评测结论）。
+### 6.3 MinerU 两种模式
+
+| 模式 | 配置 | 适用 |
+|---|---|---|
+| 云 API | 设 `MINERU_API_TOKEN`（或 `MINERU_API_KEY`） | 有 MinerU 云端 token（与创空间复用） |
+| 本地 CLI | 安装 `magic-pdf`/`mineru`，`_find_mineru_bin()` 找到 CLI | 本地已装 MinerU + 模型 |
+
+> 判定逻辑（`parser.py`）：有 token → 云 API；无 token → 找本地 `mineru`/`magic-pdf` CLI；都没有 → 报「MinerU 未安装且未配置 MINERU_API_TOKEN」。
+
+> 更新版 `.tex` 在 `docs/demo_whitepaper_updated.tex`；备份 `.bak` 文件保留兜底。

@@ -42,6 +42,15 @@ if str(_ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(_ENGINE_ROOT))
 
 
+# 读取项目根 .env（MINERU_API_TOKEN/KEY 等），与 app.py 一致
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_MS_ROOT / ".env")
+except Exception:
+    pass
+
+
 DEMO_DIR = _ENGINE_ROOT / "demo_data"
 
 DEMO_PDF = (DEMO_DIR / "demo_paper.pdf").resolve()
