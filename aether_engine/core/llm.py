@@ -26,7 +26,7 @@ def get_llm_config() -> dict:
             "base_url": os.getenv(
                 "ALIYUN_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"
             ),
-            "model": os.getenv("ALIYUN_MODEL", "qwen3.7-flash"),
+            "model": os.getenv("ALIYUN_MODEL", "qwen3.8-flash"),
         }
     return {
         "provider": "deepseek",

@@ -96,13 +96,21 @@ D:\anaconda3\envs\modelspace\python.exe scripts/eval/run_evaluation.py --mode ht
 |---|---|---|
 | `CHAT_LLM_PROVIDER` | `deepseek`（默认）/ `aliyun` | 是 |
 | `DEEPSEEK_API_KEY` | provider=deepseek 时 | 二选一 |
-| `ALIYUN_API_KEY` + `ALIYUN_MODEL` + `ALIYUN_API_BASE` | provider=aliyun 时 | 二选一 |
-| `MINERU_API_KEY` / `MINERU_API_TOKEN` | 解析 PDF 用 | 是 |
+| `ALIYUN_API_KEY` | provider=aliyun 时 | 二选一 |
+| `ALIYUN_MODEL` | 默认 `qwen3.8-flash`（可不配） | 否 |
+| `DEEPSEEK_CHAT_MODEL` | 默认 `deepseek-chat`（可不配） | 否 |
+| `MINERU_API_KEY` / `MINERU_API_TOKEN` | 解析 PDF 用 | 是（demo 导出/上传解析） |
 | 其余（top_k/BM25/历史窗口/输入输出） | 全部默认最优 | 否 |
 
-> 唯一必配：`CHAT_LLM_PROVIDER` + 一套 LLM key + MinerU key。其余全部代码默认。
+> 唯一必配：`CHAT_LLM_PROVIDER` + 一套 LLM key + MinerU key。模型名有默认（aliyun=`qwen3.8-flash`、deepseek=`deepseek-chat`）。
+> 完整模板见仓库根目录 `.env.example`（复制为 `.env` 后填 key）。
 
-### 2.2 推送流程
+### 2.2 回滚点
+
+- **Git tag**：`pre-refactor` = `66e381c`（本次大改前最后一个稳定点）。
+- 回滚：`git checkout pre-refactor`（临时查看）或 `git reset --hard pre-refactor`（彻底回滚，慎用）。
+
+### 2.3 推送流程
 
 ```powershell
 # 1. 本地 commit + push（ModelScope 仓库的 master 分支）
