@@ -3,7 +3,8 @@
 """
 
 import re
-from fastapi import Request
+from typing import Optional
+from fastapi import Header, Request
 
 # 集合名/文件名安全：仅保留字母数字与下划线，长度上限
 _SANITIZE_PATTERN = re.compile(r"[^a-zA-Z0-9_-]")
@@ -22,3 +23,21 @@ def get_session_id(request: Request) -> str:
     """从请求头读取 X-Session-ID，缺省为 'default'。"""
     raw = request.headers.get("X-Session-ID", "").strip()
     return raw or "default"
+
+
+def resolve_session_id(x_session_id: str) -> Optional[str]:
+    """纯函数版会话解析（单一事实来源）：本地返回 None；云端净化。
+
+    用于替换散落的 `session_id = x_session_id if IN_MODELSCOPE_SPACE else None`，
+    避免重复「读环境 + 判本地」逻辑，并统一净化。
+    """
+    from core.paths import is_modelscope_space
+
+    if not is_modelscope_space():
+        return None
+    return sanitize_session_id(x_session_id)
+
+
+def get_session_dep(x_session_id: str = Header(default="")) -> Optional[str]:
+    """统一会话依赖：本地返回 None；云端读头 + 净化（供 FastAPI Depends 用）。"""
+    return resolve_session_id(x_session_id)
