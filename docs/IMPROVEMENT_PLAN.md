@@ -47,20 +47,20 @@
 
 ### P2（一致性 + 可复现）
 
-| # | 问题 | 修复 |
-|---|---|---|
-| #7 | arXiv 三处重复 | 保留 `api/arxiv.py` 唯一客户端 |
-| #8 | Markdown 分段三份 | 收敛到 `service/markdown.py` |
-| #23 | search.py docstring 权重不符 | 单点 `CHANNEL_WEIGHTS` 字典 |
-| #10/#25 | 依赖清单三份互斥 | `requirements.txt` 为唯一真相 |
+| # | 问题 | 修复 | 状态 |
+|---|---|---|---|
+| #7 | arXiv 三处重复 | 保留 `api/arxiv.py` 唯一客户端 | ✅ chat/writing 已委托 `_parse_arxiv_response` |
+| #8 | Markdown 分段三份 | 收敛到 `service/markdown.py` | ⏳ 待做（extractor 副本已随死代码删除，剩 parser+doc_rag） |
+| #23 | search.py docstring 权重不符 | docstring 对齐代码权重 | ✅ |
+| #10/#25 | 依赖清单互斥 | `requirements.txt` 为唯一真相 | ✅ Dockerfile 加注释指向 |
 
 ### P3（整洁度，可缓）
 
-| # | 问题 |
-|---|---|
-| #15 | parser 硬编码本机路径 |
-| #21 | HTTP 风格不统一 |
-| #22 | translate 无 Key 返回 mock |
+| # | 问题 | 状态 |
+|---|---|---|
+| #15 | parser 硬编码本机路径 | ✅ 已删 `D:\anaconda\...\magic-pdf.exe` |
+| #21 | HTTP 风格不统一 | ⏳ 待做（async 转换风险高） |
+| #22 | translate 无 Key 返回 mock | ✅ 改 503 |
 
 ## 4. 算法/学术视角的 3 点（建议纳入评测报告口径）
 
