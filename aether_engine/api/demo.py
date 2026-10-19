@@ -13,8 +13,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-from core.session import get_session_id, sanitize_session_id
-from core.paths import data_path
+from core.session import get_session_id
+from core.paths import notes_file
 
 router = APIRouter(prefix="/demo", tags=["demo"])
 logger = logging.getLogger("aether")
@@ -49,7 +49,7 @@ def _find_demo_pdf() -> Optional[Path]:
 
 
 def _notes_file_for(session_id: str) -> Path:
-    return data_path(f"notes_{sanitize_session_id(session_id)}.json")
+    return notes_file(session_id)
 
 
 def _clear_session(session_id: str) -> None:

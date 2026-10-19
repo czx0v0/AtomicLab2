@@ -22,3 +22,21 @@ def data_root() -> Path:
 def data_path(*parts) -> Path:
     """返回数据根目录下的相对路径。"""
     return data_root().joinpath(*parts)
+
+
+def is_modelscope_space() -> bool:
+    """是否运行在 ModelScope 云端（存在 /mnt/workspace）。"""
+    return os.path.exists("/mnt/workspace")
+
+
+def notes_file(session_id=None) -> Path:
+    """笔记文件路径唯一解析。
+
+    - 本地：data/notes.json（无会话后缀，本地无真实会话隔离）；
+    - 云端：get_session_path(sid, "notes.json")（按会话隔离）。
+    """
+    if is_modelscope_space() and session_id:
+        from core.session_store import get_session_path, init_session  # 惰性导入避免副作用
+        init_session(session_id)
+        return get_session_path(session_id, "notes.json")
+    return data_path("notes.json")

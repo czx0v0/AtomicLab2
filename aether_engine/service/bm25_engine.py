@@ -16,11 +16,9 @@ from typing import List, Dict, Any, Tuple, Optional
 import jieba
 from rank_bm25 import BM25Okapi
 
-from core.paths import data_path
+from core.paths import data_path, notes_file
 
 logger = logging.getLogger("aether")
-
-NOTES_FILE = data_path("notes.json")
 
 
 # 检测是否在创空间环境
@@ -149,14 +147,8 @@ class BM25Engine:
         self.session_id = session_id
         self._lock = threading.RLock()
 
-        # 会话层笔记文件路径
-        if IN_MODELSCOPE_SPACE and session_id:
-            from core.session_store import get_session_path, init_session
-
-            init_session(session_id)
-            self.notes_file = get_session_path(session_id, "notes.json")
-        else:
-            self.notes_file = NOTES_FILE
+        # 会话层笔记文件路径（单一事实来源：core.paths.notes_file）
+        self.notes_file = notes_file(session_id)
 
         # 索引 ID 列表（与 BM25 corpus 对齐）
         self._note_ids: List[str] = []

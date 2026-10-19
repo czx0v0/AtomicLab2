@@ -17,9 +17,8 @@ from chromadb.config import Settings as ChromaSettings
 
 logger = logging.getLogger("aether")
 
-from core.paths import data_path
+from core.paths import data_path, notes_file
 
-NOTES_FILE = data_path("notes.json")
 CHROMA_DIR = str(data_path("chroma_store"))
 
 # 检测是否在创空间环境
@@ -38,15 +37,13 @@ class NoteRAG:
         self.session_id = session_id
         self._embedding_fn = get_embedding_function()
 
-        # 根据 session 确定路径
+        # 根据 session 确定路径（笔记路径单一事实来源：core.paths.notes_file）
+        self.notes_file = notes_file(session_id)
         if IN_MODELSCOPE_SPACE and session_id:
-            from core.session_store import get_session_path, init_session
+            from core.session_store import get_session_path
 
-            init_session(session_id)
-            self.notes_file = get_session_path(session_id, "notes.json")
             chroma_dir = str(get_session_path(session_id, "chroma"))
         else:
-            self.notes_file = NOTES_FILE
             chroma_dir = CHROMA_DIR
 
         self.client = chromadb.Client(

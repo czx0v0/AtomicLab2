@@ -15,11 +15,10 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
-from core.paths import data_path
+from core.paths import notes_file
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger("aether")
-NOTES_FILE = data_path("notes.json")
 GLOBAL_DEMO_DOC_ID = "global_demo_official"
 
 # 检测是否在创空间环境
@@ -378,17 +377,20 @@ def _rerank_cross_encoder(query: str, candidates: List[dict], top_k: int) -> Lis
 
 
 def _rerank_llm(query: str, candidates: List[dict], top_k: int) -> List[dict]:
-    """LLM listwise 重排序（用 DEEPSEEK_API_KEY，适合中文学术语义）。"""
-    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    """LLM listwise 重排序（provider-aware，适合中文学术语义）。"""
+    from core.llm import get_llm_config
+
+    cfg = get_llm_config()
+    api_key = cfg["api_key"]
     if not api_key:
-        logger.warning("无 DEEPSEEK_API_KEY，跳过 LLM 重排序")
+        logger.warning("无 LLM API KEY，跳过 LLM 重排序")
         return candidates[:top_k]
     try:
         from openai import OpenAI
 
         client = OpenAI(
             api_key=api_key,
-            base_url=os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
+            base_url=cfg["base_url"],
         )
         listing = "\n".join(
             f"[{i}] {_candidate_text(c)[:400]}" for i, c in enumerate(candidates)
@@ -400,7 +402,7 @@ def _rerank_llm(query: str, candidates: List[dict], top_k: int) -> List[dict]:
             f"query: {query}\n候选:\n{listing}\n"
         )
         resp = client.chat.completions.create(
-            model=os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+            model=cfg["model"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             response_format={"type": "json_object"},
@@ -496,17 +498,12 @@ def _extract_screenshot_texts(session_id: Optional[str] = None) -> List[Dict[str
     """
     从 notes.json 中提取有截图的笔记，支持会话隔离。
     """
-    if IN_MODELSCOPE_SPACE and session_id:
-        from core.session_store import get_session_path
+    nf = notes_file(session_id)
 
-        notes_file = get_session_path(session_id, "notes.json")
-    else:
-        notes_file = NOTES_FILE
-
-    if not notes_file.exists():
+    if not nf.exists():
         return []
     try:
-        notes = json.loads(notes_file.read_text(encoding="utf-8"))
+        notes = json.loads(nf.read_text(encoding="utf-8"))
     except Exception:
         return []
 

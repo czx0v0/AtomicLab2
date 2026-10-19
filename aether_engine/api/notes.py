@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
-from core.paths import data_path
+from core.paths import data_path, notes_file
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 logger = logging.getLogger("aether")
@@ -28,13 +28,8 @@ if IN_MODELSCOPE_SPACE:
 
 
 def _get_notes_file(session_id: str = None) -> Path:
-    """获取笔记文件路径"""
-    if IN_MODELSCOPE_SPACE and session_id:
-        from core.session_store import get_session_path, init_session
-
-        init_session(session_id)
-        return get_session_path(session_id, "notes.json")
-    return data_path("notes.json")
+    """获取笔记文件路径（单一事实来源：core.paths.notes_file）。"""
+    return notes_file(session_id)
 
 
 def _load_notes(session_id: str = None) -> List[dict]:
