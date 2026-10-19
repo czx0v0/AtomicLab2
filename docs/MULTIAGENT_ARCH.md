@@ -17,21 +17,23 @@ _is_followup(question, last_question)      # 追问判断（regex + 短问）
   │
   └─ 否
       ▼
-    ┌──────────────────────── Router ────────────────────────┐
-    │ _route_with_tools（function-calling，max_rounds=2）    │
-    │   ├─ search_local_knowledge ──► Seeker 检索管线        │
-    │   │     ├─ 文档向量(1.8) + 文档BM25(1.0)               │
-    │   │     ├─ 笔记向量(0.9) + 笔记BM25(0.7)               │
-    │   │     ├─ 图谱 1/2-hop + 截图OCR(0.5)                 │
-    │   │     ├─ 纯 RRF 融合（1/(60+rank)）                  │
-    │   │     ├─ 重排（cross_encoder / llm / none）          │
-    │   │     └─ top_k=10 候选                               │
-    │   ├─ search_arxiv ──► _parse_arxiv_response（arxiv.py）│
-    │   ├─ search_my_zotero / export_latex / debug_latex     │
-    │   └─ baseline merge：去重 → 排序 → 截断 out_cap=16     │
-    └────────────────────────────────────────────────────────┘
+    ┌──────────────────────── Router（大脑）────────────────────┐
+    │ 1. 历史感知查询改写（_rewrite_query_with_history，消解指代）│
+    │ 2. 正则分类（_classify_tool_category）→ 工具组（免费）      │
+    │ 3. function-calling（组内选工具，max_rounds=2）             │
+    │   ├─ search_local_knowledge ──► Seeker 检索管线            │
+    │   │     ├─ LLM 查询扩展（_llm_expand_query，多角度改写）    │
+    │   │     ├─ 文档向量(1.8) + 文档BM25(1.0)                   │
+    │   │     ├─ 笔记向量(0.9) + 笔记BM25(0.7)                   │
+    │   │     ├─ 图谱 1/2-hop + 截图OCR(0.5)                     │
+    │   │     ├─ 纯 RRF 融合（1/(60+rank)）                      │
+    │   │     ├─ 重排（cross_encoder / llm / none）              │
+    │   │     └─ top_k=10 候选                                   │
+    │   ├─ search_arxiv ──► _parse_arxiv_response（arxiv.py）    │
+    │   └─ baseline merge：去重 → 排序 → 截断 out_cap=16         │
+    └────────────────────────────────────────────────────────────┘
       ▼
-Reviewer（_reviewer_heuristic，证据评分，启发式）
+Reviewer（_reviewer_llm，LLM 证据评审，默认；REVIEWER_MODE=heuristic 可切）
       ▼
 Synthesizer（_build_synthesis_prompt：4轮历史+旧轮摘要+证据分区XML）
   → _call_chat_llm / _stream_chat_llm（provider-aware，core/llm.py）
@@ -119,25 +121,27 @@ Router 用 LLM + 工具 schema 动态决定调用哪个工具。当前**硬编�
 | `debug_latex_error` | 写作 | 分析 pdflatex/Overleaf 报错 | error_log, latex_snippet |
 | `update_markdown_editor` | 编辑 | 写作工具：把结果写入编辑器（append/replace/insert） | 写作模式强制调用 |
 
-> 工具分类注册表见 `chat.py::_TOOL_CATEGORIES`（单一事实来源）。以后工具 >10 时，可按「类别 → 工具」两级路由。
+> 工具分类注册表见 `chat.py::_TOOL_CATEGORIES`（单一事实来源）。**两级路由**：正则 `_classify_tool_category` 先分类（免费），再在组内 function-calling。
 
 ```mermaid
 flowchart TD
-  U[用户提问] --> R[Router 意图识别]
-  R -->|本地检索| S[search_local_knowledge]
-  R -->|外网论文| A[search_arxiv]
-  R -->|个人书库| Z[search_my_zotero]
-  R -->|学术秘书| F[fetch_arxiv_recommendations]
-  R -->|写作导出| E[export_latex]
-  R -->|报错分析| D[debug_latex_error]
-  R -->|写作模式| M[update_markdown_editor]
+  U[用户提问] --> C[正则分类 _classify_tool_category]
+  C -->|检索类| G1[retrieval 组]
+  C -->|写作类| G2[writing 组]
+  C -->|秘书类| G3[secretary 组]
+  C -->|不命中| G0[全量 7 工具]
+  G1 --> S[search_local_knowledge]
+  G1 --> A[search_arxiv]
+  G1 --> Z[search_my_zotero]
+  G2 --> E[export_latex]
+  G2 --> D[debug_latex_error]
+  G3 --> F[fetch_arxiv_recommendations]
   S --> V[Reviewer 评估证据]
   A --> V
   Z --> V
   V --> Y[Synthesizer 合成回答]
   F --> I[arXiv 收件箱]
   E --> X[LaTeX ZIP 下载]
-  M --> W[编辑器写入]
 ```
 
 > **关键约束**：事实型/文献细节型问题，即使 Router 没选工具，也会被 `_should_force_local_when_router_skips_tools` 强制走本地检索（防止漏检索）。
