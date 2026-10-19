@@ -590,6 +590,8 @@ def _call_chat_llm(system_prompt: str, user_prompt: str, max_tokens: int = 1200)
         max_tokens=max_tokens,
         temperature=0.2,
     )
+    if not resp.choices:
+        return ""
     return (resp.choices[0].message.content or "").strip()
 
 
@@ -612,8 +614,10 @@ def _stream_chat_llm(system_prompt: str, user_prompt: str, max_tokens: int = 120
         stream=True,
     )
     for chunk in stream:
+        if not chunk.choices:
+            continue  # 空 choices（如仅含 usage 的尾块）跳过，避免 IndexError
         delta = chunk.choices[0].delta
-        if delta.content:
+        if delta and delta.content:
             yield delta.content
 
 
