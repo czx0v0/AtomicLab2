@@ -27,20 +27,20 @@
 
 | # | 问题 | 修复 | 影响 |
 |---|---|---|---|
-| #3 | 笔记路径三套，本地重置失效 | 抽 `core/notes_file(session_id)` 单一函数，notes/reset/demo/note_rag/bm25 全走它 | 数据正确性 |
-| #6 | LLM 客户端不统一，ALIYUN 下 Router 失效 | 抽 `core/llm.py::get_llm_client/call_llm/stream_llm`，所有模块复用 | 核心链路 |
+| #3 | 笔记路径三套，本地重置失效 | ✅ 已修 `core.paths.notes_file(session_id)` 单一函数 | 数据正确性 |
+| #6 | LLM 客户端不统一，ALIYUN 下 Router 失效 | ✅ 已修 `core/llm.py::get_llm_config()`，11 文件迁移 | 核心链路 |
 
-**执行顺序**：#3 先（独立、低风险、修复真实 bug）→ #6（涉及面广，需仔细回归）。
+**执行顺序**：#3 先（独立、低风险、修复真实 bug）→ #6（涉及面广，需仔细回归）。**均已完成**。
 
 ### P1（单一事实来源 + 正确性）
 
-| # | 问题 | 修复 |
-|---|---|---|
-| #12 | parse_images 硬编码 | `data_path("parse_images")` |
-| #13 | bm25 invalidate 语义失效 | `invalidate()` 删 pickle 文件 |
-| #1 | IN_MODELSCOPE_SPACE 12 处 | 单点 `is_modelscope_space()` |
-| #2 | 会话 ID 三套 | 统一 FastAPI Depends（读头→净化→本地 None） |
-| #4 | demo doc_id 5+ 处 | 后端唯一常量 |
+| # | 问题 | 修复 | 状态 |
+|---|---|---|---|
+| #12 | parse_images 硬编码 | `data_path("parse_images")` | ✅ |
+| #13 | bm25 invalidate 语义失效 | `invalidate()` 删 pickle 文件 | ✅ |
+| #1 | IN_MODELSCOPE_SPACE 11 处 | 单点 `is_modelscope_space()` | ✅ |
+| #2 | 会话 ID 三套 | 统一 FastAPI Depends（读头→净化→本地 None） | ⏳ |
+| #4 | demo doc_id 5+ 处 | 后端唯一常量 | ⏳ |
 | #17 | chat 两套编排重复 | 合并 `_run_chat()` 返回事件流 |
 | #11 | 写后同步 7+ 处 | 抽 `service/sync.py` |
 | #5/#20 | 死代码（rag_engine/extractor/core.models/冗余常量） | 删除或标注废弃 |
@@ -83,3 +83,24 @@
 | P1 | 9 | 单一事实来源、双 data、死代码 | 半阻塞（可维护性） |
 | P2 | 5 | arXiv/分段/权重文档/依赖 | 不阻塞 |
 | P3 | 3 | 硬编码路径、HTTP 风格、mock 翻译 | 不阻塞 |
+
+## 7. 部署环境变量（#6 之后，云端手动配置）
+
+> ModelScope 云端 git 推送不带 `.env`（已 gitignore），环境变量在**云端平台手动配置**。
+
+**关键变化**：`core/llm.py` 统一后，**所有 LLM 链路（Router / 重排 / 摘要 / 翻译 / 回答）都跟 `CHAT_LLM_PROVIDER`**，只需**一套 key**（不再需要同时配 deepseek + aliyun）。
+
+| 变量 | 取值 | 说明 |
+|---|---|---|
+| `CHAT_LLM_PROVIDER` | `deepseek`（默认）/ `aliyun` | 决定所有 LLM 链路用哪家 |
+| `DEEPSEEK_API_KEY` | `sk-...` | provider=deepseek 时必需 |
+| `DEEPSEEK_API_BASE` | `https://api.deepseek.com` | 可选 |
+| `DEEPSEEK_CHAT_MODEL` | `deepseek-chat` | 可选 |
+| `ALIYUN_API_KEY` | `sk-...` | provider=aliyun 时必需 |
+| `ALIYUN_API_BASE` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 可选 |
+| `ALIYUN_MODEL` | `qwen3.8-flash` | 可选 |
+
+**注意**：
+- **Router 模型随 provider 切换**：#6 前 Router 写死 deepseek-chat，#6 后跟 `CHAT_LLM_PROVIDER`（如 aliyun → Router 用 qwen3.8-flash）。已确认 qwen3.8 function-calling 可用，无问题；
+- 若日后需要「路由用 deepseek、回答用 aliyun」的混合，可加 `ROUTER_LLM_PROVIDER` 独立开关（当前未加）；
+- `RAG_BM25_WEIGHT`（本地 .env=0.5）是**检索权重**，与 LLM provider 无关，云端按需配。

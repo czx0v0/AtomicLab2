@@ -7,15 +7,17 @@
 
 | 优先级 | 任务 | 说明 |
 |---|---|---|
-| ✅ 立即 | 历史窗口 → `RAG_HISTORY_TURNS`（默认 4 对话轮，可配） | 追问指代上一轮，4 轮够、少噪声 |
-| ✅ 立即 | 参数单点化（`RAG_HISTORY_TURNS`/`RAG_MAX_TOKENS`/`RAG_CONTEXT_BUDGET`） | 收口 env，符合「单一事实来源」 |
-| ✅ P0 | #3 笔记路径统一（`core.paths.notes_file()`） | 已修「本地重置失效」真 bug（7 文件收敛） |
-| **P0** | #6 LLM 客户端统一（`core/llm.py`） | 修「ALIYUN 路由失效」真 bug |
-| 可选 | 3b-ii embedding 兜底（复用现有 embedding） | 防「换话题误判」 |
-| 可选 | Pydantic `validate_assignment=True` | 赋值时也强校验 |
-| P1-P3 | 单一事实来源收敛 + 死代码删除 | 见 `IMPROVEMENT_PLAN.md` |
+| ✅ 立即 | 历史窗口 → `RAG_HISTORY_TURNS`（默认 4）+ 参数单点化 + 回答 10K + top_k 10 | 云端最小配置 |
+| ✅ P0 | #3 笔记路径统一（`core.paths.notes_file()`） | 修「本地重置失效」bug |
+| ✅ P0 | #6 LLM 客户端统一（`core/llm.py`，11 文件迁移） | 修「ALIYUN 路由失效」bug |
+| ✅ P1 | #1 IN_MODELSCOPE_SPACE、#12 parse_images、#13 bm25 invalidate、#4 demo doc_id | 单一事实来源 |
+| 🔄 P1 | #2 会话 ID 统一（`resolve_session_id` + `get_session_dep`） | 机械迁移中 |
+| ⏳ P1 | #5/#20 死代码删除（你本地 `git rm`） | 已确认 0 引用 |
+| ⏳ P1 | #17 chat 编排合并 | 高风险，最后做 |
+| ⏳ P2/P3 | #7/#8/#23/#10 + #15/#21/#22 | 一致性 + 整洁度 |
+| 可选 | 3b-ii embedding 兜底 | 已降级（手动清空覆盖） |
 
-> 建议顺序：**先提交当前干净改动（稳定基线）→ 立即项（已 ✅）→ P0（开分支修 bug）→ P1-P3（逐项收敛）**。
+> **云端最小配置**：`CHAT_LLM_PROVIDER` + 对应 API key（唯一必配）；top_k=10、BM25=1.0、历史 4 轮、输入 6000/输出 10000 全用默认。
 
 ## 线 1：评测收尾（✅ 全部完成）
 
