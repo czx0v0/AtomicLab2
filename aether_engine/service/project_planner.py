@@ -14,15 +14,17 @@ logger = logging.getLogger("aether")
 
 
 def _call_planner_llm(system: str, user: str, max_tokens: int = 2000) -> str:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    from core.llm import get_llm_config
+
+    cfg = get_llm_config()
+    api_key = cfg["api_key"]
     if not api_key:
         return ""
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key, base_url=api_base)
+    client = OpenAI(api_key=api_key, base_url=cfg["base_url"])
     resp = client.chat.completions.create(
-        model=os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+        model=cfg["model"],
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},

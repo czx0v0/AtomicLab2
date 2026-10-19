@@ -311,16 +311,18 @@ def _retrieve_rag_context(
 
 
 def _call_deepseek(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> str:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    from core.llm import get_llm_config
+
+    cfg = get_llm_config()
+    api_key = cfg["api_key"]
     if not api_key:
         return ""
 
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key, base_url=api_base)
+    client = OpenAI(api_key=api_key, base_url=cfg["base_url"])
     resp = client.chat.completions.create(
-        model="deepseek-chat",
+        model=cfg["model"],
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

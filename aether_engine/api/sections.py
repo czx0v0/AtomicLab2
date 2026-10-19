@@ -21,10 +21,12 @@ async def llm_summarize_sections(body: LlmSummarizeBody):
     if not md:
         raise HTTPException(status_code=400, detail="markdown 不能为空")
 
-    if not (os.getenv("DEEPSEEK_API_KEY", "") or "").strip():
+    from core.llm import get_llm_config
+
+    if not get_llm_config()["api_key"]:
         raise HTTPException(
             status_code=503,
-            detail="未配置 DEEPSEEK_API_KEY，无法生成智能摘要",
+            detail="未配置 DEEPSEEK_API_KEY / ALIYUN_API_KEY，无法生成智能摘要",
         )
 
     sections = _split_sections(md)

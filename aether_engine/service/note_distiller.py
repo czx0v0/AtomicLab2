@@ -52,10 +52,13 @@ async def distill_note_text(text: str) -> Dict[str, object]:
     if not source:
         return _fallback_distill(text)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY", "")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    from core.llm import get_llm_config
+
+    cfg = get_llm_config()
+    api_key = cfg["api_key"]
+    api_base = cfg["base_url"]
     if not api_key:
-        logger.warning("[Distill] DEEPSEEK_API_KEY 未配置，使用 fallback")
+        logger.warning("[Distill] DEEPSEEK_API_KEY / ALIYUN_API_KEY 未配置，使用 fallback")
         return _fallback_distill(source)
 
     prompt = f"""
@@ -79,7 +82,7 @@ async def distill_note_text(text: str) -> Dict[str, object]:
 
         client = AsyncOpenAI(api_key=api_key, base_url=api_base)
         resp = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=cfg["model"],
             temperature=0.2,
             max_tokens=700,
             messages=[

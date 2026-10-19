@@ -49,17 +49,20 @@ async def decompose_note(
         cached["doc_id"] = doc_id
         return cached
 
-    api_key = os.getenv("DEEPSEEK_API_KEY", "")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    from core.llm import get_llm_config
+
+    cfg = get_llm_config()
+    api_key = cfg["api_key"]
+    api_base = cfg["base_url"]
 
     if not api_key:
-        logger.warning("[AtomicDecomposer] DEEPSEEK_API_KEY 未配置，返回空解构")
+        logger.warning("[AtomicDecomposer] DEEPSEEK_API_KEY / ALIYUN_API_KEY 未配置，返回空解构")
         return {
             "note_id": note_id,
             "doc_id": doc_id,
             "atoms": [],
             "is_mock": True,
-            "message": "DEEPSEEK_API_KEY 未配置，原子解构不可用",
+            "message": "DEEPSEEK_API_KEY / ALIYUN_API_KEY 未配置，原子解构不可用",
         }
 
     # ── 构建提示词 ────────────────────────────────────────────────────────────
@@ -98,7 +101,7 @@ async def decompose_note(
 
         client = AsyncOpenAI(api_key=api_key, base_url=api_base)
         resp = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=cfg["model"],
             messages=[
                 {
                     "role": "system",

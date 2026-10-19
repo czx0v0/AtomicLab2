@@ -31,11 +31,13 @@ async def translate_text(body: TranslateRequest):
 
     logger.info("收到翻译请求: %d 字符 -> %s", len(body.text), body.target_lang)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    from core.llm import get_llm_config
+
+    cfg = get_llm_config()
+    api_key = cfg["api_key"]
 
     if not api_key:
-        logger.warning("DEEPSEEK_API_KEY 未配置，返回 mock 翻译")
+        logger.warning("DEEPSEEK_API_KEY / ALIYUN_API_KEY 未配置，返回 mock 翻译")
         return {
             "translation": f"[Mock 翻译] {body.text[:100]}...",
             "source_lang": body.source_lang,
@@ -46,13 +48,13 @@ async def translate_text(body: TranslateRequest):
     try:
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(api_key=api_key, base_url=api_base)
+        client = AsyncOpenAI(api_key=api_key, base_url=cfg["base_url"])
 
         lang_map = {"zh": "中文", "en": "English", "ja": "日語", "ko": "한국어"}
         target = lang_map.get(body.target_lang, body.target_lang)
 
         resp = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=cfg["model"],
             messages=[
                 {
                     "role": "system",

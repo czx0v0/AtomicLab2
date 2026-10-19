@@ -79,8 +79,11 @@ def fetch_arxiv_latest(keyword: str, max_results: int = 5) -> List[dict]:
 
 def _call_llm_filter(research_goal: str, papers: List[dict]) -> List[dict]:
     """返回与 papers 顺序对齐的决策列表；无 API 时全部保留并占位。"""
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    from core.llm import get_llm_config
+
+    cfg = get_llm_config()
+    api_key = cfg["api_key"]
+    api_base = cfg["base_url"]
     if not api_key or not papers:
         return [
             {
@@ -119,7 +122,7 @@ def _call_llm_filter(research_goal: str, papers: List[dict]) -> List[dict]:
 
     client = OpenAI(api_key=api_key, base_url=api_base)
     resp = client.chat.completions.create(
-        model="deepseek-chat",
+        model=cfg["model"],
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
