@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends
 
-from core.session import get_session_id, sanitize_session_id
+from core.session import get_session_dep, sanitize_session_id
 from core.paths import notes_file
 
 router = APIRouter(prefix="/reset", tags=["session"])
@@ -19,7 +19,7 @@ def _notes_file_for(session_id: str) -> Path:
 
 
 @router.post("")
-def reset_session(session_id: str = Depends(get_session_id)):
+def reset_session(session_id: str = Depends(get_session_dep)):
     """
     强制清空当前会话的：
     - 笔记向量库（ChromaDB notes 集合）

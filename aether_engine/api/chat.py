@@ -28,7 +28,7 @@ from api.search import IN_MODELSCOPE_SPACE, _search_pipeline
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger("aether")
 
-GLOBAL_DEMO_DOC_ID = "global_demo_official"
+from core.constants import DEMO_DOC_ID as GLOBAL_DEMO_DOC_ID
 
 
 def _valid_session_doc_ids(session_id: Optional[str]) -> set:
@@ -68,7 +68,7 @@ def _sanitize_evidence_sources(sources: List[dict], session_id: Optional[str]) -
 class ChatRequest(BaseModel):
     question: str
     history: Optional[List[dict]] = None
-    top_k: int = 5
+    top_k: int = 10
     max_rounds: int = 2
     # peer_review：审稿；writer：强制写作工具落编辑器（与 peer_review 互斥，由前端保证）。
     mode: Optional[str] = None
