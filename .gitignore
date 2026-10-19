@@ -50,3 +50,9 @@ reports/
 scripts/eval/charts/
 scripts/eval/*.html
 scripts/eval/png_multi/
+
+# 备份文件 + 前端构建产物（本地 copy dist → static）
+*.bak
+backup/
+static/
+scripts/eval/acl-recovery/
