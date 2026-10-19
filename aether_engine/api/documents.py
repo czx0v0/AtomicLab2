@@ -5,6 +5,7 @@
 物理文件命名：{timestamp_ms}_{uuid}.pdf，避免同名覆盖；API 仍返回 name=用户原始文件名。
 """
 
+import hashlib
 import json
 import logging
 import time
@@ -125,6 +126,17 @@ def list_documents(x_session_id: str = Header(default="")):
     return {"documents": items, "total": len(items)}
 
 
+@router.get("/{doc_id}/markdown")
+def get_document_markdown(doc_id: str, x_session_id: str = Header(default="")):
+    """返回已持久化的解析 markdown 原文（若存在），供前端跳过重复 MinerU 解析。"""
+    session_id = resolve_session_id(x_session_id)
+    doc_root = _get_doc_root(session_id)
+    md_file = doc_root / f"{doc_id}.md"
+    if not md_file.exists():
+        raise HTTPException(status_code=404, detail="该文献尚未解析或 markdown 未持久化")
+    return {"doc_id": doc_id, "markdown": md_file.read_text(encoding="utf-8")}
+
+
 @router.post("", response_model=DocumentItem)
 async def upload_document(
     file: UploadFile = File(...), x_session_id: str = Header(default="")
@@ -136,6 +148,15 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
 
     content = await file.read()
+    content_hash = hashlib.sha256(content).hexdigest()
+
+    # 去重：相同内容（同 PDF）已存在则返回现有文档，避免重复上传
+    items = _load_meta(session_id)
+    for x in items:
+        if x.get("content_hash") == content_hash:
+            logger.info("[Session:%s] 去重：相同内容文档已存在 id=%s", session_id or "default", x.get("id"))
+            return x
+
     doc_id = str(uuid.uuid4())
     ts_ms = int(time.time() * 1000)
     stored_filename = f"{ts_ms}_{doc_id}.pdf"
@@ -155,9 +176,9 @@ async def upload_document(
         "stored_filename": stored_filename,
         "domain_id": None,
         "size": len(content),
+        "content_hash": content_hash,
         "created_at": datetime.utcnow().isoformat() + "Z",
     }
-    items = _load_meta(session_id)
     items.append(item)
     _save_meta(items, session_id)
 

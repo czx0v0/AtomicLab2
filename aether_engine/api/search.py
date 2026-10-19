@@ -15,7 +15,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
-from core.paths import notes_file
+from core.paths import data_path, notes_file
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger("aether")
@@ -912,6 +912,29 @@ def search_global(body: SearchRequest, x_session_id: str = Header(default="")):
     }
 
 
+def _persist_parsed_markdown(doc_id: str, markdown: str) -> None:
+    """把解析后的 markdown 原文存成 data/documents/{doc_id}.md，并在 metadata 标记 parsed（避免重复解析）。"""
+    if not doc_id or not markdown.strip():
+        return
+    doc_root = data_path("documents")
+    doc_root.mkdir(parents=True, exist_ok=True)
+    (doc_root / f"{doc_id}.md").write_text(markdown, encoding="utf-8")
+
+    meta_file = doc_root / "documents.json"
+    if not meta_file.exists():
+        return
+    try:
+        items = json.loads(meta_file.read_text(encoding="utf-8"))
+        for x in items:
+            if x.get("id") == doc_id:
+                x["parsed"] = True
+                x["markdown_file"] = f"{doc_id}.md"
+                break
+        meta_file.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 @router.post("/index-document")
 def index_document(body: IndexDocumentRequest, x_session_id: str = Header(default="")):
     """将解析后的 Markdown 文档切块并写入 DocumentRAG + 重建 BM25 索引。"""
@@ -930,6 +953,12 @@ def index_document(body: IndexDocumentRequest, x_session_id: str = Header(defaul
         count = rag.index_document(
             body.doc_id, body.doc_title or body.doc_id, body.markdown
         )
+
+        # 持久化解析原文（markdown）+ 标记已解析，避免前端重复触发 MinerU 解析
+        try:
+            _persist_parsed_markdown(body.doc_id, body.markdown)
+        except Exception as e:
+            logger.warning("markdown 原文持久化失败: %s", e)
 
         # 重建 BM25 文档索引
         try:
