@@ -301,13 +301,13 @@ export function uploadDocumentWithProgress(file, { onProgress } = {}) {
 
 export const listDocuments = () => json('/documents');
 export const deleteDocument = (docId) => request(`/documents/${docId}`, { method: 'DELETE' });
-export const getDocumentFileUrl = (docId) => `${BASE_URL}/documents/${docId}/file?session_id=${SESSION_ID}`;
-export const resolvePdfUrlByDocId = (docId = '') => {
+export const getDocumentFileUrl = (docId) => {
   const did = String(docId || '').trim();
   if (!did) return '';
-  if (did === GLOBAL_DEMO_DOC_ID) return `${BASE_URL}/demo/pdf`;
-  return getDocumentFileUrl(did);
+  if (did === GLOBAL_DEMO_DOC_ID) return `${BASE_URL}/demo/pdf`;  // demo 单例 → /demo/pdf（否则 /documents/... 会 404）
+  return `${BASE_URL}/documents/${did}/file?session_id=${SESSION_ID}`;
 };
+export const resolvePdfUrlByDocId = (docId = '') => getDocumentFileUrl(docId);
 
 // ─── 翻译 ────────────────────────────────────────────────────────────────────
 export const translateText = (text, targetLang = 'zh') =>
