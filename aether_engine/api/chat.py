@@ -213,10 +213,15 @@ def _normalize_retrieved_cards(sources: List[dict], max_n: int = 16) -> List[dic
             {
                 "id": nid,
                 "type": stype,
+                "source": s.get("source"),
+                "doc_id": s.get("doc_id"),
+                "session_doc_unlinked": s.get("session_doc_unlinked", False),
                 "snippet": snippet,
                 "score": s.get("score"),
                 "doc_title": s.get("doc_title"),
                 "page_num": s.get("page_num"),
+                "page": s.get("page_num") or s.get("page"),
+                "bbox": s.get("bbox") or [],
             }
         )
     return out

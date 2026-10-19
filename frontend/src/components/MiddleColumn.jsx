@@ -1480,7 +1480,7 @@ const renderCitedContent = (content, sources, onJumpSource) => {
         return (
           <sup
             key={i}
-            className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 mx-0.5 text-[9px] font-bold bg-slate-100 text-slate-500 rounded cursor-help"
+            className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 mx-0.5 text-[9px] font-bold bg-slate-100 text-slate-500 rounded cursor-help whitespace-nowrap"
             title="该条证据未关联本会话可打开的 PDF，仅作摘要参考"
           >
             {part}
@@ -1491,7 +1491,7 @@ const renderCitedContent = (content, sources, onJumpSource) => {
         <sup
           key={i}
           onClick={() => onJumpSource?.(src)}
-          className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 mx-0.5 text-[9px] font-bold bg-blue-100 text-blue-700 rounded cursor-pointer hover:bg-blue-200 transition-colors"
+          className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 mx-0.5 text-[9px] font-bold bg-blue-100 text-blue-700 rounded cursor-pointer hover:bg-blue-200 transition-colors whitespace-nowrap"
           title={src.concept || src.summary?.substring(0, 60)}
         >
           {part}
@@ -1511,8 +1511,10 @@ const renderCitedContent = (content, sources, onJumpSource) => {
     // 短文本：去首尾空白，避免 [n] 后紧跟的 \n 把句号顶到换行
     const clean = part.replace(/^\s+|\s+$/g, '');
     if (!clean) return null;
+    // 纯标点（句号/分号等）用 nowrap，避免 CJK 换行规则在标点前断行
+    const isPunctOnly = /^[。；，、）】」』…·]+$/.test(clean);
     return (
-      <span key={i} className="cited-md-part [&_.katex]:text-sm">
+      <span key={i} className={`cited-md-part [&_.katex]:text-sm ${isPunctOnly ? 'whitespace-nowrap' : ''}`}>
         <MarkdownRenderer components={{ p: ({ children }) => <span>{children}</span> }}>{clean}</MarkdownRenderer>
       </span>
     );
