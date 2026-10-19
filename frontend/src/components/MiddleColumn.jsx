@@ -685,12 +685,15 @@ const GraphView = ({ scope = 'global', docId = '', docName = '', domainFilterId 
 
   useEffect(() => {
     if (!containerRef.current) return;
-    const ro = new ResizeObserver(([e]) => {
-      setDims({ w: e.contentRect.width, h: e.contentRect.height });
-    });
+    const measure = () => {
+      const rect = containerRef.current?.getBoundingClientRect?.();
+      if (rect && rect.width && rect.height) setDims({ w: rect.width, h: rect.height });
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(containerRef.current);
+    measure(); // 立即测量一次，避免初始 500x400 导致图谱缩在左上角
     return () => ro.disconnect();
-  }, []);
+  }, [loading, error, graphData.nodes.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1492,11 +1495,19 @@ const renderCitedContent = (content, sources, onJumpSource) => {
       );
     }
     if (!part.trim()) return <span key={i}>{part}</span>;
-    /* 使用块级容器，避免 <p> 包裹 table / 列表等非法嵌套导致表格不显示 */
+    /* 块级内容（表格/列表/代码/标题）用 div；短文本（如紧跟引用的句号）用内联 span，避免标点被顶到换行 */
+    const isBlock = /(```|<table|^#{1,6}\s|^[-*+]\s|^\d+\.\s|\n\n)/m.test(part);
+    if (isBlock) {
+      return (
+        <div key={i} className="cited-md-part [&_.katex]:text-sm [&_.katex-display]:my-2">
+          <MarkdownRenderer>{part}</MarkdownRenderer>
+        </div>
+      );
+    }
     return (
-      <div key={i} className="cited-md-part [&_.katex]:text-sm [&_.katex-display]:my-2">
-        <MarkdownRenderer>{part}</MarkdownRenderer>
-      </div>
+      <span key={i} className="cited-md-part [&_.katex]:text-sm">
+        <MarkdownRenderer components={{ p: ({ children }) => <span>{children}</span> }}>{part}</MarkdownRenderer>
+      </span>
     );
   });
 };

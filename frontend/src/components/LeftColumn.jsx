@@ -1824,13 +1824,16 @@ export const LeftColumn = () => {
                                         className="flex flex-col items-center"
                                         loading={<div className="p-10 text-sm text-slate-500 animate-pulse">正在加载 PDF…</div>}
                                 >
-                                        <Page 
-                                                pageNumber={Math.min(Math.max(1, currentPage), pdfNumPages || 1)} 
-                                                renderTextLayer={true} 
+                                        {Array.from({ length: pdfNumPages || 1 }, (_, i) => (
+                                            <Page
+                                                key={`pdf-page-${i + 1}`}
+                                                pageNumber={i + 1}
+                                                renderTextLayer={true}
                                                 renderAnnotationLayer={true}
                                                 width={pageWidth}
-                                    scale={pageScale}
-                                        />
+                                                scale={pageScale}
+                                            />
+                                        ))}
                                 </Document>
                         </div>
                     )}
