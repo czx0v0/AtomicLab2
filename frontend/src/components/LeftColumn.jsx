@@ -990,8 +990,8 @@ export const LeftColumn = () => {
                 const y = p.y;
                 containerRef.current.scrollTo({ top: y - 100, behavior: 'smooth' });
             }
-        } else if (activeReference && activeReference.page !== currentPage) {
-            // Auto Jump Page
+        } else if (activeReference && activeReference.page !== currentPage && Number.isFinite(activeReference.page) && activeReference.page >= 1) {
+            // Auto Jump Page（校验页码有效性，避免 0/NaN 触发 Invalid page request）
             setCurrentPage(activeReference.page);
         }
     }, [activeReference, currentPage, setCurrentPage]);
@@ -1000,7 +1000,7 @@ export const LeftColumn = () => {
         if (pdfLoadTimeoutRef.current) clearTimeout(pdfLoadTimeoutRef.current);
         setPdfLoadTimeout(false);
         setPdfRuntime(pdf, pdf?.numPages ?? null);
-        if (currentPage > (pdf?.numPages || 1)) {
+        if (currentPage > (pdf?.numPages || 1) || currentPage < 1 || !Number.isFinite(currentPage)) {
             setCurrentPage(1);
         }
         setPdfLoadError(null);
@@ -1294,7 +1294,7 @@ export const LeftColumn = () => {
 
     // Render active reference flash overlay
     const renderActiveHighlight = () => {
-        if (!activeReference || activeReference.page !== currentPage || !activeReference.bbox) return null;
+        if (!activeReference || activeReference.page !== currentPage || !activeReference.bbox || activeReference.bbox.length !== 4) return null;
         
         const p = fromStoredBbox(activeReference.bbox);
         
@@ -1825,7 +1825,7 @@ export const LeftColumn = () => {
                                         loading={<div className="p-10 text-sm text-slate-500 animate-pulse">正在加载 PDF…</div>}
                                 >
                                         <Page 
-                                                pageNumber={currentPage} 
+                                                pageNumber={Math.min(Math.max(1, currentPage), pdfNumPages || 1)} 
                                                 renderTextLayer={true} 
                                                 renderAnnotationLayer={true}
                                                 width={pageWidth}

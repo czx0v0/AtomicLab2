@@ -201,7 +201,7 @@ const SearchVisualizer = ({ status, query }) => {
 
 // ─── 笔记卡片：普通笔记（原文摘录）与原子知识（结构化 + 白底阴影）严格区分 ───────
 const NoteCard = ({ note, onDelete }) => {
-  const { pdfFile, pdfUrl, setActiveReference, addHighlight, activeDocId } = useStore();
+  const { pdfFile, pdfUrl, setActiveReference, addHighlight, activeDocId, setPdfUrl, setViewMode } = useStore();
   const pdfSource = note.screenshot ? null : (pdfFile || pdfUrl || null);
   const { imageSrc: hookSrc, loading: hookLoading } = useScreenshot(
     pdfSource,
@@ -213,6 +213,19 @@ const NoteCard = ({ note, onDelete }) => {
   const [actionLoading, setActionLoading] = useState(null);
 
   const isAtomicKnowledge = !!(note.axiom || note.method || note.boundary);
+
+  // 点击摘要/页码跳转：跨文档时先切 PDF，再跳页
+  const jumpToSource = () => {
+    const docId = (note.doc_id || '').trim();
+    if (docId && docId !== activeDocId) {
+      const url = api.resolvePdfUrlByDocId(docId);
+      if (url) {
+        setPdfUrl(url, note.doc_title || docId, docId);
+        setViewMode('read');
+      }
+    }
+    setActiveReference({ page: note.page || 1, bbox: note.bbox ?? [0, 0, 0, 0] });
+  };
 
   const typeColor = {
     method:     'bg-cyan-100 text-cyan-900 border-cyan-800',
@@ -385,7 +398,7 @@ const NoteCard = ({ note, onDelete }) => {
         <div className="flex items-center gap-1">
           {note.page && (
             <button
-              onClick={() => setActiveReference({ page: note.page, bbox: note.bbox ?? [0,0,0,0] })}
+              onClick={jumpToSource}
               className={clsx(
                 'text-[9px] px-2 py-0.5 flex items-center gap-1 cursor-pointer font-mono transition-colors border rounded',
                 isAtomicKnowledge
@@ -432,7 +445,11 @@ const NoteCard = ({ note, onDelete }) => {
       {isAtomicKnowledge ? (
         <AtomicCardDetail note={note} />
       ) : (
-        <blockquote className="text-[11px] text-slate-800 leading-relaxed whitespace-pre-wrap border-l-4 border-slate-400 pl-3 py-2 bg-white/50 rounded-r-md">
+        <blockquote
+          onClick={jumpToSource}
+          className="text-[11px] text-slate-800 leading-relaxed whitespace-pre-wrap border-l-4 border-slate-400 pl-3 py-2 bg-white/50 rounded-r-md cursor-pointer hover:bg-slate-100 transition-colors"
+          title="点击跳转到原文"
+        >
           {note.content || '（无内容）'}
         </blockquote>
       )}
@@ -2020,7 +2037,7 @@ const KnowledgeTree = ({ notes, sections = [], docName = '' }) => {
   const renderNote = (note) => (
     <div
       key={note.id}
-      onClick={() => note.page && setActiveReference({ page: note.page, bbox: note.bbox || [0,0,0,0] })}
+      onClick={() => setActiveReference({ page: note.page || 1, bbox: note.bbox || [0, 0, 0, 0] })}
       className="flex items-start gap-2 py-1 px-2 rounded hover:bg-blue-50 cursor-pointer group transition-colors"
     >
       <span className={`text-[9px] font-bold shrink-0 mt-0.5 ${typeColors[note.type] || 'text-gray-500'}`}>

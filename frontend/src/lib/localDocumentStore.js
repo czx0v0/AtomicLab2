@@ -16,11 +16,23 @@ const keyFor = (docId) => `doc:${docId || '_none'}`;
 /** 按 id 合并笔记：后者覆盖前者同 id */
 export function mergeNotesById(primary, secondary) {
   const map = new Map();
+  const cidToId = new Map();
   (primary || []).forEach((n) => {
-    if (n?.id) map.set(n.id, { ...n });
+    if (!n?.id) return;
+    map.set(n.id, { ...n });
+    const cid = n.client_id || n.id;
+    if (cid) cidToId.set(cid, n.id);
   });
   (secondary || []).forEach((n) => {
-    if (n?.id) map.set(n.id, { ...map.get(n.id), ...n });
+    if (!n?.id) return;
+    const cid = n.client_id || n.id;
+    const primaryId = cidToId.get(cid);
+    if (primaryId && primaryId !== n.id) {
+      // 同一 client_id（离线同步 / demo_seed）→ 合并到 primary 的 id，避免重复
+      map.set(primaryId, { ...map.get(primaryId), ...n, id: primaryId });
+      return;
+    }
+    map.set(n.id, { ...map.get(n.id), ...n });
   });
   return Array.from(map.values());
 }

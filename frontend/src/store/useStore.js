@@ -437,8 +437,11 @@ export const useStore = create((set, get) => ({
 
       // ── 导航 & 交叉引用 ────────────────────────────────────────────────────
       activeReference: null, // { page: number, bbox: [x,y,w,h] }
-      setActiveReference: (ref) =>
-        set({ activeReference: ref, currentPage: ref?.page ?? get().currentPage }),
+      setActiveReference: (ref) => {
+        // 校验并夹紧页码（0/NaN 会触发 react-pdf 的 Invalid page request）
+        const page = Number.isFinite(ref?.page) ? Math.max(1, Math.floor(ref.page)) : get().currentPage;
+        return set({ activeReference: ref, currentPage: page });
+      },
 
       // ── 编辑器状态（会话态；按 activeProjectId 分文件持久化到 localStorage） ─────
       markdownContent: _initialMarkdown,
