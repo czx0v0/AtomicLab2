@@ -1388,7 +1388,10 @@ const jumpToKnowledgeSource = async (src, nav) => {
 
   const page = Math.max(1, Number(src.page_num || src.page || 1));
   const bbox = _normalizeBbox(src.bbox);
-  const nextDocId = (src.doc_id || '').trim();
+  let nextDocId = (src.doc_id || '').trim();
+  // demo seed 笔记无 doc_id → 落到 demo 单例；其它无 doc_id → 落到当前打开文献
+  if (!nextDocId && src.source === 'demo_seed') nextDocId = GLOBAL_DEMO_DOC_ID;
+  if (!nextDocId) nextDocId = (nav.activeDocId || '').trim();
   if (!isExternal && !nextDocId) {
     nav.setNotification?.('引用缺少文档标识，无法跳转到 PDF。', 'warn');
   }

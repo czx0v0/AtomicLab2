@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { SESSION_ID, useStore } from '../store/useStore';
 
 import { AnimatePresence, motion } from 'framer-motion';
@@ -14,8 +15,8 @@ import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
 import { clearLocalDocState, loadLocalDocState, mergeNotesById, saveLocalDocState } from '../lib/localDocumentStore';
 import { mergeSectionSummarySeeds } from '../lib/sectionSummarySeedNotes';
 
-// Load PDF worker
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+// Load PDF worker（本地 bundle，避免 unpkg.com CDN 被墙/超时导致 PDF 加载失败）
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
 const HIGHLIGHT_COLOR_KEY = 'atomiclab_highlight_color';
 
 export const LeftColumn = () => {

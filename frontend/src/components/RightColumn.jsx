@@ -13,8 +13,10 @@ import * as api from '../api/client';
 import { GLOBAL_DEMO_DOC_ID } from '../lib/constants';
 import { listSnapshots } from '../lib/writingSnapshots';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+// Load PDF worker（本地 bundle，避免 unpkg.com CDN 被墙/超时）
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 // 行内助手建议 diff 展示：删除红、新增绿、续写灰（类似 git diff）
 function getGhostDiffSegments(ghost, fullContent) {
