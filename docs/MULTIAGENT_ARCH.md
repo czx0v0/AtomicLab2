@@ -3,6 +3,44 @@
 > 本文说明学术问答系统的多智能体链路：意图识别怎么做、Seeker 检索哪些资料、Reviewer 怎么评估、Synthesizer 怎么合成、为什么用 multi、如何优化。
 > 代码位置：`aether_engine/api/chat.py`（编排）+ `aether_engine/api/search.py`（检索管线）。
 
+## 0.1 全景流程图（单次请求）
+
+```
+HTTP POST /api/chat
+  │
+  ▼
+load_state(session_id)                     # 工作记忆加载（ConversationState）
+  │
+  ▼
+_is_followup(question, last_question)      # 追问判断（regex + 短问）
+  ├─ 是 ──► 复用 evidence_cache（跳过检索）
+  │
+  └─ 否
+      ▼
+    ┌──────────────────────── Router ────────────────────────┐
+    │ _route_with_tools（function-calling，max_rounds=2）    │
+    │   ├─ search_local_knowledge ──► Seeker 检索管线        │
+    │   │     ├─ 文档向量(1.8) + 文档BM25(1.0)               │
+    │   │     ├─ 笔记向量(0.9) + 笔记BM25(0.7)               │
+    │   │     ├─ 图谱 1/2-hop + 截图OCR(0.5)                 │
+    │   │     ├─ 纯 RRF 融合（1/(60+rank)）                  │
+    │   │     ├─ 重排（cross_encoder / llm / none）          │
+    │   │     └─ top_k=10 候选                               │
+    │   ├─ search_arxiv ──► _parse_arxiv_response（arxiv.py）│
+    │   ├─ search_my_zotero / export_latex / debug_latex     │
+    │   └─ baseline merge：去重 → 排序 → 截断 out_cap=16     │
+    └────────────────────────────────────────────────────────┘
+      ▼
+Reviewer（_reviewer_heuristic，证据评分，启发式）
+      ▼
+Synthesizer（_build_synthesis_prompt：4轮历史+旧轮摘要+证据分区XML）
+  → _call_chat_llm / _stream_chat_llm（provider-aware，core/llm.py）
+      ▼
+_finalize（更新 ConversationState：last_question / turn / concluded）
+      ▼
+返回 JSON（chat）或 SSE 流（chat_stream：step/delta/action/done）
+```
+
 ## 0. 为什么用 Multi-Agent
 
 把一次问答拆成四个职责分离的环节，收益有三：

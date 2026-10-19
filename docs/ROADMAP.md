@@ -7,16 +7,17 @@
 
 | 优先级 | 任务 | 说明 |
 |---|---|---|
-| ✅ 立即 | 历史窗口 → `RAG_HISTORY_TURNS`（默认 4）+ 参数单点化 + 回答 10K + top_k 10 | 云端最小配置 |
-| ✅ P0 | #3 笔记路径统一（`core.paths.notes_file()`） | 修「本地重置失效」bug |
-| ✅ P0 | #6 LLM 客户端统一（`core/llm.py`，11 文件迁移） | 修「ALIYUN 路由失效」bug |
-| ✅ P1 | #1 IN_MODELSCOPE_SPACE、#12 parse_images、#13 bm25 invalidate、#4 demo doc_id | 单一事实来源 |
-| ✅ P1 | #2 会话 ID 统一（`resolve_session_id`，22 处迁移） | 机械迁移完成 |
-| ⏳ P1 | #5/#20 死代码删除（你本地 `git rm`） | 已确认 0 引用 |
-| ⏳ P1 | #17 chat 编排合并 | 高风险，最后做 |
-| ⏳ P2/P3 | #7/#8/#23/#10 + #15/#21/#22 | 一致性 + 整洁度 |
+| ✅ | 记忆层 Phase 1 + 参数单点化 + 回答 10K + top_k 10 | 云端最小配置 |
+| ✅ P0 | #3 笔记路径、#6 LLM 客户端 | 真 bug 已修 |
+| ✅ P1 | #1/#2/#4/#5/#12/#13/#20 | 单一事实来源 + 死代码清理 |
+| ✅ P2 | #7 arXiv、#8 分段、#23 权重、#10 依赖 | 一致性 |
+| ✅ P3 | #15 硬编码路径、#22 mock | 整洁度 |
+| ✅ | #17 chat 编排合并（`_prepare_chat_context`） | 结构优化 |
+| ✅ | 前端 demo「跳转原文」404 | `getDocumentFileUrl` 统一 demo 映射 |
+| ⏸️ backlog | #21 HTTP 风格统一（async/thread） | 低价值高改造成本，明确跳过 |
 | 可选 | 3b-ii embedding 兜底 | 已降级（手动清空覆盖） |
 
+> **审查 27 项全部决策完成**：24 实现 + #21 明确跳过（记 backlog）+ #8/#17 收尾完成。
 > **云端最小配置**：`CHAT_LLM_PROVIDER` + 对应 API key（唯一必配）；top_k=10、BM25=1.0、历史 4 轮、输入 6000/输出 10000 全用默认。
 
 ## 线 1：评测收尾（✅ 全部完成）
