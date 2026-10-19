@@ -1,0 +1,129 @@
+\documentclass[11pt,twocolumn]{article}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{geometry}
+% \usepackage{graphicx}
+\geometry{a4paper, margin=1in}
+
+% 如果需要编译中文，请解除下面一行的注释，并使用 XeLaTeX 编译
+% \usepackage[UTF8]{ctex} 
+
+\title{Atomic Lab: A Technical Whitepaper on Agentic RAG \\ and Atomic Knowledge Workflows}
+\author{Interstellar Office Team \\ Product R\&D Division}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Welcome to Atomic Lab. This document serves as both a technical whitepaper and an interactive demo file for our system. The exponential growth of scientific literature presents a dual crisis: the fragmentation of reading inspirations and the difficulty of tracing citations during writing. Atomic Lab solves this by deconstructing literature into ``Atomic Knowledge'' and leveraging an Agentic RAG (Retrieval-Augmented Generation) architecture. This manual outlines our core technical implementations and the empirical results from a 100-question academic QA benchmark.
+\end{abstract}
+
+\section{Introduction to Atomic Knowledge}
+Traditional document-centric reading models trap knowledge within isolated PDFs. We advocate for ``Knowledge Atomization.'' Every core argument, experimental result, or methodology is extracted as a semantically self-consistent ``Atomic Card.'' 
+
+By passing extracted text through our \textit{note distiller} and \textit{atomic decomposer} agents, non-structured text is automatically distilled into an axiom--method--boundary triple and tagged with AI-generated keywords.
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\columnwidth]{demo.png}
+    \caption{Atomic Lab}
+    \label{fig:architecture}
+\end{figure}
+
+\section{Core Technologies}
+
+\subsection{Multi-modal Deep Parsing}
+Academic literature parsing is notoriously difficult due to dual-column layouts and complex mathematical embeddings. Atomic Lab integrates the advanced \textbf{MinerU} parsing engine. 
+
+As demonstrated in Table \ref{tab:parsing}, this approach guarantees the purity of the data fed into our Large Language Models (LLMs), reconstructing cross-page tables into HTML and formulas into LaTeX.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{2cm} p{2.2cm} p{2.5cm}}
+\toprule
+\textbf{Challenge} & \textbf{Standard OCR} & \textbf{Atomic Lab (MinerU)} \\
+\midrule
+Math Formulas & Garbled characters & 100\% LaTeX recovery \\
+Layouts & Reading order errors & Logical block analysis \\
+Citations & Ignored superscripts & Exact coordinate mapping \\
+\bottomrule
+\end{tabular}
+\caption{Parsing capabilities comparison.}
+\label{tab:parsing}
+\end{table}
+
+\subsection{Hybrid Retrieval \& RRF Fusion}
+To balance retrieval precision (finding specific terms) and breadth (understanding context), Atomic Lab utilizes a Hybrid Retrieval architecture. We combine dense semantic vectors (via the embedded \textbf{ChromaDB} vector store) with sparse lexical search (BM25) and a knowledge graph.
+
+To fuse these ranking systems equitably, we apply the Reciprocal Rank Fusion (RRF) algorithm. For a document $d$ in a set of rank lists $R$, the score is calculated as:
+\begin{equation}
+RRF(d) = \sum_{r \in R} \frac{1}{k + r(d)}
+\end{equation}
+where $k=60$ acts as a smoothing constant. We use a \emph{pure RRF} fusion (rank-only, no raw-score mixing), so that only knowledge atoms ranking high across multiple strategies are presented to the user.
+
+An optional cross-encoder re-ranker further amplifies semantic relevance. Our ablation shows the re-ranking gain is \emph{conditional on the BM25 weight}: on multi-hop questions a high BM25 weight ($1.5$) plus re-ranking yields $+11.9$ points, whereas on abstract comparative questions re-ranking hurts regardless of weight (see Table \ref{tab:eval}).
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\columnwidth]{two_group_rerank_bm_color.png}
+    \caption{Re-ranking gain depends on the BM25 weight (multi-hop).}
+    \label{fig:rerank_bm}
+\end{figure}
+
+\subsection{GraphRAG \& 1/2-Hop Expansion}
+Knowledge in Atomic Lab is not flat. Atoms are stored in a dual-track architecture. When a user queries a concept, the system retrieves direct matches and performs a \textbf{1/2-hop expansion} along the knowledge graph (following shared tags or citation links) to uncover hidden academic causality.
+
+\section{The Agentic RAG Workflow}
+The chat interface of Atomic Lab is not a simple Q\&A bot; it simulates a multi-agent ``virtual research group'' meeting of four roles:
+\begin{itemize}
+    \item \textbf{Router:} Classifies user intent (academic retrieval / writing / paper recommendation / peer review) and dispatches to the appropriate tool via LLM function-calling.
+    \item \textbf{Seeker:} Executes multi-source retrieval, pulling evidence from document vectors, BM25, note cards, the knowledge graph, and external fallback APIs (e.g., arXiv).
+    \item \textbf{Reviewer:} Critically evaluates the retrieved context; if the evidence is insufficient, it flags low-confidence context and triggers re-retrieval.
+    \item \textbf{Synthesizer:} Generates the final, logically coherent response, embedding precise, verifiable citations.
+\end{itemize}
+
+Ablating this orchestration (full vs. retrieval-only) on our benchmark shows the multi-agent chain adds \textbf{$+12.8$ points} on single-hop and \textbf{$+14.9$ points} on multi-hop correctness, while also reducing hallucination (single-hop $4\%\to0\%$, multi-hop $36\%\to20\%$).
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\columnwidth]{two_group_multiagent_color.png}
+    \caption{Multi-agent orchestration ablation (full vs. retrieval-only).}
+    \label{fig:multiagent}
+\end{figure}
+
+\section{Evaluation Results}
+We evaluate on a self-built 100-question academic QA set (single-hop / multi-hop / comparative / adversarial, 25 each), judged by a fixed reasoning model with $95\%$ confidence intervals.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Question type} & \textbf{Vector} & \textbf{Hybrid} & \textbf{$\Delta$} \\
+\midrule
+Single-hop & 86.0\% & 86.4\% & $+0.4$ \\
+Multi-hop & 41.8\% & 54.3\% & $+12.5$ \\
+Comparative & 37.8\% & 47.2\% & $+9.4$ \\
+Adversarial & $\approx$98\% & $\approx$98\% & $\sim0$ \\
+\midrule
+Overall & 66.1\% & 71.4\% & $+5.3$ \\
+\bottomrule
+\end{tabular}
+\caption{Correctness by question type (hybrid vs. vector-only).}
+\label{tab:eval}
+\end{table}
+
+Generation quality: faithfulness $\approx93\%$, hallucination rate $\leq8\%$. These results demonstrate that the hybrid retrieval pipeline delivers the largest gains on difficult multi-hop and comparative questions, where a single vector channel alone is insufficient.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\columnwidth]{two_group_delta_color.png}
+    \caption{Per-type correctness improvement (hybrid vs. vector-only).}
+    \label{fig:delta}
+\end{figure}
+
+\section{Conclusion}
+By integrating deep document parsing, hybrid retrieval (ChromaDB + BM25 + GraphRAG with pure RRF fusion), and a four-role Agentic workflow, Atomic Lab provides a seamless \textit{Read--Organize--Write} loop. We invite you to explore the system by highlighting texts, asking questions, and generating your own verifiable academic insights.
+
+\end{document}

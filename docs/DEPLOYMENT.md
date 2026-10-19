@@ -192,3 +192,38 @@ git push origin master
 - 当前本地有未提交改动（流式 bug 修复 + #8/#17 + 文档），提交后 `git push origin master` 即可触发创空间重建。
 
 > 若想更规范：`git checkout -b chore/refactor-single-source` → 合入 master → 删分支。但对单人小项目，直接 master 更简单。
+
+## 6. demo 白皮书更新（article.tex → demo 建库）
+
+### 6.1 三个 demo 文件（代码事实）
+
+| 文件 | 位置 | 用途 |
+|---|---|---|
+| `demo_paper.pdf` | `aether_engine/demo_data/` 或 `public/` | 「跳转原文」显示的 PDF |
+| `demo_markdown.md` | `aether_engine/demo_data/` | markdown 源（regen 输入） |
+| `demo_static_bundle.json` | `aether_engine/demo_data/` | **建索引的内容**（markdown + sections + demo_notes） |
+
+> 索引**不是从 PDF 建**，是从 `demo_static_bundle.json` 的 markdown 建（`_ensure_demo_index` → `rag.index_document(DEMO_DOC_ID, "demo_paper.pdf", markdown)`）。PDF 只用于「跳转原文」。
+
+### 6.2 更新流程
+
+```powershell
+# ① 备份旧文件
+cd aether_engine\demo_data
+Copy-Item demo_paper.pdf demo_paper.pdf.bak
+Copy-Item demo_markdown.md demo_markdown.md.bak
+Copy-Item demo_static_bundle.json demo_static_bundle.json.bak
+
+# ② 编译新白皮书 → 重命名 → 放进来
+Copy-Item D:\Coding\resume-main\article.pdf demo_paper.pdf
+
+# ③ 更新 markdown（demo_markdown.md，手动编辑或 tex→md 转换）
+
+# ④ 重新生成 bundle
+cd ..\..   # 回 aether_engine/
+D:\anaconda3\envs\modelspace\python.exe tools\regen_bundle_from_markdown.py
+
+# ⑤ 重启服务 → warm_demo_global_assets() 自动重建索引
+```
+
+> 更新版 `.tex` 在 `docs/demo_whitepaper_updated.tex`（已修 4 处不一致 + 加 3 图 + 评测结论）。

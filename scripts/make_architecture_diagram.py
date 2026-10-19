@@ -18,46 +18,47 @@ def _box(ax, x, y, w, h, text, fc, ec="black", fs=8.5, weight="normal"):
 
 
 def main(out: Path) -> None:
-    fig, ax = plt.subplots(figsize=(13, 8.5))
+    fig, ax = plt.subplots(figsize=(13, 9.5))
     ax.set_xlim(0, 13)
-    ax.set_ylim(0, 8.5)
+    ax.set_ylim(0, 9.5)
     ax.axis("off")
 
     # ── 检索流程（上半）──
-    ax.text(6.5, 8.2, "Retrieval Pipeline (single request)", ha="center", fontsize=12, weight="bold")
+    ax.text(6.5, 9.15, "Retrieval Pipeline (single request)", ha="center", fontsize=13, weight="bold")
     steps = [
-        (0.3, 7.4, "HTTP\nPOST /api/chat"),
-        (2.0, 7.4, "load_state\nConversationState"),
-        (3.7, 7.4, "_is_followup\n(question)"),
-        (5.4, 7.4, "Router\n_route_with_tools"),
-        (7.4, 7.4, "Seeker\nmulti-channel"),
-        (9.4, 7.4, "RRF fuse\n1/(60+rank)"),
-        (11.2, 7.4, "Rerank\ncross_enc/llm"),
-        (12.4, 7.4, "Synthesizer\nLLM answer"),
+        (0.3, 7.95, "HTTP\nPOST /api/chat"),
+        (2.0, 7.95, "load_state\nConversationState"),
+        (3.7, 7.95, "_is_followup\n(question)"),
+        (5.4, 7.95, "Router\n_route_with_tools"),
+        (7.4, 7.95, "Seeker\nmulti-channel"),
+        (9.4, 7.95, "RRF fuse\n1/(60+rank)"),
+        (11.2, 7.95, "Rerank\ncross_enc/llm"),
+        (12.4, 7.95, "Synthesizer\nLLM answer"),
     ]
     for x, y, t in steps:
-        _box(ax, x, y, 1.5, 0.9, t, "#eaf2f8")
+        _box(ax, x, y, 1.5, 0.85, t, "#eaf2f8")
     for i in range(len(steps) - 1):
-        ax.add_patch(FancyArrowPatch((steps[i][0] + 1.5, steps[i][1] + 0.45), (steps[i + 1][0], steps[i + 1][1] + 0.45), arrowstyle="->", mutation_scale=12, color="gray"))
+        ax.add_patch(FancyArrowPatch((steps[i][0] + 1.5, steps[i][1] + 0.42), (steps[i + 1][0], steps[i + 1][1] + 0.42), arrowstyle="->", mutation_scale=12, color="gray"))
 
     # Seeker 通道（中）
+    ax.text(6.5, 7.15, "Seeker channels (RRF weights)", ha="center", fontsize=10, weight="bold", color="#7b7b7b")
     channels = [
-        (5.4, 5.6, "doc vector 1.8"),
-        (6.8, 5.6, "doc BM25 1.0"),
-        (8.2, 5.6, "note vector 0.9"),
-        (9.6, 5.6, "note BM25 0.7"),
-        (11.0, 5.6, "graph 1/2-hop"),
+        (5.0, 6.25, "doc vector\n1.8"),
+        (6.45, 6.25, "doc BM25\n1.0"),
+        (7.9, 6.25, "note vector\n0.9"),
+        (9.35, 6.25, "note BM25\n0.7"),
+        (10.8, 6.25, "graph\n1/2-hop"),
     ]
     for x, y, t in channels:
-        _box(ax, x, y, 1.3, 0.7, t, "#fef9e7", fs=7.5)
-    ax.add_patch(FancyArrowPatch((6.15, 7.4), (6.0, 6.3), arrowstyle="->", mutation_scale=10, color="gray"))
+        _box(ax, x, y, 1.35, 0.7, t, "#fef9e7", fs=7.5)
+    ax.add_patch(FancyArrowPatch((6.15, 7.95), (5.7, 6.95), arrowstyle="->", mutation_scale=10, color="gray"))
 
     # ── 数据存储（下半）──
-    ax.text(6.5, 4.9, "Data Storage Layers", ha="center", fontsize=12, weight="bold")
+    ax.text(6.5, 5.55, "Data Storage Layers", ha="center", fontsize=13, weight="bold")
 
     # 磁盘（左）
-    _box(ax, 0.4, 0.5, 5.8, 3.9, "", "#fdedec")
-    ax.text(3.3, 4.15, "Disk (persistent)", ha="center", fontsize=10, weight="bold")
+    _box(ax, 0.4, 0.3, 5.8, 4.9, "", "#fdedec")
+    ax.text(3.3, 4.95, "Disk (persistent)", ha="center", fontsize=11, weight="bold")
     disk_items = [
         "conversation_state_{sid}.json  (working memory)",
         "notes.json  (atomic notes)",
@@ -69,11 +70,11 @@ def main(out: Path) -> None:
         "arxiv_inbox.json + feedback_log.json",
     ]
     for i, t in enumerate(disk_items):
-        ax.text(0.7, 3.85 - i * 0.42, "• " + t, fontsize=8, va="center")
+        ax.text(0.7, 4.65 - i * 0.55, "• " + t, fontsize=8.2, va="center")
 
     # 内存（右）
-    _box(ax, 6.6, 0.5, 6.0, 3.9, "", "#eafaf1")
-    ax.text(9.6, 4.15, "Memory (process cache)", ha="center", fontsize=10, weight="bold")
+    _box(ax, 6.6, 0.3, 6.0, 4.9, "", "#eafaf1")
+    ax.text(9.6, 4.95, "Memory (process cache)", ha="center", fontsize=11, weight="bold")
     mem_items = [
         "NoteRAG / DocumentRAG\n(ChromaDB client, per-session singleton)",
         "BM25Engine\n(jieba corpus + BM25Okapi)",
@@ -81,7 +82,7 @@ def main(out: Path) -> None:
         "SessionDataStore\n(cloud multi-user, /tmp)",
     ]
     for i, t in enumerate(mem_items):
-        ax.text(6.9, 3.7 - i * 0.95, t, fontsize=8, va="center")
+        ax.text(6.9, 4.35 - i * 1.1, t, fontsize=8.2, va="center")
 
     fig.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
