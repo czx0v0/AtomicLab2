@@ -11,7 +11,7 @@
 | ✅ P0 | #3 笔记路径统一（`core.paths.notes_file()`） | 修「本地重置失效」bug |
 | ✅ P0 | #6 LLM 客户端统一（`core/llm.py`，11 文件迁移） | 修「ALIYUN 路由失效」bug |
 | ✅ P1 | #1 IN_MODELSCOPE_SPACE、#12 parse_images、#13 bm25 invalidate、#4 demo doc_id | 单一事实来源 |
-| 🔄 P1 | #2 会话 ID 统一（`resolve_session_id` + `get_session_dep`） | 机械迁移中 |
+| ✅ P1 | #2 会话 ID 统一（`resolve_session_id`，22 处迁移） | 机械迁移完成 |
 | ⏳ P1 | #5/#20 死代码删除（你本地 `git rm`） | 已确认 0 引用 |
 | ⏳ P1 | #17 chat 编排合并 | 高风险，最后做 |
 | ⏳ P2/P3 | #7/#8/#23/#10 + #15/#21/#22 | 一致性 + 整洁度 |
