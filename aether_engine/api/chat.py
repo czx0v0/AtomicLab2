@@ -1262,6 +1262,54 @@ def _append_feedback_record(record: dict) -> None:
         )
 
 
+def _prepare_chat_context(
+    question: str,
+    state,
+    session_id: Optional[str],
+    top_k: int,
+    max_rounds: int,
+    header_session_id: str,
+    retrieval_mode: str,
+    rerank_mode: str,
+    agent_mode: str,
+    project_context,
+    user_state,
+):
+    """共享准备阶段（chat 与 chat_stream 共用）：skip_rag → 追问复用 → 检索 → sanitize → detail_mode。
+
+    消除两套编排中重复的检索逻辑（单一事实来源），合成阶段仍各自分开（call vs stream）。
+    """
+    skip_rag = _should_skip_retrieval_for_project_meta(question, project_context, user_state)
+    if skip_rag:
+        sources, tool_logs, local_context = (
+            [],
+            [
+                "[routing] 课题/日程类问题：未调用 search_local_knowledge / search_arxiv 等检索工具（function calling 跳过），"
+                "仅使用 <project_context> / <user_state>。"
+            ],
+            "",
+        )
+    elif _is_followup(question, state.last_question) and state.evidence_cache:
+        sources = state.evidence_cache
+        tool_logs = [f"[reuse] 追问：复用上一轮检索证据（{len(sources)} 条）"]
+        local_context = ""
+    else:
+        sources, tool_logs, local_context = _route_with_tools(
+            question,
+            top_k=top_k,
+            session_id=session_id,
+            max_rounds=max_rounds,
+            header_session_id=header_session_id,
+            retrieval_mode=retrieval_mode,
+            rerank_mode=rerank_mode,
+            agent_mode=agent_mode,
+        )
+        state.evidence_cache = sources
+    sources = _sanitize_evidence_sources(sources, session_id)
+    detail_mode = _is_research_detail_question(question)
+    return sources, tool_logs, local_context, detail_mode
+
+
 @router.post("", response_model=ChatResponse)
 def chat(body: ChatRequest, x_session_id: str = Header(default="")):
     if not body.question.strip():
@@ -1312,41 +1360,19 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         }
 
-    skip_rag = _should_skip_retrieval_for_project_meta(
-        body.question, body.project_context, body.user_state
+    sources, tool_logs, local_context, detail_mode = _prepare_chat_context(
+        body.question,
+        state,
+        session_id,
+        body.top_k,
+        body.max_rounds,
+        x_session_id,
+        body.retrieval_mode or "full",
+        body.rerank_mode or "none",
+        body.agent_mode or "full",
+        body.project_context,
+        body.user_state,
     )
-    if skip_rag:
-        sources, tool_logs, local_context = (
-            [],
-            [
-                "[routing] 课题/日程类问题：未调用 search_local_knowledge / search_arxiv 等检索工具（function calling 跳过），"
-                "仅使用 <project_context> / <user_state>。"
-            ],
-            "",
-        )
-    else:
-        # 3b-i：追问复用上一轮检索证据（含指代词 + 短问题 + 有缓存）
-        if (
-            _is_followup(body.question, state.last_question)
-            and state.evidence_cache
-        ):
-            sources = state.evidence_cache
-            tool_logs = [f"[reuse] 追问：复用上一轮检索证据（{len(sources)} 条）"]
-            local_context = ""
-        else:
-            sources, tool_logs, local_context = _route_with_tools(
-                body.question,
-                top_k=body.top_k,
-                session_id=session_id,
-                max_rounds=body.max_rounds,
-                header_session_id=x_session_id,
-                retrieval_mode=body.retrieval_mode or "full",
-                rerank_mode=body.rerank_mode or "none",
-                agent_mode=body.agent_mode or "full",
-            )
-            state.evidence_cache = sources
-    sources = _sanitize_evidence_sources(sources, session_id)
-    detail_mode = _is_research_detail_question(body.question)
     router_txt = "已完成上下文准备。"
     if tool_logs:
         router_txt += "\n\n" + "\n".join(f"• {t}" for t in tool_logs)
@@ -1513,48 +1539,20 @@ def _chat_stream_generator(
         _finalize()
         return
 
-    skip_rag = _should_skip_retrieval_for_project_meta(question, project_context, user_state)
-    if skip_rag:
-        yield _sse_event(
-            "step",
-            {
-                "agent": "router",
-                "content": "课题/日程问句：跳过文献检索（未调用 search_* 工具，仅使用课题上下文）。",
-            },
-        )
-        sources, tool_logs, local_context = (
-            [],
-            [
-                "[routing] 课题/日程类：未触发 function calling 检索工具；"
-                "回答仅依据 <project_context> / <user_state>。"
-            ],
-            "",
-        )
-    else:
-        # 3b-i：追问复用上一轮检索证据（含指代词 + 短问题 + 有缓存）
-        if _is_followup(question, state.last_question) and state.evidence_cache:
-            yield _sse_event(
-                "step",
-                {"agent": "router", "content": f"[reuse] 追问：复用上一轮检索证据（{len(state.evidence_cache)} 条）"},
-            )
-            sources = state.evidence_cache
-            tool_logs = [f"[reuse] 追问：复用上一轮检索证据（{len(sources)} 条）"]
-            local_context = ""
-        else:
-            yield _sse_event("step", {"agent": "router", "content": "正在理解你的意图并准备上下文（function calling 路由检索工具）…"})
-            sources, tool_logs, local_context = _route_with_tools(
-                question,
-                top_k=top_k,
-                session_id=session_id,
-                max_rounds=max_rounds,
-                header_session_id=header_session_id,
-                retrieval_mode=retrieval_mode,
-                rerank_mode=rerank_mode,
-                agent_mode=agent_mode,
-            )
-            state.evidence_cache = sources
-    sources = _sanitize_evidence_sources(sources, session_id)
-    detail_mode = _is_research_detail_question(question)
+    yield _sse_event("step", {"agent": "router", "content": "正在理解你的意图并准备上下文…"})
+    sources, tool_logs, local_context, detail_mode = _prepare_chat_context(
+        question,
+        state,
+        session_id,
+        top_k,
+        max_rounds,
+        header_session_id,
+        retrieval_mode,
+        rerank_mode,
+        agent_mode,
+        project_context,
+        user_state,
+    )
     router_detail = "上下文已准备完成。"
     if tool_logs:
         router_detail += "\n\n" + "\n".join(f"• {t}" for t in tool_logs)

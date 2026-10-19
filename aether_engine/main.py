@@ -113,8 +113,10 @@ async def log_requests(request: Request, call_next):
 
 app.include_router(root_router)
 
-# ── parse-images 静态目录（PDF 解析图片持久化）─────────────────────────
-_parse_images_dir = Path(__file__).resolve().parent / "data" / "parse_images"
+# ── parse-images 静态目录（PDF 解析图片持久化，尊重 DATA_DIR）─────────────────────────
+from core.paths import data_path
+
+_parse_images_dir = data_path("parse_images")
 _parse_images_dir.mkdir(parents=True, exist_ok=True)
 app.mount(
     "/api/parse-images",

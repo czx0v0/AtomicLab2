@@ -27,57 +27,46 @@ _instances: Dict[str, "DocumentRAG"] = {}
 
 
 def _split_markdown(md: str, max_chunk_chars: int = 800, overlap_chars: int = 0) -> List[Dict[str, str]]:
-    """按标题/段落切块；单段超长时按 max_chunk_chars 硬切（带 overlap），解决超长文本不处理的问题。"""
+    """按标题/段落切块；单段超长时按 max_chunk_chars 硬切（带 overlap）。标题匹配复用 service.markdown。"""
+    from service.markdown import iter_markdown_blocks
+
     sections: List[Dict[str, str]] = []
-    title = "Preamble"
-    buf: List[str] = []
     overlap_chars = max(0, min(int(overlap_chars), max_chunk_chars // 2))
 
-    def _append(text: str) -> None:
+    def _append(title: str, text: str) -> None:
         text = text.strip()
         if text:
             sections.append({"title": title, "content": text})
 
-    def _hard_split(long_text: str) -> None:
+    def _hard_split(title: str, long_text: str) -> None:
         step = max(1, max_chunk_chars - overlap_chars)
         for i in range(0, len(long_text), step):
             seg = long_text[i : i + max_chunk_chars].strip()
             if seg:
                 sections.append({"title": title, "content": seg})
 
-    def flush() -> None:
-        if not buf:
-            return
+    for title, buf in iter_markdown_blocks(md):
         text = "\n".join(buf).strip()
         if not text:
-            return
+            continue
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
         current = ""
         for p in paragraphs:
             if len(p) > max_chunk_chars:  # 单段超长 → 硬切
                 if current:
-                    _append(current)
+                    _append(title, current)
                     current = ""
-                _hard_split(p)
+                _hard_split(title, p)
                 continue
             if len(current) + len(p) + 2 <= max_chunk_chars:
                 current = f"{current}\n\n{p}".strip()
             else:
                 if current:
-                    _append(current)
+                    _append(title, current)
                 current = p
         if current:
-            _append(current)
+            _append(title, current)
 
-    for line in md.splitlines():
-        m = re.match(r"^(#{1,6})\s+(.*)$", line)
-        if m:
-            flush()
-            title = m.group(2).strip() or "Untitled"
-            buf = []
-        else:
-            buf.append(line)
-    flush()
     return sections
 
 

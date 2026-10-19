@@ -170,17 +170,14 @@ def _first_text_paragraph_summary(section_body: str) -> str:
 
 
 def _split_sections(md: str) -> list:
-    """将 Markdown 拆分为章节列表"""
-    sections = []
-    title = "Preamble"
-    buf = []
+    """将 Markdown 拆分为章节列表（标题匹配复用 service.markdown）。"""
+    from service.markdown import iter_markdown_blocks
 
-    def flush():
-        if not buf:
-            return
+    sections = []
+    for title, buf in iter_markdown_blocks(md):
         text = "\n".join(buf).strip()
         if not text:
-            return
+            continue
         summary = _first_text_paragraph_summary(text)
         image_refs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text)
         sections.append(
@@ -191,16 +188,6 @@ def _split_sections(md: str) -> list:
                 "image_refs": image_refs,
             }
         )
-
-    for line in md.splitlines():
-        m = re.match(r"^(#{1,6})\s+(.*)$", line)
-        if m:
-            flush()
-            title = m.group(2).strip() or "Untitled"
-            buf = []
-        else:
-            buf.append(line)
-    flush()
     return sections
 
 
