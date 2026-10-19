@@ -22,7 +22,8 @@ logger = logging.getLogger("aether")
 
 
 # 检测是否在创空间环境
-IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+from core.paths import is_modelscope_space
+IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 # 停用词（高频无意义词）
 _STOP_WORDS = {
@@ -470,6 +471,13 @@ class BM25Engine:
         self._doc_meta = []
         self._doc_id_set = set()
         self._cache_sig = None
+        # 删除持久化缓存，强制下次重建（否则签名未变时会加载陈旧缓存）
+        try:
+            cache = self._cache_file()
+            if cache.exists():
+                cache.unlink()
+        except Exception:
+            pass
 
 
 # per-session 实例字典

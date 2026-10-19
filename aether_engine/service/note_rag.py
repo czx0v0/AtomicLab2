@@ -22,7 +22,8 @@ from core.paths import data_path, notes_file
 CHROMA_DIR = str(data_path("chroma_store"))
 
 # 检测是否在创空间环境
-IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+from core.paths import is_modelscope_space
+IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 # per-session 实例字典（key: session_id 或 "__default__"）
 _instances: Dict[str, "NoteRAG"] = {}

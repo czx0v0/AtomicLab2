@@ -19,10 +19,11 @@ from core.paths import notes_file
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger("aether")
-GLOBAL_DEMO_DOC_ID = "global_demo_official"
+from core.constants import DEMO_DOC_ID as GLOBAL_DEMO_DOC_ID
 
 # 检测是否在创空间环境
-IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+from core.paths import is_modelscope_space
+IN_MODELSCOPE_SPACE = is_modelscope_space()
 _index_doc_locks: Dict[str, threading.Lock] = {}
 _index_doc_locks_guard = threading.Lock()
 
@@ -41,7 +42,7 @@ def _get_index_lock(doc_id: str) -> threading.Lock:
 
 class SearchRequest(BaseModel):
     query: str
-    top_k: int = 8
+    top_k: int = 10
     doc_id: Optional[str] = None
     max_rounds: int = 2  # 最多几轮查询扩展
     retrieval_mode: str = "full"  # 评测/消融实验：full/closed_book/bm25_only/vector_only/...
@@ -573,7 +574,7 @@ def _mode_enabled(mode: str, channel: str) -> bool:
 
 def _search_pipeline(
     query: str,
-    top_k: int = 8,
+    top_k: int = 10,
     doc_id: Optional[str] = None,
     max_rounds: int = 2,
     session_id: Optional[str] = None,

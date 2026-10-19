@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-from core.session import get_session_id
+from core.session import get_session_dep
 from core.paths import notes_file
 
 router = APIRouter(prefix="/demo", tags=["demo"])
@@ -25,7 +25,7 @@ DEMO_DIR = _ENGINE_ROOT / "demo_data"
 DEMO_PDF = (DEMO_DIR / "demo_paper.pdf").resolve()
 PUBLIC_DEMO_PDF = (_MS_ROOT / "public" / "demo_paper.pdf").resolve()
 DEMO_STATIC_BUNDLE = (DEMO_DIR / "demo_static_bundle.json").resolve()
-DEMO_DOC_ID = "global_demo_official"
+from core.constants import DEMO_DOC_ID
 _DEMO_LOCK = asyncio.Lock()
 
 
@@ -152,7 +152,7 @@ async def warm_demo_global_assets() -> None:
 
 
 @router.post("/load")
-async def load_demo(session_id: str = Depends(get_session_id)):
+async def load_demo(session_id: str = Depends(get_session_dep)):
     """
     清空当前会话，并挂载全局 demo 文档。
     仅从 demo_static_bundle.json 读取解析结果，不调用 MinerU。Demo 笔记由前端 Local-First 管理，不落库到服务端会话。
