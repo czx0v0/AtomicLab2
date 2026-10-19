@@ -116,6 +116,15 @@ app.include_router(root_router)
 # ── parse-images 静态目录（PDF 解析图片持久化，尊重 DATA_DIR）─────────────────────────
 from core.paths import data_path
 
+# demo 白皮书图片（git-tracked，避免 data/ 被 gitignore 导致创空间缺图）
+_demo_images_dir = Path(__file__).resolve().parent / "demo_data" / "parse_images"
+if (_demo_images_dir / "demo_paper").exists():
+    app.mount(
+        "/api/parse-images/demo_paper",
+        StaticFiles(directory=str(_demo_images_dir / "demo_paper")),
+        name="demo-images",
+    )
+
 _parse_images_dir = data_path("parse_images")
 _parse_images_dir.mkdir(parents=True, exist_ok=True)
 app.mount(

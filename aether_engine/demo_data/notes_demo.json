@@ -86,5 +86,16 @@
     "doc_id": "global_demo_official",
     "page": 4,
     "bbox": []
+  },
+  {
+    "id": "demo_seed_8",
+    "type": "idea",
+    "content": "By integrating deep document parsing, hybrid retrieval (ChromaDB + BM25 + GraphRAG with pure RRF fusion), and a four-role Agentic workflow, Atomic Lab provides a seamless Read–Organize–Write loop. We invite you to explore the system by high",
+    "keywords": [],
+    "tags": [],
+    "source": "demo_seed",
+    "doc_id": "global_demo_official",
+    "page": 5,
+    "bbox": []
   }
 ]
