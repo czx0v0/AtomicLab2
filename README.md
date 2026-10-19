@@ -90,9 +90,10 @@ cd frontend && npm install && npm run dev
 
 ### 环境变量配置位置
 
-- 本地运行：项目根目录 `modelspace-deploy/.env`
+- 本地运行：项目根目录 `modelspace-deploy/.env`（模板见 `.env.example`，复制后填 key）
 - 创空间运行：控制台「设置 -> 环境变量」
-- 建议至少配置：`DEEPSEEK_API_KEY`、`DEEPSEEK_API_BASE`
+- 建议至少配置：`CHAT_LLM_PROVIDER`（`deepseek` 默认 / `aliyun`）+ 一套 LLM key（`DEEPSEEK_API_KEY` 或 `ALIYUN_API_KEY`）
+- 模型名有默认：aliyun=`qwen3.8-flash`、deepseek=`deepseek-chat`，可不配
 
 ### PDF 解析：章节摘要模式
 
