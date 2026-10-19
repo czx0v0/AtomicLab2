@@ -1463,9 +1463,9 @@ const renderCitedContent = (content, sources, onJumpSource) => {
   if (!content) return null;
   const normalized = String(content)
     .replace(/【\s*(\d+)\s*】/g, '[$1]')
-    // 去掉 [n] 前后的换行（LLM 常把引用放新段落，导致句号/分号被顶到换行）
-    .replace(/\n\s*(?=\[\d+\])/g, '')
-    .replace(/(\[\d+\])\n\s*/g, '$1');
+    // 去掉 [n] 前后的换行（含 \r\n；LLM 常把引用放新段落，导致句号/分号被顶到换行）
+    .replace(/[\r\n]+(?=\[\d+\])/g, '')
+    .replace(/(\[\d+\])[\r\n]+/g, '$1');
   const parts = normalized.split(/(\[\d+\])/g);
   return parts.map((part, i) => {
     const m = part.match(/^\[(\d+)\]$/);
