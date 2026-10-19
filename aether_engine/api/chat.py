@@ -29,6 +29,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger("aether")
 
 from core.constants import DEMO_DOC_ID as GLOBAL_DEMO_DOC_ID
+from core.session import resolve_session_id
 
 
 def _valid_session_doc_ids(session_id: Optional[str]) -> set:
@@ -1272,7 +1273,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         raise HTTPException(status_code=400, detail="问题不能为空")
 
     t0 = time.perf_counter()
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     state = load_state(session_id)
     summary_cache = [""]  # 闭包共享：旧轮摘要只算一次，供 prompt 与 concluded 复用（避免重复 LLM 调用）
 
@@ -1725,7 +1726,7 @@ def _chat_stream_generator(
 def chat_stream(body: ChatRequest, x_session_id: str = Header(default="")):
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     return StreamingResponse(
         _chat_stream_generator(
             body.question,
