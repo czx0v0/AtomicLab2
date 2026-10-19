@@ -1545,8 +1545,6 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         body.history,
     )
     router_txt = "已完成上下文准备。"
-    if tool_logs:
-        router_txt += "\n\n" + "\n".join(f"• {t}" for t in tool_logs)
     steps.append(
         {
             "agent": "router",
@@ -1554,6 +1552,10 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             "related_notes": sources[:5],
         }
     )
+    # Seeker 单独成 step（检索工具日志，不再塞进 Router 内容）
+    if tool_logs:
+        seeker_txt = "\n".join(f"• {t}" for t in tool_logs)
+        steps.append({"agent": "seeker", "content": seeker_txt, "related_notes": sources[:5]})
     if sources:
         n_local = sum(1 for s in sources if (s.get("source") or "") != "arxiv")
         n_arxiv = sum(1 for s in sources if s.get("source") == "arxiv")
@@ -1728,8 +1730,6 @@ def _chat_stream_generator(
         history,
     )
     router_detail = "上下文已准备完成。"
-    if tool_logs:
-        router_detail += "\n\n" + "\n".join(f"• {t}" for t in tool_logs)
     yield _sse_event(
         "step",
         {
@@ -1738,6 +1738,17 @@ def _chat_stream_generator(
             "related_notes": sources[:5],
         },
     )
+    # Seeker 单独成 step（检索工具日志，不再塞进 Router 内容）
+    if tool_logs:
+        seeker_detail = "\n".join(f"• {t}" for t in tool_logs)
+        yield _sse_event(
+            "step",
+            {
+                "agent": "seeker",
+                "content": seeker_detail,
+                "related_notes": sources[:5],
+            },
+        )
 
     if not sources:
         api_key_ns = _get_chat_llm_config().get("api_key", "")
