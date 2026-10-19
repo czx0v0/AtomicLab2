@@ -8,13 +8,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends
 
 from core.session import get_session_id, sanitize_session_id
+from core.paths import data_path
 
 router = APIRouter(prefix="/reset", tags=["session"])
 logger = logging.getLogger("aether")
 
 
 def _notes_file_for(session_id: str) -> Path:
-    return Path("data") / f"notes_{sanitize_session_id(session_id)}.json"
+    return data_path(f"notes_{sanitize_session_id(session_id)}.json")
 
 
 @router.post("")

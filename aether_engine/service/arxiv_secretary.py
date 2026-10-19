@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from api.arxiv import ARXIV_API, _parse_arxiv_response
+from core.paths import data_path
 
 logger = logging.getLogger("aether")
 
@@ -29,7 +30,7 @@ def _get_inbox_path(session_id: Optional[str] = None) -> Path:
 
         init_session(session_id)
         return get_session_path(session_id, "arxiv_inbox.json")
-    return Path("data/arxiv_inbox.json")
+    return data_path("arxiv_inbox.json")
 
 
 def _load_inbox(session_id: Optional[str] = None) -> Dict[str, Any]:

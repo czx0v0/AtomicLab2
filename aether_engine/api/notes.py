@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
+from core.paths import data_path
+
 router = APIRouter(prefix="/notes", tags=["notes"])
 logger = logging.getLogger("aether")
 _notes_lock = threading.RLock()
@@ -32,7 +34,7 @@ def _get_notes_file(session_id: str = None) -> Path:
 
         init_session(session_id)
         return get_session_path(session_id, "notes.json")
-    return Path("data/notes.json")
+    return data_path("notes.json")
 
 
 def _load_notes(session_id: str = None) -> List[dict]:

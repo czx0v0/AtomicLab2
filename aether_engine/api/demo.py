@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from core.session import get_session_id, sanitize_session_id
+from core.paths import data_path
 
 router = APIRouter(prefix="/demo", tags=["demo"])
 logger = logging.getLogger("aether")
@@ -24,7 +25,6 @@ DEMO_DIR = _ENGINE_ROOT / "demo_data"
 DEMO_PDF = (DEMO_DIR / "demo_paper.pdf").resolve()
 PUBLIC_DEMO_PDF = (_MS_ROOT / "public" / "demo_paper.pdf").resolve()
 DEMO_STATIC_BUNDLE = (DEMO_DIR / "demo_static_bundle.json").resolve()
-DATA_DIR = Path("data")
 DEMO_DOC_ID = "global_demo_official"
 _DEMO_LOCK = asyncio.Lock()
 
@@ -49,7 +49,7 @@ def _find_demo_pdf() -> Optional[Path]:
 
 
 def _notes_file_for(session_id: str) -> Path:
-    return DATA_DIR / f"notes_{sanitize_session_id(session_id)}.json"
+    return data_path(f"notes_{sanitize_session_id(session_id)}.json")
 
 
 def _clear_session(session_id: str) -> None:

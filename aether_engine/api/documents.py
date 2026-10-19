@@ -17,6 +17,8 @@ from fastapi import APIRouter, File, HTTPException, UploadFile, Header
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from core.paths import data_path
+
 router = APIRouter(prefix="/documents", tags=["documents"])
 logger = logging.getLogger("aether")
 
@@ -25,7 +27,7 @@ IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
 if IN_MODELSCOPE_SPACE:
     from core.session_store import get_session_path, SessionDataStore, init_session
 else:
-    DOC_ROOT = Path("data/documents")
+    DOC_ROOT = data_path("documents")
     DOC_ROOT.mkdir(parents=True, exist_ok=True)
     META_FILE = DOC_ROOT / "documents.json"
 
@@ -35,14 +37,14 @@ def _get_doc_root(session_id: str = None) -> Path:
     if IN_MODELSCOPE_SPACE and session_id:
         init_session(session_id)
         return get_session_path(session_id, "documents")
-    return Path("data/documents")
+    return data_path("documents")
 
 
 def _get_meta_file(session_id: str = None) -> Path:
     """获取元数据文件路径"""
     if IN_MODELSCOPE_SPACE and session_id:
         return get_session_path(session_id, "documents.json")
-    return Path("data/documents") / "documents.json"
+    return data_path("documents") / "documents.json"
 
 
 def _load_meta(session_id: str = None) -> List[dict]:

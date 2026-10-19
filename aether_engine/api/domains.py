@@ -12,6 +12,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from core.paths import data_path
+
 router = APIRouter(prefix="/domains", tags=["domains"])
 logger = logging.getLogger("aether")
 
@@ -22,7 +24,7 @@ IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
 if IN_MODELSCOPE_SPACE:
     from core.session_store import SessionDataStore, init_session
 else:
-    DOMAINS_ROOT = Path("data/documents")
+    DOMAINS_ROOT = data_path("documents")
     DOMAINS_ROOT.mkdir(parents=True, exist_ok=True)
     DOMAINS_FILE = DOMAINS_ROOT / "domains.json"
 
@@ -31,7 +33,7 @@ def _load_domains(session_id: Optional[str]) -> List[dict]:
     if IN_MODELSCOPE_SPACE and session_id:
         init_session(session_id)
         return SessionDataStore.get(session_id, "domains", [])
-    p = Path("data/documents") / "domains.json"
+    p = data_path("documents") / "domains.json"
     if not p.exists():
         return []
     try:
@@ -44,7 +46,7 @@ def _save_domains(items: List[dict], session_id: Optional[str]) -> None:
     if IN_MODELSCOPE_SPACE and session_id:
         SessionDataStore.set(session_id, "domains", items)
         return
-    p = Path("data/documents") / "domains.json"
+    p = data_path("documents") / "domains.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
