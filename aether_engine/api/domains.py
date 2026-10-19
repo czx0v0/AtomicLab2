@@ -20,6 +20,7 @@ logger = logging.getLogger("aether")
 import os
 
 from core.paths import is_modelscope_space
+from core.session import resolve_session_id
 IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 if IN_MODELSCOPE_SPACE:
@@ -64,14 +65,14 @@ class DomainCreate(BaseModel):
 
 @router.get("")
 def list_domains(x_session_id: str = Header(default="")):
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     items = _load_domains(session_id)
     return {"domains": items, "total": len(items)}
 
 
 @router.post("", response_model=DomainItem)
 def create_domain(body: DomainCreate, x_session_id: str = Header(default="")):
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="领域名称不能为空")

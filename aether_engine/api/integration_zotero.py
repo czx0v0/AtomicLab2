@@ -21,6 +21,7 @@ router = APIRouter(prefix="/integration/zotero", tags=["integration-zotero"])
 logger = logging.getLogger("aether")
 
 from core.paths import is_modelscope_space
+from core.session import resolve_session_id
 IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 
@@ -30,7 +31,7 @@ class ZoteroSyncRequest(BaseModel):
 
 
 def _session_id(header: str) -> Optional[str]:
-    return header if IN_MODELSCOPE_SPACE else None
+    return resolve_session_id(header)
 
 
 @router.post("/credentials")

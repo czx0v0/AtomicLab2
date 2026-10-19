@@ -10,7 +10,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from api.notes import IN_MODELSCOPE_SPACE
+from core.session import resolve_session_id
 from service.latex_exporter import build_latex_zip_bytes, debug_latex_error
 
 router = APIRouter(prefix="/export", tags=["export"])
@@ -23,7 +23,7 @@ _MAX_CACHE = 64
 
 
 def _session_id(x_session_id: str) -> Optional[str]:
-    return x_session_id if IN_MODELSCOPE_SPACE else None
+    return resolve_session_id(x_session_id)
 
 
 def _purge_cache() -> None:

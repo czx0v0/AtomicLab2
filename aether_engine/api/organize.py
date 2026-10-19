@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import networkx as nx
 from fastapi import APIRouter, Header
 
-from api.documents import IN_MODELSCOPE_SPACE, _load_meta as _load_documents_meta
+from api.documents import _load_meta as _load_documents_meta
 from api.notes import _load_notes
 
 router = APIRouter(prefix="/organize", tags=["organize"])
@@ -20,6 +20,7 @@ logger = logging.getLogger("aether")
 
 GLOBAL_SCOPE_MARKERS = {"", "global", "__global__", "all", "*"}
 from core.constants import DEMO_DOC_ID as GLOBAL_DEMO_DOC_ID
+from core.session import resolve_session_id
 
 
 def _domain_allowed_doc_ids(docs: List[dict], domain_id: Optional[str]) -> Optional[Set[str]]:
@@ -435,7 +436,7 @@ def get_organize_graph(
     domain_id: str = "",
     x_session_id: str = Header(default=""),
 ):
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     is_global = _is_global_scope(doc_id)
     scope_doc_id = None if is_global else doc_id.strip()
 
@@ -483,7 +484,7 @@ def get_organize_triples(
     domain_id: str = "",
     x_session_id: str = Header(default=""),
 ):
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     is_global = _is_global_scope(doc_id)
     scope_doc_id = None if is_global else doc_id.strip()
 

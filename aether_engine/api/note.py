@@ -12,7 +12,8 @@ from typing import Optional
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from api.notes import IN_MODELSCOPE_SPACE, _load_notes, _save_notes
+from api.notes import _load_notes, _save_notes
+from core.session import resolve_session_id
 
 router = APIRouter(prefix="/note", tags=["note"])
 logger = logging.getLogger("aether")
@@ -33,7 +34,7 @@ async def distill_note(body: DistillRequest, x_session_id: str = Header(default=
     if len(text) > 8000:
         raise HTTPException(status_code=400, detail="text 不能超过 8000 字符")
 
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
 
     from service.atomic_engine import distill_note_text
 

@@ -22,6 +22,7 @@ _notes_lock = threading.RLock()
 
 # 检测是否在创空间环境
 from core.paths import is_modelscope_space
+from core.session import resolve_session_id
 IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 if IN_MODELSCOPE_SPACE:
@@ -123,7 +124,7 @@ class NoteUpsert(BaseModel):
 @router.get("")
 def list_notes(x_session_id: str = Header(default="")):
     """获取所有笔记（会话隔离）。"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     notes = _load_notes(session_id)
     logger.info("[Session:%s] 返回 %d 条笔记", session_id or "default", len(notes))
     return {"notes": notes, "total": len(notes)}
@@ -132,7 +133,7 @@ def list_notes(x_session_id: str = Header(default="")):
 @router.post("", status_code=201)
 def create_note(body: NoteCreate, x_session_id: str = Header(default="")):
     """创建新的原子笔记（会话隔离）。"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     with _notes_lock:
         notes = _load_notes(session_id)
         raw = body.model_dump(exclude_none=True)
@@ -172,7 +173,7 @@ def create_note(body: NoteCreate, x_session_id: str = Header(default="")):
 @router.put("/upsert")
 def upsert_note(body: NoteUpsert, x_session_id: str = Header(default="")):
     """按 client_id + doc_id + source 幂等写入笔记。"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     raw = body.model_dump(exclude_none=True)
     client_id = str(raw.get("client_id") or "").strip()
     if not client_id:
@@ -229,7 +230,7 @@ def update_note(
     note_id: str, body: NoteUpdate, x_session_id: str = Header(default="")
 ) -> Dict[str, Any]:
     """更新笔记（部分字段 PATCH）。前端粉碎/解构、同步截图等依赖此接口。"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     with _notes_lock:
         notes = _load_notes(session_id)
         idx = next((i for i, n in enumerate(notes) if n.get("id") == note_id), None)
@@ -282,7 +283,7 @@ def update_note(
 @router.delete("/{note_id}", status_code=204)
 def delete_note(note_id: str, x_session_id: str = Header(default="")):
     """删除指定笔记（会话隔离）。"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     with _notes_lock:
         notes = _load_notes(session_id)
         original_len = len(notes)

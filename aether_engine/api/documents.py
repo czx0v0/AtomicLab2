@@ -23,6 +23,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 logger = logging.getLogger("aether")
 
 from core.paths import is_modelscope_space
+from core.session import resolve_session_id
 IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 if IN_MODELSCOPE_SPACE:
@@ -115,7 +116,7 @@ class PatchDocumentBody(BaseModel):
 @router.get("")
 def list_documents(x_session_id: str = Header(default="")):
     """获取文档列表（会话隔离）"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     items = _load_meta(session_id)
     # 归一化：保证 name 始终可展示（旧数据仅有 name）
     for it in items:
@@ -131,7 +132,7 @@ async def upload_document(
     file: UploadFile = File(...), x_session_id: str = Header(default="")
 ):
     """上传文档（会话隔离）"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
 
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
@@ -180,7 +181,7 @@ def patch_document(
     x_session_id: str = Header(default=""),
 ):
     """更新文献元数据（如 domain_id）"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     items = _load_meta(session_id)
     item = _find_doc(items, doc_id)
     if not item:
@@ -223,7 +224,7 @@ def get_document_file(
 @router.delete("/{doc_id}", status_code=204)
 def delete_document(doc_id: str, x_session_id: str = Header(default="")):
     """删除文献（会话隔离）"""
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
     doc_root = _get_doc_root(session_id)
     items = _load_meta(session_id)
     item = _find_doc(items, doc_id)

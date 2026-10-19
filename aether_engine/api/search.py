@@ -23,6 +23,7 @@ from core.constants import DEMO_DOC_ID as GLOBAL_DEMO_DOC_ID
 
 # 检测是否在创空间环境
 from core.paths import is_modelscope_space
+from core.session import resolve_session_id
 IN_MODELSCOPE_SPACE = is_modelscope_space()
 _index_doc_locks: Dict[str, threading.Lock] = {}
 _index_doc_locks_guard = threading.Lock()
@@ -837,7 +838,7 @@ def search_notes(body: SearchRequest, x_session_id: str = Header(default="")):
     if not body.query.strip():
         raise HTTPException(status_code=400, detail="查询内容不能为空")
 
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
 
     logger.info(
         "[Session:%s] 收到检索请求: query='%s', top_k=%d, max_rounds=%d",
@@ -879,7 +880,7 @@ def search_global(body: SearchRequest, x_session_id: str = Header(default="")):
     if not body.query.strip():
         raise HTTPException(status_code=400, detail="查询内容不能为空")
 
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
 
     logger.info(
         "[Session:%s] 全局检索 /search/global: query='%s', top_k=%d",
@@ -916,7 +917,7 @@ def index_document(body: IndexDocumentRequest, x_session_id: str = Header(defaul
     if not body.doc_id.strip() or not body.markdown.strip():
         raise HTTPException(status_code=400, detail="doc_id 和 markdown 不能为空")
 
-    session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    session_id = resolve_session_id(x_session_id)
 
     lock = _get_index_lock(body.doc_id)
     try:

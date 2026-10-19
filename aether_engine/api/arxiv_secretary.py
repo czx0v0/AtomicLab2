@@ -10,7 +10,8 @@ from typing import Optional
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from api.notes import IN_MODELSCOPE_SPACE, _load_notes, _save_notes
+from api.notes import _load_notes, _save_notes
+from core.session import resolve_session_id
 from service.arxiv_secretary import get_item_by_id, list_inbox, run_fetch_and_filter
 
 router = APIRouter(prefix="/arxiv-secretary", tags=["arxiv-secretary"])
@@ -28,7 +29,7 @@ class ImportRequest(BaseModel):
 
 
 def _session(x_session_id: str = "") -> Optional[str]:
-    return x_session_id if IN_MODELSCOPE_SPACE else None
+    return resolve_session_id(x_session_id)
 
 
 @router.post("/fetch")
