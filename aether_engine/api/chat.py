@@ -251,12 +251,66 @@ def _reviewer_heuristic(sources: List[dict]) -> dict:
     return {"status": status, "detail": detail, "score": grade}
 
 
+def _reviewer_llm(sources: List[dict], question: str) -> dict:
+    """LLM 证据评审：判断检索证据是否真正支撑回答（默认模式）。"""
+    from core.llm import get_llm_config
+
+    cfg = get_llm_config()
+    if not cfg["api_key"]:
+        return _reviewer_heuristic(sources)
+
+    evidence = "\n".join(
+        f"[{i + 1}] {(s.get('doc_title') or '')} : {(s.get('summary') or s.get('concept') or '')[:200]}"
+        for i, s in enumerate((sources or [])[:8])
+    ) or "（无检索证据）"
+
+    prompt = (
+        "你是学术证据评审员。请判断以下检索证据是否足以支撑回答用户问题。\n\n"
+        f"问题：{question}\n\n"
+        f"检索证据（最多 8 条）：\n{evidence}\n\n"
+        '只输出 JSON：{"status": "success"|"warning"|"insufficient", "score": 0-10 数字, "detail": "一句话理由"}'
+    )
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+        resp = client.chat.completions.create(
+            model=cfg["model"],
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        m = re.search(r"\{.*\}", content, re.DOTALL)
+        data = json.loads(m.group(0)) if m else {}
+        status = str(data.get("status") or "warning").lower()
+        if status not in ("success", "warning", "insufficient"):
+            status = "warning"
+        score = float(data.get("score", 5) or 5)
+        return {
+            "status": status,
+            "detail": str(data.get("detail") or ""),
+            "score": min(10.0, max(0.0, score)),
+        }
+    except Exception as e:
+        logger.warning("LLM 评审失败，回退启发式: %s", e)
+        return _reviewer_heuristic(sources)
+
+
+def _reviewer(sources: List[dict], question: str) -> dict:
+    """Reviewer 分发：REVIEWER_MODE=llm（默认）/ heuristic。"""
+    if os.getenv("REVIEWER_MODE", "llm").strip().lower() == "heuristic":
+        return _reviewer_heuristic(sources)
+    return _reviewer_llm(sources, question)
+
+
 def _build_agent_traces(
     detail_mode: bool,
     tool_logs: List[str],
     sources: List[dict],
     router_detail: str,
     has_evidence: bool,
+    question: str = "",
     synthesizer_note: str = "已生成最终回答。",
 ) -> List[dict]:
     """
@@ -297,7 +351,7 @@ def _build_agent_traces(
             }
         )
     else:
-        rt = _reviewer_heuristic(sources)
+        rt = _reviewer(sources, question)
         traces.append(
             {
                 "step": "Reviewer",
@@ -703,6 +757,83 @@ def _global_search_for_chat(
     )
 
 
+# ── 工具分类（单一事实来源：名称 → 类别）─────────────────────────────────
+# 用于文档/可观测性；function-calling schema 里的工具定义见 _route_with_tools。
+_TOOL_CATEGORIES = {
+    "search_local_knowledge": "retrieval",   # 本地知识库
+    "search_arxiv": "retrieval",             # 外网 arXiv
+    "search_my_zotero": "retrieval",         # 个人 Zotero
+    "export_latex": "writing",               # Markdown → LaTeX
+    "debug_latex_error": "writing",          # 报错分析
+    "fetch_arxiv_recommendations": "secretary",  # 学术秘书
+    "update_markdown_editor": "editor",      # 写作模式专用
+}
+
+
+def _classify_tool_category(question: str) -> Optional[str]:
+    """正则快速分类工具类别（免费，两级路由第一级）；不命中返回 None（全量 function-calling）。"""
+    q = (question or "").strip()
+    ql = q.lower()
+    # 检索类：文献/事实细节
+    if _is_research_detail_question(q) or _is_factual_question(q) or _RE_PAPERISH.search(q):
+        return "retrieval"
+    # 写作类：编辑器动作 / LaTeX 导出 / 报错分析
+    if _is_editor_action_intent(q) or "latex" in ql or "报错" in ql or "编译错误" in ql or "overleaf" in ql:
+        return "writing"
+    # 秘书类：arXiv 推荐 / 追踪最新
+    if "arxiv" in ql or "秘书" in q or "最新" in q or "推荐" in q or "追踪" in q:
+        return "secretary"
+    return None
+
+
+def _rewrite_query_with_history(question: str, history: Optional[List[dict]] = None) -> str:
+    """历史感知查询改写：把指代/省略（它/那个/上面）消解成自包含查询，供 Seeker 检索。"""
+    if not history or len(history) < 2:
+        return question
+    q = (question or "").strip()
+    short = len(q) <= 15
+    has_ref = bool(re.search(r"它|这个|那个|这些|那些|上面|之前|刚才|其中", q))
+    if not (short or has_ref):
+        return question
+
+    try:
+        from core.llm import get_llm_config
+
+        cfg = get_llm_config()
+        if not cfg["api_key"]:
+            return question
+        from openai import OpenAI
+
+        client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+        hist_txt = "\n".join(
+            f"{'用户' if m.get('role') == 'user' else '助手'}: {(m.get('content') or '')[:200]}"
+            for m in history[-4:]
+        )
+        resp = client.chat.completions.create(
+            model=cfg["model"],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "结合对话历史，把下面这个可能含指代/省略的问题改写成一个自包含、可直接用于检索的查询。"
+                        "只输出改写后的查询，不要解释：\n\n"
+                        f"对话历史：\n{hist_txt}\n\n当前问题：{q}"
+                    ),
+                }
+            ],
+            temperature=0,
+            max_tokens=150,
+        )
+        rewritten = (resp.choices[0].message.content or "").strip()
+        if rewritten and rewritten != q:
+            logger.info("查询改写: %s -> %s", q[:40], rewritten[:40])
+            return rewritten
+        return q
+    except Exception as e:
+        logger.warning("查询改写失败，用原始问题: %s", e)
+        return q
+
+
 def _route_with_tools(
     question: str,
     top_k: int,
@@ -712,6 +843,8 @@ def _route_with_tools(
     retrieval_mode: str = "full",
     rerank_mode: str = "none",
     agent_mode: str = "full",
+    history: Optional[List[dict]] = None,
+    pre_summary: str = "",
 ) -> Tuple[List[dict], List[str], str]:
     """
     返回：(sources, tool_logs, local_context)。
@@ -739,13 +872,24 @@ def _route_with_tools(
     skip_arxiv = agent in ("no_arxiv", "retrieval_only")
     skip_merge = agent in ("no_merge", "retrieval_only")
 
+    # 历史感知查询改写：Router 消解指代/省略，产出自包含查询供 Seeker 检索
+    search_query = _rewrite_query_with_history(question, history)
+
+    # 轻量历史文本：给 Router 判断「是否需检索 / 是否追问复用」用
+    history_txt = ""
+    if history:
+        history_txt = "\n".join(
+            f"{'用户' if m.get('role') == 'user' else '助手'}: {(m.get('content') or '')[:120]}"
+            for m in history[-4:]
+        )
+
     if mode == "closed_book":
         tool_logs.append("closed_book：跳过检索，直接闭卷作答。")
         return sources, tool_logs, local_context
 
     # multi-agent 消融：跳过 Router function-calling，直接本地检索（干净基线）
     if skip_router:
-        local = _global_search_for_chat(question, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
+        local = _global_search_for_chat(search_query, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
         local_hits = local.get("results", [])
         local_context = local.get("context", "")
         if local_hits:
@@ -757,7 +901,7 @@ def _route_with_tools(
 
     # 无 API key 时，降级路由：细节问题优先本地；通用问题不强制外部检索
     if not api_key:
-        local = _global_search_for_chat(question, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
+        local = _global_search_for_chat(search_query, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
         local_hits = local.get("results", [])
         local_context = local.get("context", "")
         if local_hits:
@@ -882,6 +1026,15 @@ def _route_with_tools(
             },
         },
     ]
+
+    # 两级路由：正则分类（第一级，免费）→ 按类别裁剪 tools（第二级 function-calling）
+    category = _classify_tool_category(question)
+    if category:
+        scoped_tools = [t for t in tools if _TOOL_CATEGORIES.get(t["function"]["name"]) == category]
+        if scoped_tools:
+            tools = scoped_tools
+            logger.info("Router 两级路由：类别=%s，裁剪到 %d 个工具", category, len(tools))
+
     messages = [
         {
             "role": "system",
@@ -894,6 +1047,7 @@ def _route_with_tools(
                 "当用户提到 Zotero、个人书库、最近收藏的论文时，调用 search_my_zotero。"
                 "当用户询问通用概念、闲聊、或要求执行写作/润色类指令时，可以选择不调用工具。"
                 "只做路由决策，不输出最终答案。"
+                + (f"\n\n【对话历史】\n{pre_summary or history_txt}" if (pre_summary or history_txt) else ""),
             ),
         },
         {"role": "user", "content": question},
@@ -914,11 +1068,11 @@ def _route_with_tools(
 
         # 细节问题且未调用 tool，则强制本地检索
         if not tool_calls and detail_mode:
-            local = _global_search_for_chat(question, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
+            local = _global_search_for_chat(search_query, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
             local_hits = local.get("results", [])
             local_context = local.get("context", "")
             sources.extend(local_hits[: max(top_k, 6)])
-            tool_logs.append(f"search_local_knowledge('{question[:40]}...') -> {len(local_hits)} [forced]")
+            tool_logs.append(f"search_local_knowledge('{search_query[:40]}...') -> {len(local_hits)} [forced]")
             break
 
         if not tool_calls:
@@ -937,7 +1091,7 @@ def _route_with_tools(
                 args = json.loads(tc.function.arguments or "{}")
             except Exception:
                 args = {}
-            keywords = (args.get("keywords") or question).strip()
+            keywords = (args.get("keywords") or search_query).strip()
 
             if name == "search_local_knowledge":
                 local = _global_search_for_chat(keywords, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
@@ -1286,6 +1440,8 @@ def _prepare_chat_context(
     agent_mode: str,
     project_context,
     user_state,
+    history: Optional[List[dict]] = None,
+    pre_summary: str = "",
 ):
     """共享准备阶段（chat 与 chat_stream 共用）：skip_rag → 追问复用 → 检索 → sanitize → detail_mode。
 
@@ -1315,6 +1471,8 @@ def _prepare_chat_context(
             retrieval_mode=retrieval_mode,
             rerank_mode=rerank_mode,
             agent_mode=agent_mode,
+            history=history,
+            pre_summary=pre_summary,
         )
         state.evidence_cache = sources
     sources = _sanitize_evidence_sources(sources, session_id)
@@ -1384,6 +1542,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         body.agent_mode or "full",
         body.project_context,
         body.user_state,
+        body.history,
     )
     router_txt = "已完成上下文准备。"
     if tool_logs:
@@ -1425,6 +1584,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             [],
             router_txt_full,
             has_evidence=False,
+            question=body.question,
             synthesizer_note="无检索证据，已生成通用/诚实回答。",
         )
         _finalize()
@@ -1472,6 +1632,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         sources,
         router_txt,
         has_evidence=True,
+        question=body.question,
         synthesizer_note="已生成带引用的最终回答。",
     )
     _finalize()
@@ -1564,6 +1725,7 @@ def _chat_stream_generator(
         agent_mode,
         project_context,
         user_state,
+        history,
     )
     router_detail = "上下文已准备完成。"
     if tool_logs:
@@ -1601,6 +1763,7 @@ def _chat_stream_generator(
                 [],
                 router_detail,
                 has_evidence=False,
+                question=question,
                 synthesizer_note="无检索证据，审稿模式流式生成完成。",
             )
             yield _sse_event(
@@ -1625,6 +1788,7 @@ def _chat_stream_generator(
             [],
             router_detail,
             has_evidence=False,
+            question=question,
             synthesizer_note="无检索证据，已生成通用回答。",
         )
         yield _sse_event(
@@ -1652,6 +1816,7 @@ def _chat_stream_generator(
             sources,
             router_detail,
             has_evidence=True,
+            question=question,
             synthesizer_note="未配置 LLM，仅返回检索摘要。",
         )
         yield _sse_event(
@@ -1712,6 +1877,7 @@ def _chat_stream_generator(
         sources,
         router_detail,
         has_evidence=True,
+        question=question,
         synthesizer_note="流式生成最终回答完成。",
     )
     yield _sse_event(

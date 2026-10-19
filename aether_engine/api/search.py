@@ -494,6 +494,47 @@ def _expand_query(query: str) -> List[str]:
     return variants[:4]  # 最多 4 个变体
 
 
+def _llm_expand_query(query: str) -> List[str]:
+    """LLM 查询扩展：把问题改写为 2-3 个不同角度的检索查询（默认模式）。"""
+    try:
+        from core.llm import get_llm_config
+
+        cfg = get_llm_config()
+        if not cfg["api_key"]:
+            return [query]
+        from openai import OpenAI
+
+        client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+        resp = client.chat.completions.create(
+            model=cfg["model"],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "把下面的学术问题改写为 2-3 个不同角度的检索查询，"
+                        "每行一个，去掉停用词，保留核心术语与约束：\n" + query
+                    ),
+                }
+            ],
+            temperature=0.3,
+            max_tokens=200,
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        variants = [q.strip() for q in content.split("\n") if q.strip()]
+        # 保证原始 query 在第一位
+        return [query] + [v for v in variants if v != query][:3]
+    except Exception as e:
+        logger.warning("LLM 查询扩展失败，回退原始 query: %s", e)
+        return [query]
+
+
+def _expand_query_variants(query: str) -> List[str]:
+    """查询扩展分发：SEEKER_EXPAND_MODE=llm（默认）/ regex。"""
+    if os.getenv("SEEKER_EXPAND_MODE", "llm").strip().lower() == "regex":
+        return _expand_query(query)
+    return _llm_expand_query(query)
+
+
 # ── OCR 文本提取（轻量版）──────────────────────────────────────────────────
 
 
@@ -625,7 +666,7 @@ def _search_pipeline(
     channel_weights: List[float] = []
     channel_stats: Dict[str, int] = {}
 
-    query_variants = _expand_query(query)
+    query_variants = _expand_query_variants(query)
     # 限制轮数
     rounds = min(max_rounds, len(query_variants))
 

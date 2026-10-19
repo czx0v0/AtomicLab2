@@ -49,6 +49,41 @@ _finalize（更新 ConversationState：last_question / turn / concluded）
 2. **可观测/可复现**：`_build_agent_traces` 记录 Router/Seeker/Reviewer/Synthesizer 每步，评测可回放；
 3. **可消融**：`agent_mode` 开关（`full`/`no_router`/`no_arxiv`/`no_merge`/`retrieval_only`）能量化各环节贡献（评测里 multi-agent +13.2pt 就是这么来的）。
 
+### 0.0 四个角色到底有什么区别（4 LLM，默认全 LLM）
+
+| 角色 | 是否 LLM（默认） | 有 prompt? | 干什么 | 实现 |
+|---|---|---|---|---|
+| **Router** | ✅ LLM（function-calling） | ✅ 工具 schema（7 个） | 意图分类 + 选工具 | `_route_with_tools` + 正则启发式兜底 |
+| **Seeker** | ✅ LLM（查询扩展） | ✅ 改写 prompt | 多通道检索 + RRF 融合 | `_llm_expand_query` → `_search_pipeline`（向量/BM25/图谱/OCR） |
+| **Reviewer** | ✅ LLM（证据评审） | ✅ 评审 prompt | 判断证据是否支撑回答 | `_reviewer_llm`（无 key 回退 `_reviewer_heuristic`） |
+| **Synthesizer** | ✅ LLM | ✅ system prompt | 生成答案 + 嵌入引用 | `_synthesis_system_prompt` + `_SYNTHESIS_SYSTEM_BASE` |
+
+> **默认全 LLM**（真正的 multi-agent）：四个环节都过 LLM。可切换回确定性模式：`SEEKER_EXPAND_MODE=regex`（正则查询扩展）+ `REVIEWER_MODE=heuristic`（分数统计）。无 API key 时自动回退确定性版本，不报错。
+
+### 0.1 Prompt 的区别
+
+- **Router** 的 prompt = **工具 schema**（7 个工具的 `name/description/parameters`），让 LLM 通过 function-calling 决定「该调哪个工具」；另有正则启发式（`_is_research_detail_question` 等）做免费兜底。
+- **Seeker** 的 prompt = **查询改写**（「把问题改写为 2-3 个不同角度的检索查询」），输出查询变体喂给 `_search_pipeline` 做多轮检索。
+- **Reviewer** 的 prompt = **证据评审**（「判断检索证据是否足以支撑回答」，输出 `{status, score, detail}` JSON）。
+- **Synthesizer** 的 prompt = `_SYNTHESIS_SYSTEM_BASE`（回答要求 + 引用规范）+ 课题上下文（`<project_context>`）+ 对话风格（`<user_state>`）+ peer-review 动作后缀。
+
+### 0.2 意义（为什么这样拆）
+
+1. **关注点分离**：意图（Router）≠ 检索（Seeker）≠ 评估（Reviewer）≠ 合成（Synthesizer）；
+2. **可消融**：`agent_mode` 能单独关掉某环节，量化「+13.2pt 来自哪一环」；
+3. **易替换**：每个 agent 独立，升级/替换只改一处（如 Reviewer 启发式→LLM 已完成）；
+4. **可切换**：`SEEKER_EXPAND_MODE` / `REVIEWER_MODE` 可在 LLM 与确定性之间切换（评测复现）。
+
+### 0.3 上下文 / 工具 / 历史：各 agent 各司其职
+
+| 维度 | Router | Seeker | Reviewer | Synthesizer |
+|---|---|---|---|---|
+| 工具 | ✅ 7 个 function-calling | ❌ 无 | ❌ 无 | ❌ 无 |
+| 上下文 | 问题 + 工具 schema | 查询（改写用） | 问题 + 证据 | 完整证据 + 历史 + 课题 |
+| 背历史 | ❌ | ❌ | ❌ | ✅（唯一） |
+
+> **历史分布**：Synthesizer 背完整历史（`_MAX_HISTORY_TURNS` + `_summarize_history` 压缩）；Router 用**轻量历史**（近 4 消息）做路由判决 + 查询改写；Seeker/Reviewer 完全无状态。历史压缩只在 Synthesizer 一处做。
+
 ## 1. Router —— 意图识别 + 工具路由
 
 **意图分类（四类）**：
@@ -74,15 +109,17 @@ _finalize（更新 ConversationState：last_question / turn / concluded）
 
 Router 用 LLM + 工具 schema 动态决定调用哪个工具。当前**硬编码 7 个工具**：
 
-| 工具 | 作用 | 关键参数 |
-|---|---|---|
-| `search_local_knowledge` | 本地知识库（向量+BM25+Graph 1/2-hop） | keywords |
-| `search_arxiv` | 外网 arXiv 摘要 | keywords |
-| `search_my_zotero` | 用户 Zotero 书库 | keywords, fetch_recent |
-| `fetch_arxiv_recommendations` | 学术秘书：拉取最新论文写入收件箱 | keyword, research_goal |
-| `export_latex` | Markdown → IEEEtran LaTeX（main.tex + .bib） | markdown |
-| `debug_latex_error` | 分析 pdflatex/Overleaf 报错 | error_log, latex_snippet |
-| `update_markdown_editor` | 写作工具：把结果写入编辑器（append/replace/insert） | 写作模式强制调用 |
+| 工具 | 类别 | 作用 | 关键参数 |
+|---|---|---|---|
+| `search_local_knowledge` | 检索 | 本地知识库（向量+BM25+Graph 1/2-hop） | keywords |
+| `search_arxiv` | 检索 | 外网 arXiv 摘要 | keywords |
+| `search_my_zotero` | 检索 | 用户 Zotero 书库 | keywords, fetch_recent |
+| `fetch_arxiv_recommendations` | 秘书 | 学术秘书：拉取最新论文写入收件箱 | keyword, research_goal |
+| `export_latex` | 写作 | Markdown → IEEEtran LaTeX（main.tex + .bib） | markdown |
+| `debug_latex_error` | 写作 | 分析 pdflatex/Overleaf 报错 | error_log, latex_snippet |
+| `update_markdown_editor` | 编辑 | 写作工具：把结果写入编辑器（append/replace/insert） | 写作模式强制调用 |
+
+> 工具分类注册表见 `chat.py::_TOOL_CATEGORIES`（单一事实来源）。以后工具 >10 时，可按「类别 → 工具」两级路由。
 
 ```mermaid
 flowchart TD
@@ -105,6 +142,20 @@ flowchart TD
 
 > **关键约束**：事实型/文献细节型问题，即使 Router 没选工具，也会被 `_should_force_local_when_router_skips_tools` 强制走本地检索（防止漏检索）。
 
+### 1.3 历史感知路由 + 查询改写（Router 是大脑）
+
+Router 现在**看轻量历史**做两件事：
+
+1. **判决是否检索**：把近 4 条历史（`history_txt`）写进 function-calling 的 system prompt，让 Router 判断「是否追问复用 / 是否需要检索 / 是否直接答」；
+2. **查询改写**：`_rewrite_query_with_history` 把含指代/省略的短问题（「它呢？」「上面的方法呢？」）消解成**自包含查询**，喂给 Seeker，避免检索拿「它」当关键词。
+
+```
+正则启发式（免费）→ 命中 → 直接路由（不调 LLM）
+                └ 不命中 → LLM function-calling（带历史）→ 选工具 + 判是否检索
+```
+
+> 意义：Router 是「大脑」——用历史上下文决定「要不要检索、检索什么」，而不是无脑每次都全库检索。
+
 ## 2. Seeker —— 多通道检索（资料从哪来）
 
 `search_local_knowledge` → `_search_pipeline`，**单轮多路召回 + RRF 融合 + 可选重排**：
@@ -121,19 +172,23 @@ flowchart TD
 
 **资料种类**：文档原文分块（MinerU 解析）、原子笔记（UGC 蒸馏）、图谱三元组（tag 重叠边）、截图 OCR、arXiv 摘要、Zotero 摘要。
 
+> **查询扩展（默认 LLM）**：`_llm_expand_query` 把问题改写为 2-3 个不同角度查询，多轮召回；`SEEKER_EXPAND_MODE=regex` 可切回正则关键词扩展（免费/确定性）。
+
 > ⚠️ **关键修复记录**：融合曾用 `0.65*rrf_score + 0.35*original_score`，把「排名分」和「不可比的原始分」（BM25 归一化到 1.0 vs 向量 cosine 0.3~0.9）混在一起，导致 BM25 不公平地挤掉向量。已改为**纯 RRF**（`merged_score = rrf_score`），只比排名。
 
 ## 3. Reviewer —— 证据评估
 
-当前实现是**启发式**（`_reviewer_heuristic`，非 LLM）：
+默认实现是 **LLM 证据评审**（`_reviewer_llm`）：
 
 ```python
-avg = 检索分数平均值
-grade = clamp(avg * 10, 4, 10)   # 0~10 分
-status = "success" if grade >= 6.5 else "warning"
+prompt = "判断以下检索证据是否足以支撑回答用户问题。\n"
+         "只输出 JSON：{status: success|warning|insufficient, score: 0-10, detail}"
 ```
 
-> ⚠️ **局限**：只看「检索分数」的统计，不真正判断「证据是否支撑答案」。这是优化点 1。
+- 无 API key 时**回退启发式**（`_reviewer_heuristic`：`grade=avg*10`，≥6.5 通过）；
+- `REVIEWER_MODE=heuristic` 可强制切回纯启发式（评测/低成本场景）。
+
+> 升级点（已完成）：从「只看检索分数统计」→「LLM 真正判断证据是否支撑答案」，解决旧启发式的核心局限（只看分、不看语义）。
 
 ## 4. Synthesizer —— 答案合成
 
