@@ -72,16 +72,36 @@ _finalize（更新 ConversationState：last_question / turn / concluded）
 
 ### 1.2 LLM function-calling（语义、动态）
 
-Router 用 LLM + 工具 schema 动态决定调用哪个工具。当前**硬编码 6 个工具**：
+Router 用 LLM + 工具 schema 动态决定调用哪个工具。当前**硬编码 7 个工具**：
 
-| 工具 | 作用 |
-|---|---|
-| `search_local_knowledge` | 本地知识库（向量+BM25+Graph 1/2-hop） |
-| `search_arxiv` | 外网 arXiv 摘要 |
-| `search_my_zotero` | 用户 Zotero 书库 |
-| `fetch_arxiv_recommendations` | 学术秘书：拉取最新论文写入收件箱 |
-| `export_latex` | Markdown → IEEEtran LaTeX |
-| `debug_latex_error` | 分析 pdflatex 报错 |
+| 工具 | 作用 | 关键参数 |
+|---|---|---|
+| `search_local_knowledge` | 本地知识库（向量+BM25+Graph 1/2-hop） | keywords |
+| `search_arxiv` | 外网 arXiv 摘要 | keywords |
+| `search_my_zotero` | 用户 Zotero 书库 | keywords, fetch_recent |
+| `fetch_arxiv_recommendations` | 学术秘书：拉取最新论文写入收件箱 | keyword, research_goal |
+| `export_latex` | Markdown → IEEEtran LaTeX（main.tex + .bib） | markdown |
+| `debug_latex_error` | 分析 pdflatex/Overleaf 报错 | error_log, latex_snippet |
+| `update_markdown_editor` | 写作工具：把结果写入编辑器（append/replace/insert） | 写作模式强制调用 |
+
+```mermaid
+flowchart TD
+  U[用户提问] --> R[Router 意图识别]
+  R -->|本地检索| S[search_local_knowledge]
+  R -->|外网论文| A[search_arxiv]
+  R -->|个人书库| Z[search_my_zotero]
+  R -->|学术秘书| F[fetch_arxiv_recommendations]
+  R -->|写作导出| E[export_latex]
+  R -->|报错分析| D[debug_latex_error]
+  R -->|写作模式| M[update_markdown_editor]
+  S --> V[Reviewer 评估证据]
+  A --> V
+  Z --> V
+  V --> Y[Synthesizer 合成回答]
+  F --> I[arXiv 收件箱]
+  E --> X[LaTeX ZIP 下载]
+  M --> W[编辑器写入]
+```
 
 > **关键约束**：事实型/文献细节型问题，即使 Router 没选工具，也会被 `_should_force_local_when_router_skips_tools` 强制走本地检索（防止漏检索）。
 

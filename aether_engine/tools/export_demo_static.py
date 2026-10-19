@@ -91,7 +91,7 @@ def _build_demo_notes(markdown: str, sections: list) -> list:
 
     notes = []
 
-    for idx, sec in enumerate((sections or [])[:8]):
+    for idx, sec in enumerate(sections or []):
 
         text = (sec.get("summary") or sec.get("content") or "").strip()
 
