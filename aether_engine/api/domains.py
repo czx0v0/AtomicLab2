@@ -26,9 +26,7 @@ IN_MODELSCOPE_SPACE = is_modelscope_space()
 if IN_MODELSCOPE_SPACE:
     from core.session_store import SessionDataStore, init_session
 else:
-    DOMAINS_ROOT = data_path("documents")
-    DOMAINS_ROOT.mkdir(parents=True, exist_ok=True)
-    DOMAINS_FILE = DOMAINS_ROOT / "domains.json"
+    data_path("documents").mkdir(parents=True, exist_ok=True)
 
 
 def _load_domains(session_id: Optional[str]) -> List[dict]:

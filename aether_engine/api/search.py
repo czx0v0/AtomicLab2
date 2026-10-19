@@ -584,9 +584,10 @@ def _search_pipeline(
 ) -> Dict[str, Any]:
     """
     多源多轮检索管线（文档原文优先，支持会话隔离）：
-    Round 1: 原始查询 → [文档原文向量(1.8) + 文档BM25(1.5)] + [笔记向量(0.9) + 笔记BM25(0.7)] + [截图OCR(0.5)]
-    Round 2+: 查询变体 → 补充检索，去重合并
+    Round 1: 原始查询 → [文档向量(1.8) + 文档BM25(_bm25_w 默认1.0)] + [笔记向量(0.9) + 笔记BM25(0.7)] + [图谱] + [截图OCR(0.5)]
+    Round 2+: 查询变体 → 补充检索，去重合并（次轮权重衰减：向量 1.2、BM25 0.6×）
     最终 RRF 加权融合，可选再叠加重排序（rerank）。
+    权重定义见函数内 channel_weights 构建（单一事实来源），BM25 权重由 RAG_BM25_WEIGHT 覆盖。
 
     retrieval_mode 用于评测/消融实验：
       full / closed_book / bm25_only / vector_only / naive_hybrid /

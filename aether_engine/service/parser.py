@@ -111,7 +111,6 @@ def _find_mineru_bin() -> Optional[str]:
             str(py_dir / "Scripts" / "mineru"),
             str(py_dir / "Scripts" / "magic-pdf.exe"),
             str(py_dir / "Scripts" / "magic-pdf"),
-            r"D:\anaconda\envs\py-agent\Scripts\magic-pdf.exe",
         ]
     )
     for p in candidates:

@@ -29,9 +29,7 @@ IN_MODELSCOPE_SPACE = is_modelscope_space()
 if IN_MODELSCOPE_SPACE:
     from core.session_store import get_session_path, SessionDataStore, init_session
 else:
-    DOC_ROOT = data_path("documents")
-    DOC_ROOT.mkdir(parents=True, exist_ok=True)
-    META_FILE = DOC_ROOT / "documents.json"
+    data_path("documents").mkdir(parents=True, exist_ok=True)
 
 
 def _get_doc_root(session_id: str = None) -> Path:

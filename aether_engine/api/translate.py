@@ -37,13 +37,11 @@ async def translate_text(body: TranslateRequest):
     api_key = cfg["api_key"]
 
     if not api_key:
-        logger.warning("DEEPSEEK_API_KEY / ALIYUN_API_KEY 未配置，返回 mock 翻译")
-        return {
-            "translation": f"[Mock 翻译] {body.text[:100]}...",
-            "source_lang": body.source_lang,
-            "target_lang": body.target_lang,
-            "is_mock": True,
-        }
+        logger.warning("翻译 API KEY 未配置，返回 503")
+        raise HTTPException(
+            status_code=503,
+            detail="未配置 DEEPSEEK_API_KEY / ALIYUN_API_KEY，翻译不可用",
+        )
 
     try:
         from openai import AsyncOpenAI

@@ -74,20 +74,18 @@ def _token_overlap_score(query: str, text: str) -> float:
 
 
 def _search_arxiv_external(query: str, limit: int = 2) -> List[Dict[str, Any]]:
+    from api.arxiv import _parse_arxiv_response
+
     url = f"https://export.arxiv.org/api/query?search_query=all:{quote_plus(query)}&start=0&max_results={limit}&sortBy=relevance"
     out: List[Dict[str, Any]] = []
     try:
         resp = httpx.get(url, timeout=10.0)
         resp.raise_for_status()
-        entries = re.findall(r"<entry>(.*?)</entry>", resp.text, re.DOTALL)
-        for e in entries[:limit]:
-            title_m = re.search(r"<title>(.*?)</title>", e, re.DOTALL)
-            abs_m = re.search(r"<summary>(.*?)</summary>", e, re.DOTALL)
-            id_m = re.search(r"<id>(.*?)</id>", e, re.DOTALL)
-            title = re.sub(r"\s+", " ", (title_m.group(1) if title_m else "")).strip()
-            abstract = re.sub(r"\s+", " ", (abs_m.group(1) if abs_m else "")).strip()
-            raw_id = id_m.group(1) if id_m else ""
-            aid = raw_id.split("/abs/")[-1] if "/abs/" in raw_id else raw_id
+        papers = _parse_arxiv_response(resp.text)  # 单一事实来源：api/arxiv.py 解析
+        for p in papers[:limit]:
+            aid = p["arxiv_id"]
+            title = p["title"]
+            abstract = p["abstract"]
             out.append(
                 {
                     "title": title,

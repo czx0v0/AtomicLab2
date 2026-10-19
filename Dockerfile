@@ -19,6 +19,7 @@ ENV UVICORN_PORT=7860
 # 注意：模型缓存路径在 app.py 中根据环境自动设置
 
 # 安装依赖（分步安装，每步独立避免内存峰值）
+# 依赖清单单一事实来源：aether_engine/requirements.txt；此处为云端容错镜像（可选依赖 || true，避免单包失败拖垮构建）。
 # Step 1: 核心 Web 框架（必须成功）
 RUN pip install --no-cache-dir fastapi uvicorn python-multipart httpx python-dotenv || exit 1
 

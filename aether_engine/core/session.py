@@ -4,7 +4,7 @@
 
 import re
 from typing import Optional
-from fastapi import Header, Request
+from fastapi import Header
 
 # 集合名/文件名安全：仅保留字母数字与下划线，长度上限
 _SANITIZE_PATTERN = re.compile(r"[^a-zA-Z0-9_-]")
@@ -17,12 +17,6 @@ def sanitize_session_id(session_id: str) -> str:
         return "default"
     cleaned = _SANITIZE_PATTERN.sub("_", session_id.strip())
     return cleaned[:_MAX_SID_LEN] or "default"
-
-
-def get_session_id(request: Request) -> str:
-    """从请求头读取 X-Session-ID，缺省为 'default'。"""
-    raw = request.headers.get("X-Session-ID", "").strip()
-    return raw or "default"
 
 
 def resolve_session_id(x_session_id: str) -> Optional[str]:
