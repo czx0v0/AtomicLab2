@@ -20,6 +20,8 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.paths import data_path
+from core.conversation_state import load_state, save_state
 from api.documents import _load_meta
 from api.search import IN_MODELSCOPE_SPACE, _search_pipeline
 
@@ -109,7 +111,7 @@ class FeedbackRequest(BaseModel):
     answer_text: str = ""
 
 
-_FEEDBACK_LOG = Path("data/feedback_log.json")
+_FEEDBACK_LOG = data_path("feedback_log.json")
 _FEEDBACK_LOCK = threading.Lock()
 
 _SYNTHESIS_SYSTEM_BASE = (
@@ -436,6 +438,16 @@ def _is_editor_action_intent(q: str) -> bool:
         r"produce\s+a\s+paragraph",
     ]
     return any(re.search(p, q) for p in patterns)
+
+
+_FOLLOWUP_RE = re.compile(r"它|这个|那个|这些|那些|上面|上述|刚才|之前|那")
+
+
+def _is_followup(new_q: str, last_q: str) -> bool:
+    """判断是否为上一轮的追问（含指代词 + 短问题）。3b 复用证据用。"""
+    if not last_q or not new_q:
+        return False
+    return bool(_FOLLOWUP_RE.search(new_q)) and len(new_q.strip()) < 20
 
 
 def _iter_editor_sse_chunks(text: str, chunk_size: int = 48) -> Generator[str, None, None]:
@@ -1113,14 +1125,66 @@ def _bucket_for_evidence(source: Optional[str]) -> str:
     return "other"
 
 
+def _summarize_history(old_history: List[dict]) -> str:
+    """把旧轮次摘要成「已确认结论」（简洁版，失败静默回退空串）。"""
+    if not old_history:
+        return ""
+    text = "\n".join(
+        f"{'用户' if m.get('role') == 'user' else '助手'}: {(m.get('content') or '').strip()}"
+        for m in old_history
+    ).strip()
+    if not text:
+        return ""
+    try:
+        api_key = _get_chat_llm_config().get("api_key", "")
+        if not api_key:
+            return ""
+        out = _call_chat_llm(
+            system_prompt="你是对话摘要器。把下面这段对话摘要成 1-2 句「已确认结论」，只保留关键事实与结论，不要冗余。",
+            user_prompt=text,
+            max_tokens=200,
+        )
+        return (out or "").strip()
+    except Exception:
+        return ""
+
+
+def _estimate_tokens(text: str) -> int:
+    """粗略估算 token 数：中文 1 字≈1 token，英文 1 词≈1.3 token。"""
+    cn = len(re.findall(r"[\u4e00-\u9fff]", text or ""))
+    en = len(re.findall(r"[A-Za-z]+", text or ""))
+    return cn + int(en * 1.3)
+
+
 def _build_synthesis_prompt(
     question: str,
     sources: List[dict],
     local_context: str,
     detail_mode: bool,
     mentor_prefix: str = "",
+    history: Optional[List[dict]] = None,
 ) -> str:
     mp = mentor_prefix or ""
+    # 多轮历史（简洁版）：最近 8 轮原文 + 更早的摘要成「已确认结论」
+    hist = ""
+    if history:
+        recent = history[-8:]
+        old = history[:-8]
+        parts = []
+        if old:
+            summary = _summarize_history(old)
+            if summary:
+                parts.append("早期对话已确认结论（摘要）：\n" + summary)
+        lines = []
+        for m in recent:
+            role = "用户" if (m.get("role") == "user") else "助手"
+            c = (m.get("content") or "").strip()
+            if c:
+                lines.append(f"{role}: {c}")
+        if lines:
+            parts.append("近期对话：\n" + "\n".join(lines))
+        if parts:
+            hist = "\n\n".join(parts) + "\n\n"
     if not sources:
         tail = (
             "（注：本地文献库暂无该特定细节，此为通用学术解释）"
@@ -1131,7 +1195,7 @@ def _build_synthesis_prompt(
             "【重要】当前无检索证据：禁止编造具体论文标题、页码、实验数值或虚构文献；"
             "可给出方法论建议或基于课题上下文的说明，并明确说明局限。"
         )
-        return f"{mp}用户问题：{question}\n\n{no_ev}\n\n请直接给出清晰、自然的人类表达答案。{tail}"
+        return f"{mp}{hist}用户问题：{question}\n\n{no_ev}\n\n请直接给出清晰、自然的人类表达答案。{tail}"
 
     order = (
         "document_chunks",
@@ -1176,7 +1240,8 @@ def _build_synthesis_prompt(
         for s in items:
             src = s.get("source", "unknown")
             concept = s.get("concept", "")
-            summary = s.get("summary", "")
+            # 每条证据摘要截断到 800 字符，防止超长 chunk 把上下文撑爆
+            summary = (s.get("summary", "") or "")[:800]
             graph_mark = s.get("graph_ref", "")
             doc_t = s.get("doc_title") or ""
             lines.append(
@@ -1192,7 +1257,14 @@ def _build_synthesis_prompt(
     if local_context and len(local_context) > 400 and not xml_parts:
         extra = "\n\n<fusion_context>\n" + local_context[:2000] + "\n</fusion_context>"
 
-    return f"{mp}用户问题：{question}\n\n{requirements}检索证据（分区 XML）：\n\n{body}{extra}"
+    prompt = f"{mp}{hist}用户问题：{question}\n\n{requirements}检索证据（分区 XML）：\n\n{body}{extra}"
+    # token 预算（安全网）：超限时裁剪证据 body，保留问题 + 要求
+    budget = int(os.getenv("RAG_CONTEXT_BUDGET", "6000") or 6000)
+    if _estimate_tokens(prompt) > budget:
+        keep = f"{mp}{hist}用户问题：{question}\n\n{requirements}检索证据（分区 XML，已裁剪）：\n\n"
+        remaining = max(500, budget - _estimate_tokens(keep))
+        prompt = keep + body[: int(remaining * 2.2)] + extra
+    return prompt
 
 
 def _general_fallback_answer(question: str, mentor_prefix: str = "") -> str:
@@ -1241,6 +1313,20 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
 
     t0 = time.perf_counter()
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
+    state = load_state(session_id)
+
+    def _finalize():
+        """3a 最小状态追踪：记录上一问 + 轮次 + 已确认结论，持久化工作记忆。"""
+        state["last_question"] = body.question
+        state["turn"] = state.get("turn", 0) + 1
+        # 5b：写回笔记（旧轮摘要持久化为「已确认结论」，工作记忆）
+        if body.history and len(body.history) > 8:
+            summary = _summarize_history(body.history[:-8])
+            if summary:
+                state.setdefault("concluded", []).append(summary)
+                state["concluded"] = state["concluded"][-20:]
+        save_state(session_id, state)
+
     prefix = _mentor_context_prefix(body.project_context, body.user_state)
     steps: List[dict] = []
     mode_raw = (body.mode or "").strip().lower()
@@ -1260,6 +1346,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             {"step": "Router", "status": "success", "detail": "识别为写作/编辑意图，调用写作工具。"},
             {"step": "Synthesizer", "status": "success", "detail": "内容已下发至编辑器。"},
         ]
+        _finalize()
         return {
             "answer": answer,
             "steps": [AgentStep(**s) for s in steps],
@@ -1283,16 +1370,26 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             "",
         )
     else:
-        sources, tool_logs, local_context = _route_with_tools(
-            body.question,
-            top_k=body.top_k,
-            session_id=session_id,
-            max_rounds=body.max_rounds,
-            header_session_id=x_session_id,
-            retrieval_mode=body.retrieval_mode or "full",
-            rerank_mode=body.rerank_mode or "none",
-            agent_mode=body.agent_mode or "full",
-        )
+        # 3b-i：追问复用上一轮检索证据（含指代词 + 短问题 + 有缓存）
+        if (
+            _is_followup(body.question, state.get("last_question", ""))
+            and state.get("evidence_cache")
+        ):
+            sources = state["evidence_cache"]
+            tool_logs = [f"[reuse] 追问：复用上一轮检索证据（{len(sources)} 条）"]
+            local_context = ""
+        else:
+            sources, tool_logs, local_context = _route_with_tools(
+                body.question,
+                top_k=body.top_k,
+                session_id=session_id,
+                max_rounds=body.max_rounds,
+                header_session_id=x_session_id,
+                retrieval_mode=body.retrieval_mode or "full",
+                rerank_mode=body.rerank_mode or "none",
+                agent_mode=body.agent_mode or "full",
+            )
+            state["evidence_cache"] = sources
     sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(body.question)
     router_txt = "已完成上下文准备。"
@@ -1321,7 +1418,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             answer = _call_chat_llm(
                 system_prompt=_synthesis_system_prompt(True, body.user_state),
                 user_prompt=prefix + body.question + _peer_review_user_suffix(),
-                max_tokens=1400,
+                max_tokens=3000,
             )
         else:
             answer = _general_fallback_answer(body.question, mentor_prefix=prefix)
@@ -1337,6 +1434,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             has_evidence=False,
             synthesizer_note="无检索证据，已生成通用/诚实回答。",
         )
+        _finalize()
         return {
             "answer": answer,
             "steps": [AgentStep(**s) for s in steps],
@@ -1354,13 +1452,14 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             local_context,
             detail_mode=detail_mode,
             mentor_prefix=prefix,
+            history=body.history,
         )
         if peer_review:
             user_prompt = user_prompt + _peer_review_user_suffix()
         answer = _call_chat_llm(
             system_prompt=_synthesis_system_prompt(peer_review, body.user_state),
             user_prompt=user_prompt,
-            max_tokens=1400,
+            max_tokens=3000,
         )
         if not (answer or "").strip():
             answer = _general_fallback_answer(body.question, mentor_prefix=prefix) or "模型未返回正文，请稍后重试。"
@@ -1378,6 +1477,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         has_evidence=True,
         synthesizer_note="已生成带引用的最终回答。",
     )
+    _finalize()
     return {
         "answer": answer,
         "steps": [AgentStep(**s) for s in steps],
@@ -1400,8 +1500,23 @@ def _chat_stream_generator(
     retrieval_mode: str = "full",
     rerank_mode: str = "none",
     agent_mode: str = "full",
+    history: Optional[List[dict]] = None,
 ) -> Generator[str, None, None]:
     t0 = time.perf_counter()
+    state = load_state(session_id)
+
+    def _finalize():
+        """3a 最小状态追踪：记录上一问 + 轮次 + 已确认结论。"""
+        state["last_question"] = question
+        state["turn"] = state.get("turn", 0) + 1
+        # 5b：写回笔记（旧轮摘要持久化为「已确认结论」）
+        if history and len(history) > 8:
+            summary = _summarize_history(history[:-8])
+            if summary:
+                state.setdefault("concluded", []).append(summary)
+                state["concluded"] = state["concluded"][-20:]
+        save_state(session_id, state)
+
     prefix = _mentor_context_prefix(project_context, user_state)
     mode_raw = (mode or "").strip().lower()
     peer_review = mode_raw == "peer_review"
@@ -1437,6 +1552,7 @@ def _chat_stream_generator(
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
             },
         )
+        _finalize()
         return
 
     skip_rag = _should_skip_retrieval_for_project_meta(question, project_context, user_state)
@@ -1457,17 +1573,28 @@ def _chat_stream_generator(
             "",
         )
     else:
-        yield _sse_event("step", {"agent": "router", "content": "正在理解你的意图并准备上下文（function calling 路由检索工具）…"})
-        sources, tool_logs, local_context = _route_with_tools(
-            question,
-            top_k=top_k,
-            session_id=session_id,
-            max_rounds=max_rounds,
-            header_session_id=header_session_id,
-            retrieval_mode=retrieval_mode,
-            rerank_mode=rerank_mode,
-            agent_mode=agent_mode,
-        )
+        # 3b-i：追问复用上一轮检索证据（含指代词 + 短问题 + 有缓存）
+        if _is_followup(question, state.get("last_question", "")) and state.get("evidence_cache"):
+            yield _sse_event(
+                "step",
+                {"agent": "router", "content": f"[reuse] 追问：复用上一轮检索证据（{len(state['evidence_cache'])} 条）"},
+            )
+            sources = state["evidence_cache"]
+            tool_logs = [f"[reuse] 追问：复用上一轮检索证据（{len(sources)} 条）"]
+            local_context = ""
+        else:
+            yield _sse_event("step", {"agent": "router", "content": "正在理解你的意图并准备上下文（function calling 路由检索工具）…"})
+            sources, tool_logs, local_context = _route_with_tools(
+                question,
+                top_k=top_k,
+                session_id=session_id,
+                max_rounds=max_rounds,
+                header_session_id=header_session_id,
+                retrieval_mode=retrieval_mode,
+                rerank_mode=rerank_mode,
+                agent_mode=agent_mode,
+            )
+            state["evidence_cache"] = sources
     sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(question)
     router_detail = "上下文已准备完成。"
@@ -1491,7 +1618,7 @@ def _chat_stream_generator(
             for tk in _stream_chat_llm(
                 system_prompt=_synthesis_system_prompt(True, user_state),
                 user_prompt=up_ns,
-                max_tokens=1400,
+                max_tokens=3000,
             ):
                 acc_pr.append(tk)
                 yield _sse_event("delta", {"token": tk})
@@ -1518,6 +1645,7 @@ def _chat_stream_generator(
                     "elapsed_ms": int((time.perf_counter() - t0) * 1000),
                 },
             )
+            _finalize()
             return
         msg = _general_fallback_answer(question, mentor_prefix=prefix)
         if detail_mode and "本地文献库暂无该特定细节" not in msg:
@@ -1541,6 +1669,7 @@ def _chat_stream_generator(
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
             },
         )
+        _finalize()
         return
 
     api_key = _get_chat_llm_config().get("api_key", "")
@@ -1567,6 +1696,7 @@ def _chat_stream_generator(
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
             },
         )
+        _finalize()
         return
 
     n_loc = sum(1 for s in sources if (s.get("source") or "") != "arxiv")
@@ -1587,6 +1717,7 @@ def _chat_stream_generator(
         local_context,
         detail_mode=detail_mode,
         mentor_prefix=prefix,
+        history=history,
     )
     if peer_review:
         up = up + _peer_review_user_suffix()
@@ -1594,7 +1725,7 @@ def _chat_stream_generator(
     for tk in _stream_chat_llm(
         system_prompt=_synthesis_system_prompt(peer_review, user_state),
         user_prompt=up,
-        max_tokens=1400,
+        max_tokens=3000,
     ):
         acc_syn.append(tk)
         yield _sse_event("delta", {"token": tk})
@@ -1621,6 +1752,7 @@ def _chat_stream_generator(
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         },
     )
+    _finalize()
 
 
 @router.post("/stream")
@@ -1641,6 +1773,7 @@ def chat_stream(body: ChatRequest, x_session_id: str = Header(default="")):
             retrieval_mode=body.retrieval_mode or "full",
             rerank_mode=body.rerank_mode or "none",
             agent_mode=body.agent_mode or "full",
+            history=body.history,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
