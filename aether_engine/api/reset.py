@@ -8,14 +8,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends
 
 from core.session import get_session_id, sanitize_session_id
-from core.paths import data_path
+from core.paths import notes_file
 
 router = APIRouter(prefix="/reset", tags=["session"])
 logger = logging.getLogger("aether")
 
 
 def _notes_file_for(session_id: str) -> Path:
-    return data_path(f"notes_{sanitize_session_id(session_id)}.json")
+    return notes_file(session_id)
 
 
 @router.post("")
@@ -26,6 +26,7 @@ def reset_session(session_id: str = Depends(get_session_id)):
     - 文档切块向量库（ChromaDB doc_chunks 集合）
     - 当前会话的 notes 文件（data/notes_{session_id}.json）
     - BM25 内存索引（标记失效，下次检索时按空重建）
+    - 工作记忆（ConversationState：last_question / evidence_cache / concluded / turn）
     前端在刷新页面或点击「重新开始」时调用此接口。
     """
     sid = sanitize_session_id(session_id)
@@ -63,5 +64,13 @@ def reset_session(session_id: str = Depends(get_session_id)):
         get_bm25_engine(session_id).invalidate()
     except Exception as e:
         logger.warning("BM25 失效失败: %s", e)
+
+    # 5. 清空工作记忆（ConversationState：last_question / evidence_cache / concluded / turn）
+    try:
+        from core.conversation_state import clear_state
+
+        clear_state(session_id)
+    except Exception as e:
+        logger.warning("工作记忆清空失败: %s", e)
 
     return {"ok": True, "message": "当前会话数据已清空"}

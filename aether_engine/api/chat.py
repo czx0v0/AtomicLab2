@@ -465,8 +465,9 @@ def _plan_editor_action(question: str, force: bool = False) -> Optional[dict]:
     if not force and not _is_editor_action_intent(question):
         return None
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    _ecfg = _get_chat_llm_config()
+    api_key = _ecfg.get("api_key", "")
+    api_base = _ecfg.get("base_url", "")
     if api_key:
         try:
             from openai import OpenAI
@@ -508,7 +509,7 @@ def _plan_editor_action(question: str, force: bool = False) -> Optional[dict]:
             if force:
                 sys_writing += " 用户已开启「写作模式」，必须调用 update_markdown_editor 将结果写入编辑器。"
             resp = client.chat.completions.create(
-                model="deepseek-chat",
+                model=_ecfg.get("model"),
                 messages=[
                     {"role": "system", "content": sys_writing},
                     {"role": "user", "content": question},
@@ -555,70 +556,20 @@ def _plan_editor_action(question: str, force: bool = False) -> Optional[dict]:
 
 
 def _call_deepseek(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> str:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
-    if not api_key:
-        return ""
-    from openai import OpenAI
-
-    client = OpenAI(api_key=api_key, base_url=api_base)
-    resp = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_tokens=max_tokens,
-        temperature=0.2,
-    )
-    return (resp.choices[0].message.content or "").strip()
+    """兼容别名：委托给 provider-aware 的 _call_chat_llm（支持 deepseek/aliyun）。"""
+    return _call_chat_llm(system_prompt, user_prompt, max_tokens)
 
 
 def _stream_deepseek(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> Generator[str, None, None]:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
-    if not api_key:
-        return
-    from openai import OpenAI
-
-    client = OpenAI(api_key=api_key, base_url=api_base)
-    stream = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_tokens=max_tokens,
-        temperature=0.2,
-        stream=True,
-    )
-    for chunk in stream:
-        delta = chunk.choices[0].delta
-        if delta.content:
-            yield delta.content
+    """兼容别名：委托给 provider-aware 的 _stream_chat_llm（支持 deepseek/aliyun）。"""
+    yield from _stream_chat_llm(system_prompt, user_prompt, max_tokens)
 
 
 def _get_chat_llm_config() -> dict:
-    """
-    仅用于 /api/chat 主回答链路。
-    默认 deepseek；当 CHAT_LLM_PROVIDER=aliyun 时切换到 DashScope OpenAI 兼容接口。
-    """
-    provider = (os.getenv("CHAT_LLM_PROVIDER", "deepseek") or "deepseek").strip().lower()
-    if provider == "aliyun":
-        return {
-            "provider": "aliyun",
-            "api_key": os.getenv("ALIYUN_API_KEY", ""),
-            "base_url": os.getenv(
-                "ALIYUN_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            ),
-            "model": os.getenv("ALIYUN_MODEL", "qwen3.7-flash"),
-        }
-    return {
-        "provider": "deepseek",
-        "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
-        "base_url": os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
-        "model": os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
-    }
+    """委托给 core.llm 单一事实来源（deepseek/aliyun provider-aware）。"""
+    from core.llm import get_llm_config
+
+    return get_llm_config()
 
 
 def _call_chat_llm(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> str:
@@ -766,8 +717,9 @@ def _route_with_tools(
       no_merge=保留 Router 但不做 baseline_global_merge；
       retrieval_only=no_router+no_arxiv+no_merge（纯本地检索）。
     """
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    _cfg = _get_chat_llm_config()
+    api_key = _cfg.get("api_key", "")
+    api_base = _cfg.get("base_url", "")
 
     sources: List[dict] = []
     tool_logs: List[str] = []
@@ -942,7 +894,7 @@ def _route_with_tools(
     # 允许最多两轮 tool call
     for _ in range(2):
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=_cfg.get("model"),
             messages=messages,
             tools=tools,
             tool_choice="auto",
@@ -1149,6 +1101,14 @@ def _summarize_history(old_history: List[dict]) -> str:
         return ""
 
 
+# 多轮历史窗口（对话轮数，1 轮 = 用户+助手 2 条消息）：追问通常指代上一轮，4 轮足够、少噪声，可用 RAG_HISTORY_TURNS 覆盖
+_MAX_HISTORY_TURNS = int(os.getenv("RAG_HISTORY_TURNS", "4") or 4)
+# 合成输出上限（tokens）：10000 允许长综述/详细对比不截断（模型按需输出，通常仍短），可用 RAG_MAX_TOKENS 覆盖
+_MAX_TOKENS = int(os.getenv("RAG_MAX_TOKENS", "10000") or 10000)
+# 输入 prompt 预算（tokens，安全网）：超限裁剪证据 body；6000 远小于模型窗口（64K/128K），是「控制成本+延迟+相关性」的自设上限，可用 RAG_CONTEXT_BUDGET 覆盖
+_MAX_CONTEXT_TOKENS = int(os.getenv("RAG_CONTEXT_BUDGET", "6000") or 6000)
+
+
 def _estimate_tokens(text: str) -> int:
     """粗略估算 token 数：中文 1 字≈1 token，英文 1 词≈1.3 token。"""
     cn = len(re.findall(r"[\u4e00-\u9fff]", text or ""))
@@ -1163,16 +1123,17 @@ def _build_synthesis_prompt(
     detail_mode: bool,
     mentor_prefix: str = "",
     history: Optional[List[dict]] = None,
+    pre_summary: str = "",
 ) -> str:
     mp = mentor_prefix or ""
-    # 多轮历史（简洁版）：最近 8 轮原文 + 更早的摘要成「已确认结论」
+    # 多轮历史（简洁版）：最近 4 轮原文 + 更早的摘要成「已确认结论」（pre_summary 避免重复 LLM 调用）
     hist = ""
     if history:
-        recent = history[-8:]
-        old = history[:-8]
+        recent = history[-_MAX_HISTORY_TURNS * 2:]
+        old = history[:-_MAX_HISTORY_TURNS * 2]
         parts = []
         if old:
-            summary = _summarize_history(old)
+            summary = pre_summary or _summarize_history(old)
             if summary:
                 parts.append("早期对话已确认结论（摘要）：\n" + summary)
         lines = []
@@ -1259,17 +1220,16 @@ def _build_synthesis_prompt(
 
     prompt = f"{mp}{hist}用户问题：{question}\n\n{requirements}检索证据（分区 XML）：\n\n{body}{extra}"
     # token 预算（安全网）：超限时裁剪证据 body，保留问题 + 要求
-    budget = int(os.getenv("RAG_CONTEXT_BUDGET", "6000") or 6000)
-    if _estimate_tokens(prompt) > budget:
+    if _estimate_tokens(prompt) > _MAX_CONTEXT_TOKENS:
         keep = f"{mp}{hist}用户问题：{question}\n\n{requirements}检索证据（分区 XML，已裁剪）：\n\n"
-        remaining = max(500, budget - _estimate_tokens(keep))
+        remaining = max(500, _MAX_CONTEXT_TOKENS - _estimate_tokens(keep))
         prompt = keep + body[: int(remaining * 2.2)] + extra
     return prompt
 
 
 def _general_fallback_answer(question: str, mentor_prefix: str = "") -> str:
     mp = mentor_prefix or ""
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = _get_chat_llm_config().get("api_key", "")
     if api_key:
         out = _call_deepseek(
             system_prompt=(
@@ -1314,17 +1274,16 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
     t0 = time.perf_counter()
     session_id = x_session_id if IN_MODELSCOPE_SPACE else None
     state = load_state(session_id)
+    summary_cache = [""]  # 闭包共享：旧轮摘要只算一次，供 prompt 与 concluded 复用（避免重复 LLM 调用）
 
     def _finalize():
         """3a 最小状态追踪：记录上一问 + 轮次 + 已确认结论，持久化工作记忆。"""
-        state["last_question"] = body.question
-        state["turn"] = state.get("turn", 0) + 1
-        # 5b：写回笔记（旧轮摘要持久化为「已确认结论」，工作记忆）
-        if body.history and len(body.history) > 8:
-            summary = _summarize_history(body.history[:-8])
-            if summary:
-                state.setdefault("concluded", []).append(summary)
-                state["concluded"] = state["concluded"][-20:]
+        state.last_question = body.question
+        state.turn += 1
+        # 5b：写回笔记（复用已算好的旧轮摘要）
+        if summary_cache[0]:
+            state.concluded.append(summary_cache[0])
+            state.concluded = state.concluded[-20:]
         save_state(session_id, state)
 
     prefix = _mentor_context_prefix(body.project_context, body.user_state)
@@ -1372,10 +1331,10 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
     else:
         # 3b-i：追问复用上一轮检索证据（含指代词 + 短问题 + 有缓存）
         if (
-            _is_followup(body.question, state.get("last_question", ""))
-            and state.get("evidence_cache")
+            _is_followup(body.question, state.last_question)
+            and state.evidence_cache
         ):
-            sources = state["evidence_cache"]
+            sources = state.evidence_cache
             tool_logs = [f"[reuse] 追问：复用上一轮检索证据（{len(sources)} 条）"]
             local_context = ""
         else:
@@ -1389,7 +1348,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
                 rerank_mode=body.rerank_mode or "none",
                 agent_mode=body.agent_mode or "full",
             )
-            state["evidence_cache"] = sources
+            state.evidence_cache = sources
     sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(body.question)
     router_txt = "已完成上下文准备。"
@@ -1418,7 +1377,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             answer = _call_chat_llm(
                 system_prompt=_synthesis_system_prompt(True, body.user_state),
                 user_prompt=prefix + body.question + _peer_review_user_suffix(),
-                max_tokens=3000,
+                max_tokens=_MAX_TOKENS,
             )
         else:
             answer = _general_fallback_answer(body.question, mentor_prefix=prefix)
@@ -1446,6 +1405,9 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
 
     api_key = _get_chat_llm_config().get("api_key", "")
     if api_key:
+        # 旧轮摘要只算一次（供 prompt + concluded 复用）
+        if body.history and len(body.history) > _MAX_HISTORY_TURNS * 2:
+            summary_cache[0] = _summarize_history(body.history[:-_MAX_HISTORY_TURNS * 2])
         user_prompt = _build_synthesis_prompt(
             body.question,
             sources,
@@ -1453,13 +1415,14 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
             detail_mode=detail_mode,
             mentor_prefix=prefix,
             history=body.history,
+            pre_summary=summary_cache[0],
         )
         if peer_review:
             user_prompt = user_prompt + _peer_review_user_suffix()
         answer = _call_chat_llm(
             system_prompt=_synthesis_system_prompt(peer_review, body.user_state),
             user_prompt=user_prompt,
-            max_tokens=3000,
+            max_tokens=_MAX_TOKENS,
         )
         if not (answer or "").strip():
             answer = _general_fallback_answer(body.question, mentor_prefix=prefix) or "模型未返回正文，请稍后重试。"
@@ -1504,17 +1467,16 @@ def _chat_stream_generator(
 ) -> Generator[str, None, None]:
     t0 = time.perf_counter()
     state = load_state(session_id)
+    summary_cache = [""]  # 闭包共享：旧轮摘要只算一次
 
     def _finalize():
         """3a 最小状态追踪：记录上一问 + 轮次 + 已确认结论。"""
-        state["last_question"] = question
-        state["turn"] = state.get("turn", 0) + 1
-        # 5b：写回笔记（旧轮摘要持久化为「已确认结论」）
-        if history and len(history) > 8:
-            summary = _summarize_history(history[:-8])
-            if summary:
-                state.setdefault("concluded", []).append(summary)
-                state["concluded"] = state["concluded"][-20:]
+        state.last_question = question
+        state.turn += 1
+        # 5b：写回笔记（复用已算好的旧轮摘要）
+        if summary_cache[0]:
+            state.concluded.append(summary_cache[0])
+            state.concluded = state.concluded[-20:]
         save_state(session_id, state)
 
     prefix = _mentor_context_prefix(project_context, user_state)
@@ -1574,12 +1536,12 @@ def _chat_stream_generator(
         )
     else:
         # 3b-i：追问复用上一轮检索证据（含指代词 + 短问题 + 有缓存）
-        if _is_followup(question, state.get("last_question", "")) and state.get("evidence_cache"):
+        if _is_followup(question, state.last_question) and state.evidence_cache:
             yield _sse_event(
                 "step",
-                {"agent": "router", "content": f"[reuse] 追问：复用上一轮检索证据（{len(state['evidence_cache'])} 条）"},
+                {"agent": "router", "content": f"[reuse] 追问：复用上一轮检索证据（{len(state.evidence_cache)} 条）"},
             )
-            sources = state["evidence_cache"]
+            sources = state.evidence_cache
             tool_logs = [f"[reuse] 追问：复用上一轮检索证据（{len(sources)} 条）"]
             local_context = ""
         else:
@@ -1594,7 +1556,7 @@ def _chat_stream_generator(
                 rerank_mode=rerank_mode,
                 agent_mode=agent_mode,
             )
-            state["evidence_cache"] = sources
+            state.evidence_cache = sources
     sources = _sanitize_evidence_sources(sources, session_id)
     detail_mode = _is_research_detail_question(question)
     router_detail = "上下文已准备完成。"
@@ -1618,7 +1580,7 @@ def _chat_stream_generator(
             for tk in _stream_chat_llm(
                 system_prompt=_synthesis_system_prompt(True, user_state),
                 user_prompt=up_ns,
-                max_tokens=3000,
+                max_tokens=_MAX_TOKENS,
             ):
                 acc_pr.append(tk)
                 yield _sse_event("delta", {"token": tk})
@@ -1711,6 +1673,9 @@ def _chat_stream_generator(
     )
 
     yield _sse_event("step", {"agent": "synthesizer", "content": "", "streaming": True})
+    # 旧轮摘要只算一次（供 prompt + concluded 复用）
+    if history and len(history) > _MAX_HISTORY_TURNS * 2:
+        summary_cache[0] = _summarize_history(history[:-_MAX_HISTORY_TURNS * 2])
     up = _build_synthesis_prompt(
         question,
         sources,
@@ -1718,6 +1683,7 @@ def _chat_stream_generator(
         detail_mode=detail_mode,
         mentor_prefix=prefix,
         history=history,
+        pre_summary=summary_cache[0],
     )
     if peer_review:
         up = up + _peer_review_user_suffix()
@@ -1725,7 +1691,7 @@ def _chat_stream_generator(
     for tk in _stream_chat_llm(
         system_prompt=_synthesis_system_prompt(peer_review, user_state),
         user_prompt=up,
-        max_tokens=3000,
+        max_tokens=_MAX_TOKENS,
     ):
         acc_syn.append(tk)
         yield _sse_event("delta", {"token": tk})
