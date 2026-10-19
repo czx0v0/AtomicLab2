@@ -1504,9 +1504,12 @@ const renderCitedContent = (content, sources, onJumpSource) => {
         </div>
       );
     }
+    // 短文本：去首尾空白，避免 [n] 后紧跟的 \n 把句号顶到换行
+    const clean = part.replace(/^\s+|\s+$/g, '');
+    if (!clean) return null;
     return (
       <span key={i} className="cited-md-part [&_.katex]:text-sm">
-        <MarkdownRenderer components={{ p: ({ children }) => <span>{children}</span> }}>{part}</MarkdownRenderer>
+        <MarkdownRenderer components={{ p: ({ children }) => <span>{children}</span> }}>{clean}</MarkdownRenderer>
       </span>
     );
   });

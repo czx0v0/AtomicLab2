@@ -1847,7 +1847,7 @@ export const LeftColumn = () => {
                     <ChevronLeft size={16} />
                     <span>上一页</span>
                 </button>
-                <span className="text-slate-600 tabular-nums min-w-[4rem] text-center">第 {currentPage} / {pdfNumPages ?? '—'} 页</span>
+                <span className="text-slate-600 tabular-nums min-w-[4rem] text-center">第 {Math.min(Math.max(1, currentPage), pdfNumPages || 1)} / {pdfNumPages ?? '—'} 页</span>
                 <button onClick={() => setCurrentPage(Math.min(pdfNumPages ?? 999, currentPage + 1))} disabled={currentPage >= (pdfNumPages ?? 0)} className="flex items-center gap-1 hover:bg-slate-100 px-2 py-1.5 rounded disabled:opacity-50 text-slate-600 hover:text-slate-900 disabled:cursor-not-allowed transition-colors" title="下一页">
                     <span>下一页</span>
                     <ChevronRight size={16} />
