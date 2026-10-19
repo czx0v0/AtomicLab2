@@ -1461,7 +1461,11 @@ const renderInlineHighlight = (text, query) => {
 // 将内容中的 [1] [2] 等引用替换为可点击按钮，其余用 Markdown+Math 渲染
 const renderCitedContent = (content, sources, onJumpSource) => {
   if (!content) return null;
-  const normalized = String(content).replace(/【\s*(\d+)\s*】/g, '[$1]');
+  const normalized = String(content)
+    .replace(/【\s*(\d+)\s*】/g, '[$1]')
+    // 去掉 [n] 前后的换行（LLM 常把引用放新段落，导致句号/分号被顶到换行）
+    .replace(/\n\s*(?=\[\d+\])/g, '')
+    .replace(/(\[\d+\])\n\s*/g, '$1');
   const parts = normalized.split(/(\[\d+\])/g);
   return parts.map((part, i) => {
     const m = part.match(/^\[(\d+)\]$/);
