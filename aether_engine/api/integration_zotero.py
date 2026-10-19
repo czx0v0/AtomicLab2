@@ -20,7 +20,8 @@ from service.zotero_sync import run_zotero_sync
 router = APIRouter(prefix="/integration/zotero", tags=["integration-zotero"])
 logger = logging.getLogger("aether")
 
-IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+from core.paths import is_modelscope_space
+IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 
 class ZoteroSyncRequest(BaseModel):

@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.session import get_session_id
+from core.session import get_session_dep
 
 router = APIRouter(prefix="/writing", tags=["writing"])
 logger = logging.getLogger("aether")
@@ -405,14 +405,14 @@ def _do_writing_assist(
 
 
 @router.post("/assist")
-def writing_assist(body: WritingAssistRequest, session_id: str = Depends(get_session_id)):
+def writing_assist(body: WritingAssistRequest, session_id: str = Depends(get_session_dep)):
     if not body.text.strip():
         raise HTTPException(status_code=400, detail="文本不能为空")
     return _do_writing_assist(body.action, body.text, body.context, session_id)
 
 
 @router.post("/inline")
-def writing_inline(body: InlineAssistRequest, session_id: str = Depends(get_session_id)):
+def writing_inline(body: InlineAssistRequest, session_id: str = Depends(get_session_dep)):
     """行内助手：指令映射到 action，返回建议文本（Ghost Text 用）。max_tokens 控制建议长度。"""
     if not body.text.strip():
         raise HTTPException(status_code=400, detail="文本不能为空")

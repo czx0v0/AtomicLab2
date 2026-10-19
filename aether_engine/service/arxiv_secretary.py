@@ -21,7 +21,8 @@ logger = logging.getLogger("aether")
 # 与 api.notes 一致
 import os
 
-IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+from core.paths import is_modelscope_space
+IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 
 def _get_inbox_path(session_id: Optional[str] = None) -> Path:

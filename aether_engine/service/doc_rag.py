@@ -16,7 +16,8 @@ from chromadb.config import Settings as ChromaSettings
 logger = logging.getLogger("aether")
 
 # 检测是否在创空间环境
-IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+from core.paths import is_modelscope_space
+IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 if IN_MODELSCOPE_SPACE:
     from core.session_store import get_session_path, init_session

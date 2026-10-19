@@ -19,7 +19,7 @@ router = APIRouter(prefix="/organize", tags=["organize"])
 logger = logging.getLogger("aether")
 
 GLOBAL_SCOPE_MARKERS = {"", "global", "__global__", "all", "*"}
-GLOBAL_DEMO_DOC_ID = "global_demo_official"
+from core.constants import DEMO_DOC_ID as GLOBAL_DEMO_DOC_ID
 
 
 def _domain_allowed_doc_ids(docs: List[dict], domain_id: Optional[str]) -> Optional[Set[str]]:

@@ -19,7 +19,8 @@ logger = logging.getLogger("aether")
 
 import os
 
-IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+from core.paths import is_modelscope_space
+IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 if IN_MODELSCOPE_SPACE:
     from core.session_store import SessionDataStore, init_session

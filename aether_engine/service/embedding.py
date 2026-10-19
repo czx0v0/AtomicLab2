@@ -16,7 +16,8 @@ logger = logging.getLogger("aether")
 _model = None
 _model_lock = threading.Lock()
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
-IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+from core.paths import is_modelscope_space
+IN_MODELSCOPE_SPACE = is_modelscope_space()
 
 # ── 限制 CPU 线程数，避免 torch CPU 内存分配器耗尽（DefaultCPUAllocator OOM）────
 # 单线程对 MiniLM 这种小模型足够快，且内存更稳定；可用 RAG_TORCH_THREADS 覆盖。

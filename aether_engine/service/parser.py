@@ -40,7 +40,9 @@ logger = logging.getLogger("uvicorn.error")
 # ══════════════════════════════════════════════════════════════
 # 图片持久化：将解析结果中的图片保存到 data/parse_images/{stem}/
 # ══════════════════════════════════════════════════════════════
-_PARSE_IMAGES_DIR = Path(__file__).parent.parent / "data" / "parse_images"
+from core.paths import data_path
+
+_PARSE_IMAGES_DIR = data_path("parse_images")
 _PARSE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 

@@ -15,7 +15,8 @@ from core.paths import data_path
 
 logger = logging.getLogger("aether")
 
-IN_MODELSCOPE_SPACE = os.path.exists("/mnt/workspace")
+from core.paths import is_modelscope_space
+IN_MODELSCOPE_SPACE = is_modelscope_space()
 _graphs: Dict[str, nx.DiGraph] = {}
 
 
