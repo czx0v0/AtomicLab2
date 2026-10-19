@@ -256,4 +256,18 @@ def delete_document(doc_id: str, x_session_id: str = Header(default="")):
 
     new_items = [x for x in items if x.get("id") != doc_id]
     _save_meta(new_items, session_id)
+
+    # 同步清理 RAG 索引：删文档向量 chunks + 标记 BM25 重建，避免检索到已删文献
+    try:
+        from service.doc_rag import get_document_rag
+        rag = get_document_rag(session_id)
+        rag.collection.delete(where={"doc_id": doc_id})
+    except Exception as e:
+        logger.warning("删除文档向量索引失败: %s", e)
+    try:
+        from service.bm25_engine import get_bm25_engine
+        get_bm25_engine(session_id).invalidate()
+    except Exception as e:
+        logger.warning("BM25 索引失效失败: %s", e)
+
     logger.info("[Session:%s] 删除文献: id=%s", session_id or "default", doc_id)

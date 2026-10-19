@@ -659,7 +659,7 @@ def _search_arxiv_external(query: str, limit: int = 3) -> List[dict]:
     return out
 
 
-def _tool_search_local(query: str, top_k: int, session_id: Optional[str], retrieval_mode: str = "full", rerank_mode: str = "none") -> dict:
+def _tool_search_local(query: str, top_k: int, session_id: Optional[str], retrieval_mode: str = "full", rerank_mode: str = "none", scope_doc_ids: Optional[List[str]] = None) -> dict:
     return _search_pipeline(
         query=query,
         top_k=max(3, top_k),
@@ -667,6 +667,7 @@ def _tool_search_local(query: str, top_k: int, session_id: Optional[str], retrie
         session_id=session_id,
         retrieval_mode=retrieval_mode,
         rerank_mode=rerank_mode,
+        scope_doc_ids=scope_doc_ids,
     )
 
 
@@ -677,6 +678,7 @@ def _global_search_for_chat(
     max_rounds: int = 2,
     retrieval_mode: str = "full",
     rerank_mode: str = "none",
+    scope_doc_ids: Optional[List[str]] = None,
 ) -> dict:
     """与 POST /search/global 一致：全库混合检索，供 Chat 基线合并。
 
@@ -692,6 +694,7 @@ def _global_search_for_chat(
         session_id=session_id,
         retrieval_mode=retrieval_mode,
         rerank_mode=rerank_mode,
+        scope_doc_ids=scope_doc_ids,
     )
 
 

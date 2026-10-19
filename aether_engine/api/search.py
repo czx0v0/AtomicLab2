@@ -48,6 +48,7 @@ class SearchRequest(BaseModel):
     max_rounds: int = 2  # 最多几轮查询扩展
     retrieval_mode: str = "full"  # 评测/消融实验：full/closed_book/bm25_only/vector_only/...
     rerank_mode: str = ""  # 重排序：空=auto(hybrid自动cross_encoder) / none / cross_encoder / llm
+    scope_doc_ids: Optional[List[str]] = None  # 检索范围：空=全局；单个/多个 doc_id
 
 
 class IndexDocumentRequest(BaseModel):
@@ -581,6 +582,7 @@ def _search_pipeline(
     session_id: Optional[str] = None,
     retrieval_mode: str = "full",
     rerank_mode: str = "",
+    scope_doc_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     多源多轮检索管线（文档原文优先，支持会话隔离）：
@@ -639,6 +641,14 @@ def _search_pipeline(
                 out.append(r)
         return out
 
+    # 检索范围：scope_doc_ids 为空=全局；否则只保留 doc_id 在 scope 内的结果（单个或多个）
+    _scope_set = {d.strip() for d in (scope_doc_ids or []) if d and str(d).strip()}
+
+    def _in_scope(r: dict) -> bool:
+        if not _scope_set:
+            return True
+        return (r.get("doc_id") or "").strip() in _scope_set
+
     for round_idx in range(rounds):
         q = query_variants[round_idx] if round_idx < len(query_variants) else query
         is_first_round = round_idx == 0
@@ -658,6 +668,7 @@ def _search_pipeline(
                 rag_session_id = None if doc_id == GLOBAL_DEMO_DOC_ID else session_id
                 doc_rag = get_document_rag(rag_session_id)
                 doc_vector = doc_rag.search(q, top_k=fetch_k)
+                doc_vector = [r for r in doc_vector if _in_scope(r)]
                 doc_vector = _dedup(doc_vector)
                 if doc_vector:
                     all_channels.append(doc_vector)
@@ -673,6 +684,7 @@ def _search_pipeline(
         if _mode_enabled(mode, "doc_bm25"):
             try:
                 doc_bm25 = bm25.search_docs(q, top_k=fetch_k)
+                doc_bm25 = [r for r in doc_bm25 if _in_scope(r)]
                 doc_bm25 = _dedup(doc_bm25)
                 if doc_bm25:
                     all_channels.append(doc_bm25)
@@ -691,6 +703,7 @@ def _search_pipeline(
 
                 note_rag = get_note_rag(session_id)
                 note_vector = note_rag.search(q, top_k=fetch_k)
+                note_vector = [r for r in note_vector if _in_scope(r)]
                 note_vector = _dedup(note_vector)
                 if note_vector:
                     all_channels.append(note_vector)
@@ -857,6 +870,7 @@ def search_notes(body: SearchRequest, x_session_id: str = Header(default="")):
         session_id=session_id,
         retrieval_mode=body.retrieval_mode,
         rerank_mode=body.rerank_mode,
+        scope_doc_ids=body.scope_doc_ids,
     )
 
     if result["results"]:
