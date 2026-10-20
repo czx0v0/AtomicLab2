@@ -312,6 +312,7 @@ def _build_agent_traces(
     has_evidence: bool,
     question: str = "",
     synthesizer_note: str = "已生成最终回答。",
+    rev_result: Optional[dict] = None,
 ) -> List[dict]:
     """
     Agent 可观测性：Router → Seeker（工具/通道）→ Reviewer → Synthesizer。
@@ -351,7 +352,7 @@ def _build_agent_traces(
             }
         )
     else:
-        rt = _reviewer(sources, question)
+        rt = rev_result if rev_result is not None else _reviewer(sources, question)
         traces.append(
             {
                 "step": "Reviewer",
@@ -1555,13 +1556,16 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
     if tool_logs:
         seeker_txt = "\n".join(f"• {t}" for t in tool_logs)
         steps.append({"agent": "seeker", "content": seeker_txt, "related_notes": sources[:5]})
+    rev_result = None
     if sources:
-        n_local = sum(1 for s in sources if (s.get("source") or "") != "arxiv")
-        n_arxiv = sum(1 for s in sources if s.get("source") == "arxiv")
-        rev = f"证据速览：共 {len(sources)} 条（本地文献 {n_local} 条"
-        if n_arxiv:
-            rev += f"，arXiv {n_arxiv} 条"
-        rev += "）。将据此生成回答。"
+        # LLM 证据评审（复用给 agent_traces，避免重复调用）
+        rev_result = _reviewer(sources, body.question)
+        channel = _seeker_channel_summary(sources)
+        rev = f"证据评审（LLM）：{rev_result.get('score', 5):.1f}/10 · {rev_result.get('status', 'warning')}"
+        if rev_result.get('detail'):
+            rev += f"\n{rev_result['detail']}"
+        if channel:
+            rev += f"\n{channel}"
         steps.append({"agent": "reviewer", "content": rev, "related_notes": sources[:3]})
 
     # 无证据时：仍给自然答案，不向用户暴露底层检索流程
@@ -1635,6 +1639,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         has_evidence=True,
         question=body.question,
         synthesizer_note="已生成带引用的最终回答。",
+        rev_result=rev_result,
     )
     _finalize()
     return {
@@ -1841,12 +1846,15 @@ def _chat_stream_generator(
         _finalize()
         return
 
-    n_loc = sum(1 for s in sources if (s.get("source") or "") != "arxiv")
-    n_ax = sum(1 for s in sources if s.get("source") == "arxiv")
-    rev_msg = f"证据速览：共 {len(sources)} 条（本地文献 {n_loc} 条"
-    if n_ax:
-        rev_msg += f"，arXiv {n_ax} 条"
-    rev_msg += "）。开始生成回答…"
+    # LLM 证据评审（复用给 agent_traces，避免重复调用）
+    rev_result = _reviewer(sources, question)
+    channel = _seeker_channel_summary(sources)
+    rev_msg = f"证据评审（LLM）：{rev_result.get('score', 5):.1f}/10 · {rev_result.get('status', 'warning')}"
+    if rev_result.get('detail'):
+        rev_msg += f"\n{rev_result['detail']}"
+    if channel:
+        rev_msg += f"\n{channel}"
+    rev_msg += "\n开始生成回答…"
     yield _sse_event(
         "step",
         {"agent": "reviewer", "content": rev_msg, "related_notes": sources[:3]},
@@ -1888,6 +1896,7 @@ def _chat_stream_generator(
         has_evidence=True,
         question=question,
         synthesizer_note="流式生成最终回答完成。",
+        rev_result=rev_result,
     )
     yield _sse_event(
         "done",
