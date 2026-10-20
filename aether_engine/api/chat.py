@@ -1069,7 +1069,9 @@ def _route_with_tools(
     ]
 
     # 只做一轮 tool call：Router 路由一次，检索交给 Seeker 多路召回（避免重复检索）
-    for _ in range(1):
+    # ROUTER_MAX_ITER=2 可复现旧版（多轮 tool call + arXiv 补充）
+    _router_iter = int(os.getenv("ROUTER_MAX_ITER", "1"))
+    for _ in range(_router_iter):
         resp = client.chat.completions.create(
             model=_cfg.get("model"),
             messages=messages,
