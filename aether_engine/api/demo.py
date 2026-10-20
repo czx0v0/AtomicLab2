@@ -157,6 +157,10 @@ async def load_demo(session_id: str = Depends(get_session_dep)):
     清空当前会话，并挂载全局 demo 文档。
     仅从 demo_static_bundle.json 读取解析结果，不调用 MinerU。Demo 笔记由前端 Local-First 管理，不落库到服务端会话。
     """
+    # 评测隔离模式（DATA_DIR 非默认）下禁止加载 Demo，避免 demo 白皮书污染干净评测库
+    if os.getenv("DATA_DIR", "data") != "data":
+        raise HTTPException(status_code=400, detail="评测隔离模式下不可加载 Demo（避免污染评测库）")
+
     _clear_session(session_id)
 
     if not _find_demo_pdf():

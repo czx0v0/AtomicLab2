@@ -545,7 +545,7 @@ def main() -> None:
         action="store_true",
         help="删除已有 report（csv/jsonl）后全新重跑，忽略断点续跑",
     )
-    parser.add_argument("--timeout", type=float, default=60.0, help="兼容入口：HTTP 连接/读超时默认秒数")
+    parser.add_argument("--timeout", type=float, default=300.0, help="兼容入口：HTTP 连接/读超时默认秒数")
     parser.add_argument("--connect-timeout", type=float, default=0.0, help="HTTP 连接超时（秒，0 表示继承 --timeout）")
     parser.add_argument("--read-timeout", type=float, default=0.0, help="HTTP 读取超时（秒，0 表示继承 --timeout）")
     parser.add_argument("--write-timeout", type=float, default=0.0, help="HTTP 写入超时（秒，0 表示继承 --timeout）")
