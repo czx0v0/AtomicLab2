@@ -495,7 +495,7 @@ def _expand_query(query: str) -> List[str]:
 
 
 def _llm_expand_query(query: str) -> List[str]:
-    """LLM 查询扩展：把问题改写为 2-3 个不同角度的检索查询（默认模式）。"""
+    """LLM 查询扩展：把问题改写为 1 个不同角度的检索查询（默认模式，控延迟）。"""
     try:
         from core.llm import get_llm_config
 
@@ -511,18 +511,18 @@ def _llm_expand_query(query: str) -> List[str]:
                 {
                     "role": "user",
                     "content": (
-                        "把下面的学术问题改写为 2-3 个不同角度的检索查询，"
-                        "每行一个，去掉停用词，保留核心术语与约束：\n" + query
+                        "把下面的学术问题改写为 1 个不同角度的检索查询，"
+                        "去掉停用词，保留核心术语与约束：\n" + query
                     ),
                 }
             ],
             temperature=0.3,
-            max_tokens=200,
+            max_tokens=120,
         )
         content = (resp.choices[0].message.content or "").strip()
         variants = [q.strip() for q in content.split("\n") if q.strip()]
-        # 保证原始 query 在第一位
-        return [query] + [v for v in variants if v != query][:3]
+        # 保证原始 query 在第一位，最多补 1 个变体（控延迟）
+        return [query] + [v for v in variants if v != query][:1]
     except Exception as e:
         logger.warning("LLM 查询扩展失败，回退原始 query: %s", e)
         return [query]

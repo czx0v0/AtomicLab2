@@ -238,6 +238,20 @@ def _seeker_channel_summary(sources: List[dict]) -> str:
     return "检索通道分布：" + " · ".join(parts)
 
 
+def _top_evidence_summary(sources: List[dict], top: int = 5) -> str:
+    """Top 证据排名（得分 + 概念/标题），用于 Reviewer 展示。"""
+    if not sources:
+        return ""
+    rows = []
+    for i, s in enumerate(sources[:top], 1):
+        score = s.get("score")
+        score_s = f"{float(score):.3f}" if isinstance(score, (int, float)) else "—"
+        concept = (s.get("concept") or s.get("doc_title") or s.get("summary") or "").strip()
+        concept_s = (concept[:40] + "…") if len(concept) > 40 else concept
+        rows.append(f"[{i}] {score_s} · {concept_s}")
+    return "Top 证据：\n" + "\n".join(rows)
+
+
 def _reviewer_heuristic(sources: List[dict]) -> dict:
     scores = [float(s.get("score") or 0) for s in sources if s.get("score") is not None]
     avg = sum(scores) / len(scores) if scores else 0.55
@@ -1561,11 +1575,14 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         # LLM 证据评审（复用给 agent_traces，避免重复调用）
         rev_result = _reviewer(sources, body.question)
         channel = _seeker_channel_summary(sources)
+        top_ev = _top_evidence_summary(sources)
         rev = f"证据评审（LLM）：{rev_result.get('score', 5):.1f}/10 · {rev_result.get('status', 'warning')}"
         if rev_result.get('detail'):
             rev += f"\n{rev_result['detail']}"
         if channel:
             rev += f"\n{channel}"
+        if top_ev:
+            rev += f"\n{top_ev}"
         steps.append({"agent": "reviewer", "content": rev, "related_notes": sources[:3]})
 
     # 无证据时：仍给自然答案，不向用户暴露底层检索流程
@@ -1849,11 +1866,14 @@ def _chat_stream_generator(
     # LLM 证据评审（复用给 agent_traces，避免重复调用）
     rev_result = _reviewer(sources, question)
     channel = _seeker_channel_summary(sources)
+    top_ev = _top_evidence_summary(sources)
     rev_msg = f"证据评审（LLM）：{rev_result.get('score', 5):.1f}/10 · {rev_result.get('status', 'warning')}"
     if rev_result.get('detail'):
         rev_msg += f"\n{rev_result['detail']}"
     if channel:
         rev_msg += f"\n{channel}"
+    if top_ev:
+        rev_msg += f"\n{top_ev}"
     rev_msg += "\n开始生成回答…"
     yield _sse_event(
         "step",
