@@ -1549,10 +1549,9 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         {
             "agent": "router",
             "content": router_txt,
-            "related_notes": sources[:5],
         }
     )
-    # Seeker 单独成 step（检索工具日志，不再塞进 Router 内容）
+    # Seeker 单独成 step（检索工具日志 + 证据，不再塞进 Router 内容）
     if tool_logs:
         seeker_txt = "\n".join(f"• {t}" for t in tool_logs)
         steps.append({"agent": "seeker", "content": seeker_txt, "related_notes": sources[:5]})
@@ -1735,10 +1734,9 @@ def _chat_stream_generator(
         {
             "agent": "router",
             "content": router_detail,
-            "related_notes": sources[:5],
         },
     )
-    # Seeker 单独成 step（检索工具日志，不再塞进 Router 内容）
+    # Seeker 单独成 step（检索工具日志 + 证据，不再塞进 Router 内容）
     if tool_logs:
         seeker_detail = "\n".join(f"• {t}" for t in tool_logs)
         yield _sse_event(
