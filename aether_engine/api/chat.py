@@ -1068,8 +1068,8 @@ def _route_with_tools(
         {"role": "user", "content": question},
     ]
 
-    # 允许最多两轮 tool call
-    for _ in range(2):
+    # 只做一轮 tool call：Router 路由一次，检索交给 Seeker 多路召回（避免重复检索）
+    for _ in range(1):
         resp = client.chat.completions.create(
             model=_cfg.get("model"),
             messages=messages,
