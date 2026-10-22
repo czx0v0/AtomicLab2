@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
 from core.paths import data_path, notes_file
+from core.prompts import SEEKER_EXPAND_PROMPT
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger("aether")
@@ -510,10 +511,7 @@ def _llm_expand_query(query: str) -> List[str]:
             messages=[
                 {
                     "role": "user",
-                    "content": (
-                        "把下面的学术问题改写为 2 个不同角度的检索查询，"
-                        "每行一个，去掉停用词，保留核心术语与约束：\n" + query
-                    ),
+                    "content": SEEKER_EXPAND_PROMPT.format(query=query),
                 }
             ],
             temperature=0.3,
@@ -667,8 +665,9 @@ def _search_pipeline(
     channel_stats: Dict[str, int] = {}
 
     query_variants = _expand_query_variants(query)
-    # 限制轮数
-    rounds = min(max_rounds, len(query_variants))
+    # 限制轮数：SEARCH_ROUNDS（默认 2 = 现状）；1 = Seeker 单轮（第 2 轮交给 Reviewer 门控触发）
+    _sr = int(os.getenv("SEARCH_ROUNDS", "2"))
+    rounds = min(max_rounds, len(query_variants), _sr)
 
     seen_ids: set = set()
 

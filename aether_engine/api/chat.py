@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from core.paths import data_path
 from core.conversation_state import load_state, save_state
+from core.prompts import REVIEWER_PROMPT, SYNTHESIS_SYSTEM_BASE, ROUTER_SYSTEM
 from api.documents import _load_meta
 from api.search import IN_MODELSCOPE_SPACE, _search_pipeline
 
@@ -115,13 +116,7 @@ class FeedbackRequest(BaseModel):
 _FEEDBACK_LOG = data_path("feedback_log.json")
 _FEEDBACK_LOCK = threading.Lock()
 
-_SYNTHESIS_SYSTEM_BASE = (
-    "你是高级学术 Copilot。"
-    "根据用户意图回答：细节问题严格引用；通用/指令问题自然表达。"
-    "用户消息中会给出 <document_chunks>、<atomic_notes>、<graph_relations> 等检索分区时，"
-    "须综合利用各分区信息作答，并优先依据 PDF 原文分块与图谱关系；不要忽略图谱区。"
-    "不要向用户暴露检索流程、卡片编号来源等底层实现。"
-)
+_SYNTHESIS_SYSTEM_BASE = SYNTHESIS_SYSTEM_BASE
 
 _PEER_REVIEW_ACTION_SUFFIX = (
     "\n\n【审稿模式】在 Markdown 正文之后，必须另起一行输出且仅输出下列机器可读块（不要 Markdown 代码围栏）：\n"
@@ -252,6 +247,13 @@ def _top_evidence_summary(sources: List[dict], top: int = 5) -> str:
     return "Top 证据：\n" + "\n".join(rows)
 
 
+def _clamp_citations(answer: str, n_total: int) -> str:
+    """把答案里超出证据总数的角标 [n] 删除（防引用越界幻觉）。保留 [G1] 等图谱引用。"""
+    if not answer or n_total <= 0:
+        return answer
+    return re.sub(r"\[(\d+)\]", lambda m: m.group(0) if int(m.group(1)) <= n_total else "", answer)
+
+
 def _reviewer_heuristic(sources: List[dict]) -> dict:
     scores = [float(s.get("score") or 0) for s in sources if s.get("score") is not None]
     avg = sum(scores) / len(scores) if scores else 0.55
@@ -262,7 +264,7 @@ def _reviewer_heuristic(sources: List[dict]) -> dict:
         if status == "success"
         else f"相关度约 {grade:.1f}/10，建议核对引用与原文。"
     )
-    return {"status": status, "detail": detail, "score": grade}
+    return {"status": status, "detail": detail, "score": grade, "suggestion": ""}
 
 
 def _reviewer_llm(sources: List[dict], question: str) -> dict:
@@ -278,12 +280,7 @@ def _reviewer_llm(sources: List[dict], question: str) -> dict:
         for i, s in enumerate((sources or [])[:8])
     ) or "（无检索证据）"
 
-    prompt = (
-        "你是学术证据评审员。请判断以下检索证据是否足以支撑回答用户问题。\n\n"
-        f"问题：{question}\n\n"
-        f"检索证据（最多 8 条）：\n{evidence}\n\n"
-        '只输出 JSON：{"status": "success"|"warning"|"insufficient", "score": 0-10 数字, "detail": "一句话理由"}'
-    )
+    prompt = REVIEWER_PROMPT.format(question=question, evidence=evidence)
 
     try:
         from openai import OpenAI
@@ -305,6 +302,7 @@ def _reviewer_llm(sources: List[dict], question: str) -> dict:
             "status": status,
             "detail": str(data.get("detail") or ""),
             "score": min(10.0, max(0.0, score)),
+            "suggestion": str(data.get("suggestion") or ""),
         }
     except Exception as e:
         logger.warning("LLM 评审失败，回退启发式: %s", e)
@@ -316,6 +314,41 @@ def _reviewer(sources: List[dict], question: str) -> dict:
     if os.getenv("REVIEWER_MODE", "llm").strip().lower() == "heuristic":
         return _reviewer_heuristic(sources)
     return _reviewer_llm(sources, question)
+
+
+def _reviewer_gate(
+    sources: List[dict],
+    question: str,
+    retry_query: str,
+    session_id: Optional[str],
+    top_k: int,
+    retrieval_mode: str,
+    rerank_mode: str,
+) -> tuple:
+    """Reviewer 门控（单次，不循环）：证据不足 → 用 suggestion 补 1 次检索。
+
+    返回 (sources, reviewer_result)。REVIEWER_GATE_ENABLED=1 时启用。
+    """
+    rt = _reviewer(sources, question)
+    sufficient = rt.get("status") == "success" and float(rt.get("score", 0)) >= 6.5
+    if sufficient:
+        return sources, rt
+
+    # 不足 → 补 1 次检索（suggestion 优先，否则原始 retry_query），随后必进合成
+    q = (rt.get("suggestion") or retry_query or question).strip()
+    local = _global_search_for_chat(q, top_k, session_id, 1, retrieval_mode=retrieval_mode, rerank_mode=rerank_mode)
+    new_hits = local.get("results", [])
+    if new_hits:
+        seen = {str(s.get("note_id") or "").strip() for s in sources if s.get("note_id")}
+        deduped = list(sources)
+        for h in new_hits:
+            nid = str(h.get("note_id") or "").strip()
+            if nid and nid in seen:
+                continue
+            seen.add(nid)
+            deduped.append(h)
+        return deduped, rt
+    return sources, rt
 
 
 def _build_agent_traces(
@@ -753,12 +786,18 @@ def _global_search_for_chat(
     retrieval_mode: str = "full",
     rerank_mode: str = "none",
     scope_doc_ids: Optional[List[str]] = None,
+    retrieval_task: Optional[dict] = None,
 ) -> dict:
     """与 POST /search/global 一致：全库混合检索，供 Chat 基线合并。
 
     top_k 真实透传（仅保底 3），保证评测中 --top-k 扫描有效；
     此前 eff_k = max(8, top_k, 12) 会把 top_k 架空到至少 12。
+
+    retrieval_task：Router → Seeker 的结构化检索任务（intent/query/keywords），
+    当前仅取 keywords 作检索 query（行为不变），为 Seeker 自主决策（function-calling 选方案）铺路。
     """
+    if retrieval_task:
+        query = (retrieval_task.get("keywords") or retrieval_task.get("query") or query).strip()
     eff_k = max(3, top_k)
     return _search_pipeline(
         query=query,
@@ -783,6 +822,102 @@ _TOOL_CATEGORIES = {
     "fetch_arxiv_recommendations": "secretary",  # 学术秘书
     "update_markdown_editor": "editor",      # 写作模式专用
 }
+
+# 工具 function-calling schema（单一事实来源）：Router 的 6 个工具（update_markdown_editor 在写作模式单独处理）
+TOOL_DEFS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_local_knowledge",
+            "description": "检索本地知识库（向量+BM25+Graph 1-hop/2-hop）",
+            "parameters": {
+                "type": "object",
+                "properties": {"keywords": {"type": "string"}},
+                "required": ["keywords"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_arxiv",
+            "description": "检索外网 arXiv 论文摘要",
+            "parameters": {
+                "type": "object",
+                "properties": {"keywords": {"type": "string"}},
+                "required": ["keywords"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_arxiv_recommendations",
+            "description": "学术秘书：按关键词从 arXiv 拉取最新论文，经 LLM 过滤后写入收件箱",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string"},
+                    "research_goal": {"type": "string"},
+                },
+                "required": ["keyword"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_latex",
+            "description": "将 Markdown 草稿转为 IEEEtran LaTeX 项目（main.tex + references.bib），返回一次性下载链接",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "markdown": {
+                        "type": "string",
+                        "description": "完整 Markdown 草稿；若为空则无法生成",
+                    }
+                },
+                "required": ["markdown"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "debug_latex_error",
+            "description": "根据 pdflatex/Overleaf 报错日志与相关 LaTeX 片段，分析原因并给出修改建议",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "error_log": {"type": "string"},
+                    "latex_snippet": {"type": "string"},
+                },
+                "required": ["error_log"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_my_zotero",
+            "description": "查询用户 Zotero 书库中最近收藏/指定文件夹的论文摘要与要点，并可与本地知识库联合",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keywords": {
+                        "type": "string",
+                        "description": "主题关键词，如 Agent、RAG",
+                    },
+                    "fetch_recent": {
+                        "type": "boolean",
+                        "description": "为 true 时从 Zotero API 拉取最新条目摘要（需已在设置中配置凭据）",
+                    },
+                },
+                "required": ["keywords"],
+            },
+        },
+    },
+]
 
 
 def _classify_tool_category(question: str) -> Optional[str]:
@@ -948,100 +1083,7 @@ def _route_with_tools(
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key, base_url=api_base)
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "search_local_knowledge",
-                "description": "检索本地知识库（向量+BM25+Graph 1-hop/2-hop）",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"keywords": {"type": "string"}},
-                    "required": ["keywords"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_arxiv",
-                "description": "检索外网 arXiv 论文摘要",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"keywords": {"type": "string"}},
-                    "required": ["keywords"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "fetch_arxiv_recommendations",
-                "description": "学术秘书：按关键词从 arXiv 拉取最新论文，经 LLM 过滤后写入收件箱",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "keyword": {"type": "string"},
-                        "research_goal": {"type": "string"},
-                    },
-                    "required": ["keyword"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "export_latex",
-                "description": "将 Markdown 草稿转为 IEEEtran LaTeX 项目（main.tex + references.bib），返回一次性下载链接",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "markdown": {
-                            "type": "string",
-                            "description": "完整 Markdown 草稿；若为空则无法生成",
-                        }
-                    },
-                    "required": ["markdown"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "debug_latex_error",
-                "description": "根据 pdflatex/Overleaf 报错日志与相关 LaTeX 片段，分析原因并给出修改建议",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "error_log": {"type": "string"},
-                        "latex_snippet": {"type": "string"},
-                    },
-                    "required": ["error_log"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_my_zotero",
-                "description": "查询用户 Zotero 书库中最近收藏/指定文件夹的论文摘要与要点，并可与本地知识库联合",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "keywords": {
-                            "type": "string",
-                            "description": "主题关键词，如 Agent、RAG",
-                        },
-                        "fetch_recent": {
-                            "type": "boolean",
-                            "description": "为 true 时从 Zotero API 拉取最新条目摘要（需已在设置中配置凭据）",
-                        },
-                    },
-                    "required": ["keywords"],
-                },
-            },
-        },
-    ]
+    tools = list(TOOL_DEFS)
 
     # 两级路由：正则分类（第一级，免费）→ 按类别裁剪 tools（第二级 function-calling）
     category = _classify_tool_category(question)
@@ -1055,14 +1097,7 @@ def _route_with_tools(
         {
             "role": "system",
             "content": (
-                "你是一个高级学术 Copilot 的路由智能体。"
-                "当用户询问具体文献、数据、研究细节时，优先调用 search_local_knowledge，并在必要时补充 search_arxiv。"
-                "当用户希望追踪某方向最新 arXiv 论文、需要秘书预读过滤并入库推荐时，调用 fetch_arxiv_recommendations。"
-                "当用户要求导出 LaTeX、打包 IEEE 论文、生成 .bib 时，调用 export_latex（需用户提供或粘贴 Markdown 全文）。"
-                "当用户粘贴 LaTeX 编译报错日志时，调用 debug_latex_error。"
-                "当用户提到 Zotero、个人书库、最近收藏的论文时，调用 search_my_zotero。"
-                "当用户询问通用概念、闲聊、或要求执行写作/润色类指令时，可以选择不调用工具。"
-                "只做路由决策，不输出最终答案。"
+                ROUTER_SYSTEM
                 + (f"\n\n【对话历史】\n{pre_summary or history_txt}" if (pre_summary or history_txt) else ""),
             ),
         },
@@ -1112,7 +1147,13 @@ def _route_with_tools(
             keywords = (args.get("keywords") or search_query).strip()
 
             if name == "search_local_knowledge":
-                local = _global_search_for_chat(keywords, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode)
+                # 结构化检索任务：Router → Seeker（intent/query/keywords），为 Seeker 自主决策铺路
+                retrieval_task = {
+                    "intent": "retrieval",
+                    "query": search_query,     # 原始问题（供 Seeker 未来自主改写/扩展）
+                    "keywords": keywords,      # Router FC 提取的关键词（当前检索 query）
+                }
+                local = _global_search_for_chat(keywords, top_k, session_id, max_rounds, retrieval_mode=mode, rerank_mode=rerank_mode, retrieval_task=retrieval_task)
                 local_hits = local.get("results", [])
                 local_context = local.get("context", local_context)
                 sources.extend(local_hits[: max(top_k, 6)])
@@ -1497,6 +1538,15 @@ def _prepare_chat_context(
         )
         state.evidence_cache = sources
     sources = _sanitize_evidence_sources(sources, session_id)
+
+    # Reviewer 门控（REVIEWER_GATE_ENABLED=1 时启用）：证据不足 → 用 suggestion 补 1 次检索
+    if os.getenv("REVIEWER_GATE_ENABLED", "0").strip() == "1" and sources:
+        sources, _rev = _reviewer_gate(
+            sources, question, question, session_id, top_k, retrieval_mode, rerank_mode
+        )
+        if _rev.get("status") == "insufficient":
+            tool_logs.append(f"[gate] Reviewer 判不足，已补检索 -> {len(sources)} 条")
+
     detail_mode = _is_research_detail_question(question)
     return sources, tool_logs, local_context, detail_mode
 
@@ -1652,6 +1702,9 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
         answer = "未配置聊天模型 API KEY（DEEPSEEK_API_KEY 或 ALIYUN_API_KEY）。以下为检索结果摘要：\n\n" + "\n".join(
             f"- [{i+1}] {s.get('concept','')} {s.get('summary','')[:120]}" for i, s in enumerate(sources[:6])
         )
+
+    # 引用越界 clamp：删除超出证据总数的 [n]（防引用越界幻觉）
+    answer = _clamp_citations(answer, len(sources))
 
     steps.append({"agent": "synthesizer", "content": answer})
     agent_traces = _build_agent_traces(
