@@ -884,7 +884,8 @@ def _route_with_tools(
     mode = (retrieval_mode or "full").strip().lower()
     agent = (agent_mode or "full").strip().lower()
     skip_router = agent in ("no_router", "retrieval_only")
-    skip_arxiv = agent in ("no_arxiv", "retrieval_only")
+    # arXiv 补充开关：ARXIV_ENABLED=0 时关闭（评测/本地纯检索减噪），默认 1 保持线上行为
+    skip_arxiv = agent in ("no_arxiv", "retrieval_only") or os.getenv("ARXIV_ENABLED", "1").strip() == "0"
     skip_merge = agent in ("no_merge", "retrieval_only")
 
     # 历史感知查询改写：Router 消解指代/省略，产出自包含查询供 Seeker 检索
@@ -1068,9 +1069,9 @@ def _route_with_tools(
         {"role": "user", "content": question},
     ]
 
-    # 只做一轮 tool call：Router 路由一次，检索交给 Seeker 多路召回（避免重复检索）
-    # ROUTER_MAX_ITER=2 可复现旧版（多轮 tool call + arXiv 补充）
-    _router_iter = int(os.getenv("ROUTER_MAX_ITER", "1"))
+    # Router 多轮 tool call（默认 2：首轮本地检索 + 次轮补 arXiv/精化，multi-hop 更优）
+    # ROUTER_MAX_ITER=1 可降延迟（少一次补检索）
+    _router_iter = int(os.getenv("ROUTER_MAX_ITER", "2"))
     for _ in range(_router_iter):
         resp = client.chat.completions.create(
             model=_cfg.get("model"),
@@ -1345,7 +1346,9 @@ def _build_synthesis_prompt(
         "other",
     )
     buckets: Dict[str, List[dict]] = {k: [] for k in order}
-    for s in sources[:16]:
+    # 证据条数可变量化：SYNTHESIS_MAX_SOURCES（默认 10 对齐 top_k），评测/线上可调
+    _n_src = int(os.getenv("SYNTHESIS_MAX_SOURCES", "10"))
+    for s in sources[:_n_src]:
         b = _bucket_for_evidence(s.get("source"))
         if b in buckets:
             buckets[b].append(s)
@@ -1355,12 +1358,13 @@ def _build_synthesis_prompt(
     if detail_mode:
         requirements = (
             "回答要求：研究/技术细节问题，严格基于证据作答；凡引用或复述某条证据，必须在对应句末使用半角角标 [1] [2]（与下方分区内全局编号一致）；"
+            "角标编号不得超过下方证据总数，严禁引用不存在的编号；证据缺细节时直接说明『文献未提及该细节』，禁止用常识补全或编造数字/结论/来源；"
             "图谱分区内可用 [G1] 等与 graph_ref 对齐。\n\n"
         )
     else:
         requirements = (
             "回答要求：已提供检索证据时请优先采用证据内容；凡直接来自某条证据的句子，在句末标注半角 [1][2]（编号与下方分区内列表一致）。"
-            "可补充通用知识，无证据支撑处请说明。不要使用全角［］括号作引用编号。\n\n"
+            "角标编号不得超过下方证据总数，严禁引用不存在的编号；可补充通用知识，无证据支撑处请说明，禁止编造具体数字/结论/来源。不要使用全角［］括号作引用编号。\n\n"
         )
 
     xml_parts: List[str] = []
@@ -1380,8 +1384,8 @@ def _build_synthesis_prompt(
         for s in items:
             src = s.get("source", "unknown")
             concept = s.get("concept", "")
-            # 每条证据摘要截断到 800 字符，防止超长 chunk 把上下文撑爆
-            summary = (s.get("summary", "") or "")[:800]
+            # 每条证据摘要截断到 1600 字符，防止超长 chunk 撑爆上下文，同时保留 multi-hop 关键细节（降低幻觉）
+            summary = (s.get("summary", "") or "")[:1600]
             graph_mark = s.get("graph_ref", "")
             doc_t = s.get("doc_title") or ""
             lines.append(
@@ -1664,7 +1668,7 @@ def chat(body: ChatRequest, x_session_id: str = Header(default="")):
     return {
         "answer": answer,
         "steps": [AgentStep(**s) for s in steps],
-        "sources": sources[:8],
+        "sources": sources[:10],
         "agent_traces": agent_traces,
         "retrieved_cards": _normalize_retrieved_cards(sources),
         "elapsed_ms": int((time.perf_counter() - t0) * 1000),
@@ -1855,7 +1859,7 @@ def _chat_stream_generator(
         yield _sse_event(
             "done",
             {
-                "sources": sources[:8],
+                "sources": sources[:10],
                 "agent_traces": traces,
                 "tool_logs": tool_logs,
                 "retrieved_cards": _normalize_retrieved_cards(sources),
@@ -1923,7 +1927,7 @@ def _chat_stream_generator(
     yield _sse_event(
         "done",
         {
-            "sources": sources[:8],
+            "sources": sources[:10],
             "agent_traces": traces,
             "tool_logs": tool_logs,
             "retrieved_cards": _normalize_retrieved_cards(sources),

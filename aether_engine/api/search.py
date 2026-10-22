@@ -529,10 +529,10 @@ def _llm_expand_query(query: str) -> List[str]:
 
 
 def _expand_query_variants(query: str) -> List[str]:
-    """查询扩展分发：SEEKER_EXPAND_MODE=llm（默认）/ regex。"""
-    if os.getenv("SEEKER_EXPAND_MODE", "llm").strip().lower() == "regex":
-        return _expand_query(query)
-    return _llm_expand_query(query)
+    """查询扩展分发：SEEKER_EXPAND_MODE=regex（默认，multi-hop 更优）/ llm。"""
+    if os.getenv("SEEKER_EXPAND_MODE", "regex").strip().lower() == "llm":
+        return _llm_expand_query(query)
+    return _expand_query(query)
 
 
 # ── OCR 文本提取（轻量版）──────────────────────────────────────────────────
